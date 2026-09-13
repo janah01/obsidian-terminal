@@ -767,7 +767,8 @@ export namespace RightClickActionAddon {
  * character it combines with discards the composed character (UI Events
  * §Dead keys; xterm.js #3430). Both keydowns are left to the browser, and the
  * `keypress` carrying the composed character becomes the keydown record, as
- * Windows Terminal turns character events into key events.
+ * Windows Terminal turns character events into key events. That record reuses
+ * the deferred keydown's virtual key, so it keeps the layout's identity.
  */
 export class CustomKeyEventHandlerAddon implements ITerminalAddon {
   readonly #disposer = new Functions({ async: false, settled: true });
@@ -777,6 +778,8 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
   /** `pending` after a dead key's keydown; `composing` once the character
    * keydown it combines with was deferred to its keypress. */
   #deadKey: "composing" | "none" | "pending" = "none";
+  /** Virtual key of the deferred keydown, reused by its keypresses. */
+  #deadKeyVirtualKey = 0;
 
   public constructor(
     protected readonly currentPlatform: string,
@@ -799,6 +802,7 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
     this.#win32InputMode = null;
     this.#win32InputModeActive = false;
     this.#deadKey = "none";
+    this.#deadKeyVirtualKey = 0;
   }
 
   #handleEvent(event: KeyboardEvent): boolean {
@@ -886,7 +890,7 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
    * Win32 input mode. Dead keys defer to the browser: neither the dead key's
    * keydown nor the keydown of the character key it combines with is cancelled
    * or encoded, and the keypress carrying the composed character becomes the
-   * keydown record.
+   * keydown record, with the deferred keydown's virtual key.
    */
   #encodeWin32(
     terminal: Terminal,
@@ -908,7 +912,9 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
       }
       if (event.key === "Dead" || this.#deadKey === "composing") {
         // Cancelling either keydown discards the composition; the browser
-        // delivers the result on the keypress.
+        // delivers the result on the keypress, whose `keyCode` is the
+        // character, so the key's identity is kept here.
+        this.#deadKeyVirtualKey = mode.virtualKey(event);
         event.stopPropagation();
         return false;
       }
@@ -921,7 +927,7 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
     } else if (type === "keypress" && this.#deadKey !== "none") {
       // Only a deferred keydown still produces keypresses, one per composed
       // character (`'` then `q` yields two on US-International).
-      terminal.input(mode.encode(event, true), true);
+      terminal.input(mode.encode(event, true, this.#deadKeyVirtualKey), true);
     }
     // A cancelled keydown produces no keypress, and a cancelled keypress
     // inserts nothing, so xterm.js sends no duplicate legacy input.
@@ -948,6 +954,7 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
           if (params.some((parameter) => parameter === 9001)) {
             this.#win32InputModeActive = false;
             this.#deadKey = "none";
+            this.#deadKeyVirtualKey = 0;
           }
           return false;
         },

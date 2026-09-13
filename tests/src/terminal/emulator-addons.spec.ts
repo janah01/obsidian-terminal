@@ -8,6 +8,8 @@
  * - Keymapping actions including the new "passthrough" action
  * - Shift+Enter ESC+CR injection via default keymapping (not hardcoded)
  * - Guard conditions (disposed, platform, setting, modifier combos)
+ * - Win32 input mode (DECSET 9001): KEY_EVENT_RECORD encoding, dead-key
+ *   composition deferred to the browser, layout-aware virtual keys
  * - SynchronizedOutputScrollAddon: scroll position preservation across DEC 2026
  *   synchronized output blocks via queueMicrotask (xterm.js issue #5801 workaround)
  */
@@ -363,12 +365,44 @@ describe("CustomKeyEventHandlerAddon", () => {
     });
     expect(inputSpy).not.toHaveBeenCalled();
 
-    expect(dispatch({ code: "KeyE", key: "é", type: "keypress" })).toEqual({
-      cancelled: true,
-      result: false,
-    });
+    // A keypress's `keyCode` is its character, never the virtual key.
+    expect(
+      dispatch({ code: "KeyE", key: "é", keyCode: 233, type: "keypress" }),
+    ).toEqual({ cancelled: true, result: false });
     expect(inputSpy).toHaveBeenCalledExactlyOnceWith(
       "\x1b[69;18;233;1;0;1_",
+      true,
+    );
+  });
+
+  it("keeps the layout's virtual key across composition", () => {
+    // QWERTZ: the `z` key sits at the `KeyY` position and reports `VK_Z`;
+    // the composed keypress reports its character instead.
+    setupWin32InputMode();
+    triggerCsi("?", "h", [9001]);
+    dispatch(DEAD_QUOTE);
+    dispatch({ code: "KeyY", key: "z", keyCode: 90 });
+
+    dispatch({ code: "KeyY", key: "ź", keyCode: 378, type: "keypress" });
+    expect(inputSpy).toHaveBeenCalledExactlyOnceWith(
+      "\x1b[90;21;378;1;0;1_",
+      true,
+    );
+  });
+
+  it("encodes a doubled dead key with the dead key's own virtual key", () => {
+    // `'` `'` yields `'` on US-International: the keypress follows the second
+    // dead keydown with no character keydown in between.
+    setupWin32InputMode();
+    triggerCsi("?", "h", [9001]);
+    dispatch(DEAD_QUOTE);
+    dispatch({ ...DEAD_QUOTE, type: "keyup" });
+    inputSpy.mockClear();
+    dispatch(DEAD_QUOTE);
+
+    dispatch({ code: "Quote", key: "'", keyCode: 39, type: "keypress" });
+    expect(inputSpy).toHaveBeenCalledExactlyOnceWith(
+      "\x1b[222;40;39;1;0;1_",
       true,
     );
   });
@@ -379,8 +413,8 @@ describe("CustomKeyEventHandlerAddon", () => {
     dispatch(DEAD_QUOTE);
     dispatch({ code: "KeyQ", key: "q", keyCode: 81 });
 
-    dispatch({ code: "KeyQ", key: "'", type: "keypress" });
-    dispatch({ code: "KeyQ", key: "q", type: "keypress" });
+    dispatch({ code: "KeyQ", key: "'", keyCode: 39, type: "keypress" });
+    dispatch({ code: "KeyQ", key: "q", keyCode: 113, type: "keypress" });
     expect(inputSpy.mock.calls).toEqual([
       ["\x1b[81;16;39;1;0;1_", true],
       ["\x1b[81;16;113;1;0;1_", true],
@@ -393,7 +427,7 @@ describe("CustomKeyEventHandlerAddon", () => {
     triggerCsi("?", "h", [9001]);
     dispatch(DEAD_QUOTE);
     dispatch({ code: "Space", key: " ", keyCode: 32 });
-    dispatch({ code: "Space", key: "'", type: "keypress" });
+    dispatch({ code: "Space", key: "'", keyCode: 39, type: "keypress" });
 
     expect(
       dispatch({ code: "ArrowLeft", key: "ArrowLeft", keyCode: 37 }),
@@ -420,7 +454,13 @@ describe("CustomKeyEventHandlerAddon", () => {
     expect(
       dispatch({ code: "KeyE", key: "E", keyCode: 69, shiftKey: true }),
     ).toEqual({ cancelled: false, result: false });
-    dispatch({ code: "KeyE", key: "É", shiftKey: true, type: "keypress" });
+    dispatch({
+      code: "KeyE",
+      key: "É",
+      keyCode: 201,
+      shiftKey: true,
+      type: "keypress",
+    });
     expect(inputSpy.mock.calls).toEqual([
       ["\x1b[16;42;0;1;16;1_", false],
       ["\x1b[69;18;201;1;16;1_", true],
@@ -446,7 +486,7 @@ describe("CustomKeyEventHandlerAddon", () => {
     triggerCsi("?", "h", [9001]);
     dispatch(DEAD_QUOTE);
     dispatch({ code: "KeyE", key: "e", keyCode: 69 });
-    dispatch({ code: "KeyE", key: "é", type: "keypress" });
+    dispatch({ code: "KeyE", key: "é", keyCode: 233, type: "keypress" });
     inputSpy.mockClear();
 
     expect(dispatch({ code: "KeyA", key: "a", keyCode: 65 })).toEqual({
@@ -457,10 +497,9 @@ describe("CustomKeyEventHandlerAddon", () => {
       "\x1b[65;30;97;1;0;1_",
       true,
     );
-    expect(dispatch({ code: "KeyA", key: "a", type: "keypress" })).toEqual({
-      cancelled: true,
-      result: false,
-    });
+    expect(
+      dispatch({ code: "KeyA", key: "a", keyCode: 97, type: "keypress" }),
+    ).toEqual({ cancelled: true, result: false });
     expect(inputSpy).toHaveBeenCalledTimes(1);
   });
 

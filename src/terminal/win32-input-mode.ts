@@ -3,6 +3,9 @@
  * @license MIT
  *
  * Adapted from xterm.js `Win32InputMode` for the xterm.js 6.x release line.
+ * Diverges in the virtual key: upstream prefers the `code` (position) table,
+ * which assumes US QWERTY; here `keyCode` wins because Chromium on Windows
+ * reports the OS virtual key in it (Blink `keyboard_event.cc`).
  * @see https://github.com/xtermjs/xterm.js/blob/master/src/common/input/Win32InputMode.ts
  * @see https://github.com/microsoft/terminal/blob/main/doc/specs/%234999%20-%20Improved%20keyboard%20handling%20in%20Conpty.md
  */
@@ -19,6 +22,9 @@ export enum Win32ControlKeyState {
   ENHANCED_KEY = 0b100000000,
 }
 
+/** `VK_PROCESSKEY`: Chromium reports it while an IME owns the key. */
+const VK_PROCESSKEY = 0xe5;
+
 interface Win32KeyboardEvent {
   readonly altKey: boolean;
   readonly code: string;
@@ -27,6 +33,7 @@ interface Win32KeyboardEvent {
   readonly keyCode: number;
   readonly metaKey: boolean;
   readonly shiftKey: boolean;
+  readonly type: string;
 }
 
 /** Encode browser keyboard events as Win32 `KEY_EVENT_RECORD` CSI sequences. */
@@ -286,9 +293,17 @@ export class Win32InputMode {
     Escape: 0x1b,
   };
 
-  /** Format: `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`. */
-  public encode(event: Win32KeyboardEvent, isKeyDown: boolean): string {
-    const virtualKey = this.#getVirtualKeyCode(event),
+  /**
+   * Format: `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`. A non-zero `virtualKey`
+   * replaces the event's own; a composed keypress carries its deferred
+   * keydown's.
+   */
+  public encode(
+    event: Win32KeyboardEvent,
+    isKeyDown: boolean,
+    virtualKey = 0,
+  ): string {
+    const virtualKey2 = virtualKey || this.#getVirtualKeyCode(event),
       scanCode = this.#codeToScanCode[event.code] ?? 0,
       unicodeCharacter = this.#getUnicodeCharacter(event),
       keyDown = isKeyDown ? 1 : 0,
@@ -297,7 +312,7 @@ export class Win32InputMode {
     return (
       "\x1b[" +
       [
-        virtualKey,
+        virtualKey2,
         scanCode,
         unicodeCharacter,
         keyDown,
@@ -308,12 +323,23 @@ export class Win32InputMode {
     );
   }
 
+  /** The virtual key `encode` would use for the event. */
+  public virtualKey(event: Win32KeyboardEvent): number {
+    return this.#getVirtualKeyCode(event);
+  }
+
+  /**
+   * On keydown and keyup, `keyCode` is the virtual key the OS reported, so it
+   * follows the layout: Ctrl+Z on QWERTZ is `VK_Z` at the `KeyY` position,
+   * and numpad End without NumLock is `VK_END`. The position table covers a
+   * missing or IME-owned value. A keypress's `keyCode` is its character.
+   */
   #getVirtualKeyCode(event: Win32KeyboardEvent): number {
-    const mapped = this.#codeToVirtualKey[event.code];
-    if (mapped !== undefined) {
-      return mapped;
+    const { keyCode } = event;
+    if (event.type !== "keypress" && keyCode > 0 && keyCode !== VK_PROCESSKEY) {
+      return keyCode;
     }
-    return event.keyCode || 0;
+    return this.#codeToVirtualKey[event.code] ?? 0;
   }
 
   #getUnicodeCharacter(event: Win32KeyboardEvent): number {
