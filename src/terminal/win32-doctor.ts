@@ -111,6 +111,10 @@ export interface Win32PythonDiagnosis {
   /** Verified interpreter the PTY spawns when usable; failed candidate
    * otherwise. */
   readonly executable: string;
+  /** The configured value or chain entry (`python`, `py -3`) this result
+   * answers for, as typed or named — the status row shows it next to the
+   * interpreter it runs. */
+  readonly candidate: string;
   /** Version reported by the identity probe, empty when unavailable. */
   readonly version: string;
   /** Short, non-localized diagnostic detail for logs. */
@@ -121,8 +125,10 @@ export interface Win32PythonDiagnosis {
 }
 
 /**
- * Resolution order: the profile's executable first, then the launcher, then
- * the two usual names.
+ * Resolution order: the configured executable first, then the two usual
+ * names, then the launcher. Names go first so the status row can name a plain
+ * command whenever one works; `python` precedes `python3` because the
+ * python.org installer ships only `python.exe`.
  */
 export function win32PythonCandidates(
   pythonExecutable: string,
@@ -132,9 +138,9 @@ export function win32PythonCandidates(
     ret.push({ args: [], executable: pythonExecutable });
   }
   ret.push(
-    { args: ["-3"], executable: "py" },
     { args: [], executable: "python" },
     { args: [], executable: "python3" },
+    { args: ["-3"], executable: "py" },
   );
   return ret;
 }
@@ -209,9 +215,11 @@ export function isStoreStub(
 export function classifyPythonResult(
   executable: string,
   result: Win32PythonProcessResult,
+  candidate = executable,
 ): Win32PythonDiagnosis {
   if (result.timedOut ?? false) {
     return {
+      candidate,
       detail: "identity probe timed out",
       executable,
       status: "missing",
@@ -221,6 +229,7 @@ export function classifyPythonResult(
   }
   if (isStoreStub(executable, result)) {
     return {
+      candidate,
       detail: `store stub (code ${String(result.code)})`,
       executable,
       status: "store-stub",
@@ -233,6 +242,7 @@ export function classifyPythonResult(
       parsePythonVersion(`${result.stdout}\n${result.stderr}`);
   if (result.code !== 0) {
     return {
+      candidate,
       detail: `identity probe failed (code ${String(result.code)})`,
       executable,
       status: "missing",
@@ -241,6 +251,7 @@ export function classifyPythonResult(
   }
   if (!version) {
     return {
+      candidate,
       detail: `no version in output (code ${String(result.code)})`,
       executable,
       status: "missing",
@@ -249,6 +260,7 @@ export function classifyPythonResult(
   }
   if (!isPythonVersionSupported(version)) {
     return {
+      candidate,
       detail: `found ${version}`,
       executable,
       status: "too-old",
@@ -257,6 +269,7 @@ export function classifyPythonResult(
   }
   if (!identity) {
     return {
+      candidate,
       detail: "identity probe did not report sys.executable",
       executable,
       status: "missing",
@@ -264,6 +277,7 @@ export function classifyPythonResult(
     };
   }
   return {
+    candidate,
     detail: `found ${version} at ${identity.executable}`,
     executable,
     status: "ok",
@@ -280,6 +294,7 @@ export function classifyPythonResult(
 async function confirmCanonicalPython(
   spawn: Win32PythonSpawn,
   canonicalExecutable: string,
+  candidate: string,
 ): Promise<Win32PythonDiagnosis | null> {
   let result: Win32PythonProcessResult;
   try {
@@ -291,7 +306,11 @@ async function confirmCanonicalPython(
     /* @__PURE__ */ self.console.debug(error);
     return null;
   }
-  const diagnosis = classifyPythonResult(canonicalExecutable, result);
+  const diagnosis = classifyPythonResult(
+    canonicalExecutable,
+    result,
+    candidate,
+  );
   return diagnosis.status === "ok" ? diagnosis : null;
 }
 
@@ -324,6 +343,7 @@ async function diagnoseWindowsPythonCandidates(
   let firstFailure: Win32PythonDiagnosis | null = previousFailure ?? null,
     sawTransient = previousFailure?.transient ?? false;
   for (const { args, executable } of candidates) {
+    const candidate = [executable, ...args].join(" ");
     let result: Win32PythonProcessResult;
     try {
       result = await spawn(executable, [
@@ -336,6 +356,7 @@ async function diagnoseWindowsPythonCandidates(
       // A thrown probe has no exit code to reason from: transient.
       sawTransient = true;
       firstFailure ??= {
+        candidate,
         detail: String(error),
         executable,
         status: "missing",
@@ -344,13 +365,15 @@ async function diagnoseWindowsPythonCandidates(
       };
       continue;
     }
-    const diagnosis = classifyPythonResult(executable, result);
+    const diagnosis = classifyPythonResult(executable, result, candidate);
     sawTransient ||= diagnosis.transient ?? false;
     if (diagnosis.status === "ok") {
       // Shims and launchers run the interpreter as a child; the PTY must
       // spawn the interpreter itself (PID identity), so a confirmed
       // `sys.executable` becomes the spawn target. A launcher whose canonical
-      // path does not run is disqualified.
+      // path does not run is disqualified. The absolute path also keeps the
+      // spawn independent of the terminal's directory, which libuv searches
+      // before PATH for a bare name.
       const identity = parseWindowsPythonIdentity(result.stdout),
         canonicalExecutable = identity?.executable ?? "";
       if (
@@ -360,6 +383,7 @@ async function diagnoseWindowsPythonCandidates(
         const confirmed = await confirmCanonicalPython(
           spawn,
           canonicalExecutable,
+          candidate,
         );
         if (confirmed) {
           return confirmed;
@@ -371,6 +395,7 @@ async function diagnoseWindowsPythonCandidates(
       // A launcher's arguments cannot travel to the PTY spawn, so an
       // unconfirmed canonical path disqualifies the candidate.
       firstFailure ??= {
+        candidate,
         detail: `canonical path unconfirmed (${canonicalExecutable})`,
         executable,
         status: "missing",
@@ -381,6 +406,7 @@ async function diagnoseWindowsPythonCandidates(
     firstFailure ??= diagnosis;
   }
   const failure = firstFailure ?? {
+    candidate: "",
     detail: "no candidate",
     executable: "",
     status: "missing" as const,
@@ -599,11 +625,32 @@ export function applyWin32BackendVerdict(
 }
 
 const pluginDiagnoses = new WeakMap<TerminalPlugin, Win32PythonDiagnosis>(),
-  pluginDiagnosisListeners = new WeakMap<TerminalPlugin, Set<() => void>>();
+  pluginDiagnosisListeners = new WeakMap<TerminalPlugin, Set<() => void>>(),
+  pluginCheckGenerations = new WeakMap<TerminalPlugin, number>();
 
 /** Windows paths compare case-insensitively. */
 function sameExecutable(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
+}
+
+/**
+ * Settings-tab status key for a diagnosis. A discovered name maps to the
+ * interpreter it runs (`ok-resolved`); a configured path is that interpreter
+ * (`ok`). Only the message differs — the download and recheck buttons follow
+ * the diagnosis status itself.
+ */
+export function pythonStatusKey(
+  diagnosis: Win32PythonDiagnosis | null,
+  checking: boolean,
+): "checking" | "ok-resolved" | Win32PythonStatus {
+  if (checking || !diagnosis) return "checking";
+  if (
+    diagnosis.status === "ok" &&
+    !sameExecutable(diagnosis.candidate, diagnosis.executable)
+  ) {
+    return "ok-resolved";
+  }
+  return diagnosis.status;
 }
 
 function isWin32Integrated<T extends Settings.Profile>(
@@ -644,55 +691,43 @@ export function getPluginPythonDiagnosis(
 }
 
 /**
- * Runs the plugin-level Python check and aligns stored settings with its
- * result. The plugin-level `pythonExecutable`:
- *
- * - Empty: adopts the verified spawn string and marks it discovered.
- * - Discovered earlier and decisively dead: replaced by the new discovery,
- *   or cleared when nothing runs any more.
- * - User-typed: not changed.
+ * Runs the plugin-level Python check, publishes the result for the settings
+ * tab, and aligns stored backends with each profile's effective verdict.
+ * Nothing else is written: the plugin-level and profile `pythonExecutable`
+ * values are the user's, sync across devices, and stay portable, so every
+ * resolution lives in the session cache instead. A check that a newer one
+ * overtook — a recheck, or the field edited meanwhile — publishes nothing.
  */
 export async function runPluginPythonCheck(
   context: TerminalPlugin,
   spawn: Win32PythonSpawn = DEFAULT_SPAWN,
 ): Promise<Win32PythonDiagnosis> {
   const { settings } = context,
-    { pythonExecutable: configured, pythonExecutableDiscovered } =
-      settings.value;
+    { pythonExecutable: configured } = settings.value,
+    generation = (pluginCheckGenerations.get(context) ?? 0) + 1,
+    // The newest check owns the UI; a moved field has the same effect, since
+    // this result describes a value that is no longer configured.
+    stale = (pythonExecutable = settings.value.pythonExecutable): boolean =>
+      pluginCheckGenerations.get(context) !== generation ||
+      pythonExecutable !== configured;
+  pluginCheckGenerations.set(context, generation);
   // Always re-probe: the recheck button must see a Python installed moments
   // ago.
   invalidateWindowsPythonDiagnosis(configured);
   const diagnosis = await checkWindowsPython(context, configured, spawn, {
     notify: false,
   });
-  pluginDiagnoses.set(context, diagnosis);
-  const usable = diagnosis.status === "ok";
-  let adopted: string | null = null;
-  if (!configured) {
-    if (usable) adopted = diagnosis.executable;
-  } else if (
-    pythonExecutableDiscovered &&
-    (!usable || !sameExecutable(diagnosis.executable, configured))
-  ) {
-    // The chain passed over the discovered value; only its own decisive
-    // failure lets the field move.
-    const own = usable
-      ? await resolveWindowsPythonValue(spawn, configured)
-      : diagnosis;
-    if (own.status !== "ok" && !(own.transient ?? false)) {
-      adopted = usable ? diagnosis.executable : "";
-    }
-  }
   const profileValues = new Set<string>();
   for (const profile of Object.values(settings.value.profiles)) {
     if (isWin32Integrated(profile) && profile.pythonExecutable) {
       profileValues.add(profile.pythonExecutable);
     }
   }
-  const profileResolutions = new Map<string, string>(),
-    profileDiagnoses = new Map<string, Win32PythonDiagnosis>();
+  const profileDiagnoses = new Map<string, Win32PythonDiagnosis>();
   await Promise.all(
     [...profileValues].map(async (value) => {
+      // An override that stopped working must not keep its cached success.
+      invalidateWindowsPythonDiagnosis(value);
       const resolved = await resolveWindowsPythonValue(spawn, value);
       profileDiagnoses.set(
         value,
@@ -709,14 +744,12 @@ export async function runPluginPythonCheck(
       // miss again; a usable value is exactly what the chain would find.
       diagnoses.set(value, Promise.resolve(resolved));
       if (!sameExecutable(resolved.executable, value)) {
-        profileResolutions.set(value, resolved.executable);
         diagnoses.set(resolved.executable, Promise.resolve(resolved));
       }
     }),
   );
-  if (adopted) {
-    diagnoses.set(adopted, Promise.resolve(diagnosis));
-  }
+  if (stale()) return diagnosis;
+  pluginDiagnoses.set(context, diagnosis);
   const verdict = (
       profile: Settings.Profile.Typed<"integrated">,
     ): boolean | undefined => {
@@ -730,30 +763,15 @@ export async function runPluginPythonCheck(
     // `mutate` clones and re-publishes the whole settings tree, so a
     // load that changes nothing must not call it. Rehearse the result on
     // a copy first.
-    changed =
-      adopted !== null ||
-      profileResolutions.size > 0 ||
-      applyWin32BackendVerdict(
-        cloneAsWritable(settings.value.profiles, cloneDeep),
-        verdict,
-      );
+    changed = applyWin32BackendVerdict(
+      cloneAsWritable(settings.value.profiles, cloneDeep),
+      verdict,
+    );
   if (changed) {
     await settings.mutate((settingsM) => {
-      if (adopted !== null) {
-        settingsM.pythonExecutable = adopted;
-        settingsM.pythonExecutableDiscovered = adopted !== "";
-      }
-      // Verdicts are keyed by the checked value, before shim normalization.
+      // The field may have moved on between the rehearsal and the clone.
+      if (stale(settingsM.pythonExecutable)) return;
       applyWin32BackendVerdict(settingsM.profiles, verdict);
-      for (const profile of Object.values(settingsM.profiles)) {
-        if (!isWin32Integrated(profile)) {
-          continue;
-        }
-        const resolved = profileResolutions.get(profile.pythonExecutable);
-        if (resolved !== void 0) {
-          profile.pythonExecutable = resolved;
-        }
-      }
     });
     await settings.write();
   }

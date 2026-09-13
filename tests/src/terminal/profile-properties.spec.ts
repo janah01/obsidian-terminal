@@ -100,6 +100,7 @@ function diagnosis(
   overrides: Partial<Win32PythonDiagnosis> = {},
 ): Win32PythonDiagnosis {
   return {
+    candidate: "python",
     detail: "found 3.12.0 at C:\\Python312\\python.exe",
     executable: "C:\\Python312\\python.exe",
     status: "ok",
@@ -263,7 +264,7 @@ describe("prewarmConPtyProfile on Windows", () => {
     resetWin32FallbackNotice();
   });
 
-  it("boots one spare on the canonical interpreter when Python is usable", async () => {
+  it("boots one spare on the resolved interpreter when Python is usable", async () => {
     checkWindowsPythonMock.mockResolvedValue(diagnosis());
     await prewarmOnWindows(context(), integratedProfile());
     expect(ensureSpare).toHaveBeenCalledTimes(1);

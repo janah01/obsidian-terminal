@@ -52,6 +52,7 @@ import { Pseudoterminal } from "./terminal/pseudoterminal.js";
 import {
   checkWindowsPython,
   checkWindowsResizerPackages,
+  getPluginPythonDiagnosis,
   inheritedPythonExecutable,
   win32ResizerInstallCommand,
 } from "./terminal/win32-doctor.js";
@@ -1085,6 +1086,9 @@ export class ProfileModal extends Modal {
                   async () => this.postMutate(),
                   {
                     post: (component) => {
+                      // The plugin-level check never writes its result into
+                      // the field, so the detected name is shown here.
+                      const detected = getPluginPythonDiagnosis(context);
                       component.setPlaceholder(
                         deopaque(Platform.CURRENT) === "win32"
                           ? settings.value.pythonExecutable
@@ -1095,9 +1099,17 @@ export class ProfileModal extends Modal {
                                   value: settings.value.pythonExecutable,
                                 },
                               )
-                            : i18n.t(
-                                `components.profile.${profile.type}.Python-executable-placeholder-detect`,
-                              )
+                            : detected?.status === "ok"
+                              ? i18n.t(
+                                  `components.profile.${profile.type}.Python-executable-placeholder-detected`,
+                                  {
+                                    interpolation: { escapeValue: false },
+                                    value: detected.candidate,
+                                  },
+                                )
+                              : i18n.t(
+                                  `components.profile.${profile.type}.Python-executable-placeholder-detect`,
+                                )
                           : i18n.t(
                               `components.profile.${profile.type}.Python-executable-placeholder`,
                             ),

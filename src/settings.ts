@@ -30,6 +30,7 @@ import {
   PYTHON_DOWNLOADS_URL,
   getPluginPythonDiagnosis,
   onPluginPythonDiagnosis,
+  pythonStatusKey,
   runPluginPythonCheck,
 } from "./terminal/win32-doctor.js";
 
@@ -883,7 +884,6 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
             async (value) =>
               settings.mutate((settingsM) => {
                 settingsM.pythonExecutable = value;
-                settingsM.pythonExecutableDiscovered = false;
               }),
             () => {
               this.postMutate();
@@ -904,8 +904,6 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
             async () =>
               settings.mutate((settingsM) => {
                 settingsM.pythonExecutable = Settings.DEFAULT.pythonExecutable;
-                settingsM.pythonExecutableDiscovered =
-                  Settings.DEFAULT.pythonExecutableDiscovered;
               }),
             () => {
               this.postMutate();
@@ -915,10 +913,14 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
     })
       .newSetting(containerEl, (setting) => {
         const diagnosis = getPluginPythonDiagnosis(context),
+          // `status` gates the buttons; the message key also tells a
+          // discovered name apart from a configured path.
           status = rechecking || !diagnosis ? "checking" : diagnosis.status,
+          statusKey = pythonStatusKey(diagnosis, rechecking),
           i18nVariant = rechecking ? "ing" : "";
         setting.setName(i18n.t("settings.python-status")).setDesc(
-          i18n.t(`settings.python-status-${status}`, {
+          i18n.t(`settings.python-status-${statusKey}`, {
+            candidate: diagnosis?.candidate,
             executable: diagnosis?.executable,
             interpolation: { escapeValue: false },
             version: diagnosis?.version,

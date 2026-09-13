@@ -110,17 +110,11 @@ export interface Settings extends PluginContext.Settings {
   readonly preferredRenderer: Settings.PreferredRendererOption;
   readonly prewarmConPty: boolean;
   /**
-   * Plugin-level Python interpreter path, inherited by Windows integrated
-   * profiles with an empty `pythonExecutable`. Empty means auto-discover: the
-   * Python check writes the discovered path here.
+   * Plugin-level Python interpreter, inherited by Windows integrated profiles
+   * with an empty `pythonExecutable`. Empty means auto-discover on every
+   * load; the Python check never writes here, since this value syncs.
    */
   readonly pythonExecutable: string;
-  /**
-   * True while `pythonExecutable` holds a value the Python check discovered
-   * rather than one the user typed. Only a discovered value may be replaced
-   * or cleared by a later check; a user edit clears the flag.
-   */
-  readonly pythonExecutableDiscovered: boolean;
 }
 export namespace Settings {
   export type DefaultProfile = Opaque<
@@ -285,7 +279,6 @@ export namespace Settings {
     preferredRenderer: "webgl",
     prewarmConPty: true,
     pythonExecutable: "",
-    pythonExecutableDiscovered: false,
     profiles: Object.fromEntries(
       (
         [
@@ -650,7 +643,12 @@ export namespace Settings {
       readonly args: readonly string[];
       readonly environment: readonly (readonly [string, string])[];
       readonly platforms: Platforms<Pseudoterminal.SupportedPlatforms[number]>;
-      /** Windows-only: empty inherits the plugin-level Python setting. */
+      /**
+       * Python that spawns the pseudoterminal: a command name or a path valid
+       * on every platform the profile enables, since it syncs. On Windows an
+       * empty value inherits the plugin-level setting; elsewhere it disables
+       * Python.
+       */
       readonly pythonExecutable: string;
       readonly win32Backend: Win32Backend;
       /**
@@ -1685,12 +1683,6 @@ export namespace Settings {
       ),
       prewarmConPty: fixTyped(DEFAULT, unc, "prewarmConPty", ["boolean"]),
       pythonExecutable: fixTyped(DEFAULT, unc, "pythonExecutable", ["string"]),
-      pythonExecutableDiscovered: fixTyped(
-        DEFAULT,
-        unc,
-        "pythonExecutableDiscovered",
-        ["boolean"],
-      ),
       profiles: fixedProfiles,
       // defaultProfile will be validated against fixedProfiles
       defaultProfile: ((): Settings.DefaultProfile => {

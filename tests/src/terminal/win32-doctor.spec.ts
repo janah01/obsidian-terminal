@@ -8,7 +8,8 @@
  * - Microsoft Store stub detection
  * - `diagnoseWindowsPython` against a stubbed spawn
  * - `checkWindowsPython` caching, its notice budget, and its silent mode
- * - the plugin-level check: discovery persistence, demotion, re-promotion
+ * - the plugin-level check: demotion, re-promotion, stale results, and that
+ *   no Python value is ever written back
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DeepWritable } from "ts-essentials";
@@ -25,6 +26,7 @@ import {
   isStoreStub,
   parsePythonVersion,
   parseWindowsPythonIdentity,
+  pythonStatusKey,
   runPluginPythonCheck,
   win32ExitCodeKey,
   win32PythonCandidates,
@@ -77,19 +79,19 @@ describe("src/terminal/win32-doctor.ts", () => {
   });
 
   describe("win32PythonCandidates", () => {
-    it("tries the profile executable first, then the launcher and names", () => {
+    it("tries the configured executable, then the names, then the launcher", () => {
       expect(win32PythonCandidates("C:\\Python\\python.exe")).toEqual([
         { args: [], executable: "C:\\Python\\python.exe" },
-        { args: ["-3"], executable: "py" },
         { args: [], executable: "python" },
         { args: [], executable: "python3" },
+        { args: ["-3"], executable: "py" },
       ]);
     });
 
-    it("omits an empty profile executable", () => {
+    it("omits an empty configured executable", () => {
       expect(win32PythonCandidates("")[0]).toEqual({
-        args: ["-3"],
-        executable: "py",
+        args: [],
+        executable: "python",
       });
     });
   });
@@ -195,6 +197,7 @@ describe("src/terminal/win32-doctor.ts", () => {
           identityResult("C:\\Python311\\python.exe", "3.11.7"),
         ),
       ).toMatchObject({
+        candidate: "python",
         detail: "found 3.11.7 at C:\\Python311\\python.exe",
         executable: "python",
         status: "ok",
@@ -266,6 +269,7 @@ describe("src/terminal/win32-doctor.ts", () => {
       await expect(
         diagnoseWindowsPython(spawn, "C:\\Python312\\python.exe"),
       ).resolves.toEqual({
+        candidate: "C:\\Python312\\python.exe",
         detail: "found 3.12.0 at C:\\Python312\\python.exe",
         executable: "C:\\Python312\\python.exe",
         status: "ok",
@@ -288,15 +292,11 @@ describe("src/terminal/win32-doctor.ts", () => {
       await expect(diagnoseWindowsPython(spawn, "")).resolves.toMatchObject({
         // The canonical path was probed and denied, so the probed name —
         // which launches PID-preserving — stays the spawn target.
+        candidate: "python3",
         executable: "python3",
         status: "ok",
       });
-      expect(calls).toEqual([
-        "py",
-        "python",
-        "python3",
-        "C:\\Python310\\python.exe",
-      ]);
+      expect(calls).toEqual(["python", "python3", "C:\\Python310\\python.exe"]);
     });
 
     it("spawns the real interpreter behind an install-manager shim", async () => {
@@ -310,8 +310,9 @@ describe("src/terminal/win32-doctor.ts", () => {
         /*
          * A shim runs the interpreter as a child process, which breaks the
          * PTY's process identity; the canonical path that answered its own
-         * probe is the spawn target.
+         * probe is the spawn target. The name stays what the user sees.
          */
+        candidate: "python",
         executable: canonical,
         status: "ok",
         version: "3.14.7",
@@ -365,64 +366,63 @@ describe("src/terminal/win32-doctor.ts", () => {
       );
 
       expect(diagnosis).toMatchObject({
+        candidate: "py -3",
         executable: canonical,
         status: "ok",
         version: "3.12.9",
       });
-      expect(calls[1]?.[0]).toBe("py");
-      expect(calls[1]?.[1].slice(0, 2)).toEqual(["-3", "-c"]);
-      // The canonical path was probed on its own before it was returned.
-      expect(calls[2]?.[0]).toBe(canonical);
-      expect(calls[2]?.[1]).toEqual(["-c", calls[1]?.[1][2] ?? ""]);
-    });
-
-    it("keeps searching when the py -3 canonical path fails confirmation", async () => {
-      const canonical =
-          "C:\\Program Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12\\python.exe",
-        calls: string[] = [],
-        spawn: Win32PythonSpawn = async (executable) => {
-          calls.push(executable);
-          if (executable === "py") {
-            return identityResult(canonical, "3.12.9");
-          }
-          if (executable === canonical) {
-            return result({ code: 1, stderr: "Access is denied." });
-          }
-          return identityResult("C:\\Python310\\python.exe", "3.10.0");
-        };
-
-      await expect(diagnoseWindowsPython(spawn, "")).resolves.toMatchObject({
-        // The next candidate's canonical path confirms and becomes the
-        // spawn target.
-        executable: "C:\\Python310\\python.exe",
-        status: "ok",
-        version: "3.10.0",
-      });
-      expect(calls).toEqual([
+      expect(calls.map(([executable]) => executable)).toEqual([
+        "C:\\missing\\python.exe",
+        "python",
+        "python3",
         "py",
         canonical,
-        "python",
-        "C:\\Python310\\python.exe",
       ]);
+      expect(calls[3]?.[1].slice(0, 2)).toEqual(["-3", "-c"]);
+      // The canonical path was probed on its own before it was returned.
+      expect(calls[4]?.[1]).toEqual(["-c", calls[3]?.[1][2] ?? ""]);
     });
 
-    it("reports the py -3 candidate when its canonical path never runs", async () => {
-      const canonical = "C:\\Users\\test\\Python312\\python.exe",
-        spawn: Win32PythonSpawn = async (executable) => {
-          if (executable === "py") {
-            return identityResult(canonical, "3.12.9");
-          }
-          if (executable === canonical) {
-            throw new Error("EACCES");
-          }
-          return result({ code: 9009 });
-        };
+    it.each<
+      readonly [canonicalFailure: string, probe: () => Win32PythonProcessResult]
+    >([
+      [
+        "is denied",
+        (): Win32PythonProcessResult =>
+          result({ code: 1, stderr: "Access is denied." }),
+      ],
+      [
+        "never runs",
+        (): Win32PythonProcessResult => {
+          throw new Error("EACCES");
+        },
+      ],
+    ])(
+      "does not run the launcher when its canonical path %s",
+      async (_canonicalFailure, probe) => {
+        const canonical = "C:\\Users\\test\\Python312\\python.exe",
+          calls: string[] = [],
+          spawn: Win32PythonSpawn = async (executable) => {
+            calls.push(executable);
+            if (executable === "py") {
+              return identityResult(canonical, "3.12.9");
+            }
+            if (executable === canonical) {
+              return probe();
+            }
+            return result({ code: 9009 });
+          };
 
-      await expect(diagnoseWindowsPython(spawn, "")).resolves.toMatchObject({
-        executable: "py",
-        status: "missing",
-      });
-    });
+        await expect(diagnoseWindowsPython(spawn, "")).resolves.toMatchObject({
+          // The launcher's arguments cannot travel to the PTY spawn, so an
+          // unconfirmed canonical path disqualifies it and the first failure
+          // stands.
+          candidate: "python",
+          status: "store-stub",
+        });
+        expect(calls).toEqual(["python", "python3", "py", canonical]);
+      },
+    );
   });
 
   describe("inheritedPythonExecutable", () => {
@@ -437,6 +437,40 @@ describe("src/terminal/win32-doctor.ts", () => {
         ),
       ).toBe("C:\\Profile\\python.exe");
       expect(inheritedPythonExecutable("", "")).toBe("");
+    });
+  });
+
+  describe("pythonStatusKey", () => {
+    const found = classifyPythonResult(
+      "C:\\Python312\\python.exe",
+      identityResult(),
+    );
+
+    it("tells a discovered name apart from a configured path", () => {
+      expect(pythonStatusKey({ ...found, candidate: "python" }, false)).toBe(
+        "ok-resolved",
+      );
+      expect(pythonStatusKey(found, false)).toBe("ok");
+      expect(
+        pythonStatusKey(
+          { ...found, candidate: "c:\\python312\\PYTHON.EXE" },
+          false,
+        ),
+      ).toBe("ok");
+    });
+
+    it("reports checking before a result and while rechecking", () => {
+      expect(pythonStatusKey(null, false)).toBe("checking");
+      expect(pythonStatusKey(found, true)).toBe("checking");
+    });
+
+    it("passes a failure status through", () => {
+      expect(
+        pythonStatusKey(
+          classifyPythonResult("python", result({ code: 9009 })),
+          false,
+        ),
+      ).toBe("store-stub");
     });
   });
 });
@@ -699,13 +733,11 @@ describe("runPluginPythonCheck", () => {
   function reconcileContext(initial: {
     readonly defaultProfile?: string | null;
     readonly pythonExecutable?: string;
-    readonly pythonExecutableDiscovered?: boolean;
     readonly profiles?: Record<string, unknown>;
   }): {
     readonly context: TerminalPlugin;
     readonly value: {
       pythonExecutable: string;
-      pythonExecutableDiscovered: boolean;
       profiles: DeepWritable<Settings.Profiles>;
     };
     readonly write: ReturnType<typeof vi.fn>;
@@ -715,7 +747,6 @@ describe("runPluginPythonCheck", () => {
         errorNoticeTimeout: 0,
         profiles: (initial.profiles ?? {}) as DeepWritable<Settings.Profiles>,
         pythonExecutable: initial.pythonExecutable ?? "",
-        pythonExecutableDiscovered: initial.pythonExecutableDiscovered ?? false,
       },
       write = vi.fn(async () => {}),
       context = {
@@ -741,19 +772,91 @@ describe("runPluginPythonCheck", () => {
     } as DeepWritable<Settings.Profile>;
   }
 
-  it("persists a discovered interpreter into an empty plugin-level field", async () => {
+  it("leaves an empty plugin-level field empty and publishes the result", async () => {
     const { context: ctx, value, write } = reconcileContext({}),
       spawn = (async (executable) =>
-        executable === "python"
+        executable === "python" || executable === "C:\\Python312\\python.exe"
           ? identityResult()
           : result({ code: 9009 })) as Win32PythonSpawn;
     const diagnosis = await runPluginPythonCheck(ctx, spawn);
-    expect(diagnosis.status).toBe("ok");
-    // The persisted value is the exact string the terminal spawns.
-    expect(value.pythonExecutable).toBe("python");
-    expect(value.pythonExecutableDiscovered).toBe(true);
+    expect(diagnosis).toMatchObject({
+      candidate: "python",
+      executable: "C:\\Python312\\python.exe",
+      status: "ok",
+    });
+    // The field syncs across devices; the resolution stays in this session.
+    expect(value.pythonExecutable).toBe("");
     expect(getPluginPythonDiagnosis(ctx)).toBe(diagnosis);
-    expect(write).toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("publishes nothing from a check a newer one overtook", async () => {
+    vi.spyOn(console, "warn").mockImplementation(vi.fn());
+    const oldPath = "C:\\Old\\python.exe",
+      newPath = "D:\\New\\python.exe",
+      {
+        context: ctx,
+        value,
+        write,
+      } = reconcileContext({
+        profiles: { inherited: win32Conpty() },
+        pythonExecutable: oldPath,
+      }),
+      finishOld: ((probe: Win32PythonProcessResult) => void)[] = [],
+      oldProbe = new Promise<Win32PythonProcessResult>((resolve) => {
+        finishOld.push(resolve);
+      }),
+      spawn = (async (executable) => {
+        if (executable === oldPath) return oldProbe;
+        if (executable === newPath) return identityResult(newPath);
+        return result({ code: 9009 });
+      }) as Win32PythonSpawn;
+    const oldCheck = runPluginPythonCheck(ctx, spawn);
+    // The user types another interpreter and rechecks while the first probe
+    // is still waiting.
+    value.pythonExecutable = newPath;
+    const newer = await runPluginPythonCheck(ctx, spawn);
+    expect(newer.status).toBe("ok");
+    finishOld[0]?.(result({ code: 9009 }));
+    expect((await oldCheck).status).not.toBe("ok");
+    // The old failure neither replaces the status nor demotes anything.
+    expect(getPluginPythonDiagnosis(ctx)).toBe(newer);
+    expect(value.profiles["inherited"]).toMatchObject({
+      win32Backend: "conpty",
+      win32BackendAutoDemoted: false,
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("re-probes a profile override that stopped working", async () => {
+    vi.spyOn(console, "warn").mockImplementation(vi.fn());
+    const venv = "C:\\venv\\Scripts\\python.exe";
+    let installed = true;
+    const { context: ctx, value } = reconcileContext({
+        profiles: { custom: win32Conpty({ pythonExecutable: venv }) },
+      }),
+      spawn = vi.fn<Win32PythonSpawn>(async (executable) =>
+        executable === venv && installed
+          ? identityResult(venv)
+          : result({ code: 9009 }),
+      );
+    await runPluginPythonCheck(ctx, spawn);
+    expect(value.profiles["custom"]).toMatchObject({ win32Backend: "conpty" });
+    // The opener's cache holds the override's success from the first check.
+    const probes = spawn.mock.calls.length;
+    await checkWindowsPython(ctx, venv, spawn, { notify: false });
+    expect(spawn.mock.calls).toHaveLength(probes);
+
+    installed = false;
+    await runPluginPythonCheck(ctx, spawn);
+    expect(value.profiles["custom"]).toMatchObject({
+      win32Backend: "legacy",
+      win32BackendAutoDemoted: true,
+    });
+    // ...and the next open re-probes instead of reusing it.
+    const probes2 = spawn.mock.calls.length;
+    await checkWindowsPython(ctx, venv, spawn, { notify: false });
+    expect(spawn.mock.calls.length).toBeGreaterThan(probes2);
   });
 
   it("keeps a user-set field even when discovery finds another Python", async () => {
@@ -864,7 +967,8 @@ describe("runPluginPythonCheck", () => {
         win32BackendAutoDemoted: false,
       });
       expect(value.profiles["demoted"]).toMatchObject({
-        pythonExecutable: python,
+        // Re-promoted by its own value, which stays the portable name.
+        pythonExecutable: "portable-shim",
         win32Backend: "conpty",
         win32BackendAutoDemoted: false,
       });
@@ -924,22 +1028,35 @@ describe("runPluginPythonCheck", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it("rewrites a profile's shim value to the interpreter it runs", async () => {
+  it("keeps a profile's shim value and caches the interpreter it runs", async () => {
     const canonical = "C:\\Python\\pythoncore-3.14-64\\python.exe",
-      { context: ctx, value } = reconcileContext({
+      {
+        context: ctx,
+        value,
+        write,
+      } = reconcileContext({
         profiles: {
           shimmed: win32Conpty({ pythonExecutable: "python" }),
         },
       }),
-      spawn = (async (executable) =>
+      spawn = vi.fn<Win32PythonSpawn>(async (executable) =>
         executable === "python" || executable === canonical
           ? identityResult(canonical, "3.14.7")
-          : result({ code: 9009 })) as Win32PythonSpawn;
+          : result({ code: 9009 }),
+      );
     expect((await runPluginPythonCheck(ctx, spawn)).status).toBe("ok");
+    // The stored value syncs and stays portable; the opener reaches the
+    // interpreter through the session cache without another probe.
     expect(value.profiles["shimmed"]).toMatchObject({
-      pythonExecutable: canonical,
+      pythonExecutable: "python",
     });
-    expect(value.pythonExecutable).toBe(canonical);
+    expect(value.pythonExecutable).toBe("");
+    expect(write).not.toHaveBeenCalled();
+    const probes = spawn.mock.calls.length;
+    expect((await checkWindowsPython(ctx, "python", spawn)).executable).toBe(
+      canonical,
+    );
+    expect(spawn.mock.calls).toHaveLength(probes);
   });
 
   it("keeps a profile Python value when nothing resolves", async () => {
@@ -980,7 +1097,9 @@ describe("runPluginPythonCheck", () => {
     });
   });
 
-  it("rewrites only Windows-capable profiles that share a value", async () => {
+  it("never rewrites a profile's Python value", async () => {
+    // A value shared by a Windows profile and a macOS one syncs to both; a
+    // Windows path written into it would break the other platform.
     const canonical = "C:\\Python\\pythoncore-3.14-64\\python.exe",
       { context: ctx, value } = reconcileContext({
         profiles: {
@@ -996,54 +1115,8 @@ describe("runPluginPythonCheck", () => {
           ? identityResult(canonical, "3.14.7")
           : result({ code: 9009 })) as Win32PythonSpawn;
     await runPluginPythonCheck(ctx, spawn);
-    expect(value.profiles["win"]).toMatchObject({
-      pythonExecutable: canonical,
-    });
+    expect(value.profiles["win"]).toMatchObject({ pythonExecutable: "python" });
     expect(value.profiles["mac"]).toMatchObject({ pythonExecutable: "python" });
-  });
-
-  it("replaces a discovered plugin-level value that no longer runs", async () => {
-    const moved = "C:\\Python313\\python.exe",
-      { context: ctx, value } = reconcileContext({
-        pythonExecutable: "C:\\Python311\\python.exe",
-        pythonExecutableDiscovered: true,
-      }),
-      spawn = (async (executable) =>
-        executable === "python" || executable === moved
-          ? identityResult(moved, "3.13.2")
-          : result({ code: 9009 })) as Win32PythonSpawn;
-    expect((await runPluginPythonCheck(ctx, spawn)).status).toBe("ok");
-    expect(value.pythonExecutable).toBe(moved);
-    expect(value.pythonExecutableDiscovered).toBe(true);
-  });
-
-  it("keeps a discovered value whose probe merely timed out", async () => {
-    vi.spyOn(console, "debug").mockImplementation(vi.fn());
-    const { context: ctx, value } = reconcileContext({
-        pythonExecutable: "C:\\Python311\\python.exe",
-        pythonExecutableDiscovered: true,
-      }),
-      spawn = (async (executable) => {
-        if (executable === "C:\\Python311\\python.exe")
-          return result({ code: null, timedOut: true });
-        return executable === "python"
-          ? identityResult()
-          : result({ code: 9009 });
-      }) as Win32PythonSpawn;
-    expect((await runPluginPythonCheck(ctx, spawn)).status).toBe("ok");
-    expect(value.pythonExecutable).toBe("C:\\Python311\\python.exe");
-  });
-
-  it("clears a discovered value when no Python runs any more", async () => {
-    vi.spyOn(console, "warn").mockImplementation(vi.fn());
-    const { context: ctx, value } = reconcileContext({
-        pythonExecutable: "C:\\Python311\\python.exe",
-        pythonExecutableDiscovered: true,
-      }),
-      spawn = (async () => result({ code: 9009 })) as Win32PythonSpawn;
-    expect((await runPluginPythonCheck(ctx, spawn)).status).not.toBe("ok");
-    expect(value.pythonExecutable).toBe("");
-    expect(value.pythonExecutableDiscovered).toBe(false);
   });
 
   it("keeps a user-typed value that no longer runs", async () => {
@@ -1056,13 +1129,14 @@ describe("runPluginPythonCheck", () => {
     expect(value.pythonExecutable).toBe("C:\\user\\python.exe");
   });
 
-  it("seeds the session cache under the adopted path", async () => {
+  it("seeds the session cache under the configured value", async () => {
     const spawn = vi.fn<Win32PythonSpawn>(async () => identityResult()),
       { context: ctx, value } = reconcileContext({});
     await runPluginPythonCheck(ctx, spawn);
     const probes = spawn.mock.calls.length;
-    // The opener keys its check by the stored value; the first open after
-    // discovery must not boot the interpreter again.
+    // The opener keys its check by the configured value — empty here — so
+    // the first open after discovery must not boot the interpreter again.
+    expect(value.pythonExecutable).toBe("");
     await checkWindowsPython(ctx, value.pythonExecutable, spawn);
     expect(spawn.mock.calls).toHaveLength(probes);
   });

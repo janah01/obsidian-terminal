@@ -161,6 +161,17 @@ describe("src/settings-data.ts", () => {
     );
   });
 
+  it("drops the retired discovery marker", () => {
+    // The field holds only what the user typed, so nothing marks a value as
+    // discovered any more.
+    expect(
+      Settings.fix({
+        pythonExecutable: "python",
+        pythonExecutableDiscovered: true,
+      }).value,
+    ).not.toHaveProperty("pythonExecutableDiscovered");
+  });
+
   it("records backend demotion provenance on integrated profiles", () => {
     expect(Settings.Profile.DEFAULTS.integrated.win32BackendAutoDemoted).toBe(
       false,
