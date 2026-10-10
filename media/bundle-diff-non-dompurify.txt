@@ -1,0 +1,24 @@
+=== node_modules/.bun/@polyipseity+obsidian-plugin-library@file+vendor+obsidian-plugin-library+58f7b36d17d53eea/node_modules/@polyipseity/obsidian-plugin-library/dist/index.js
+  -   return purify(root2).sanitize(html3, config);
+  +   return purify_default(root2).sanitize(html3, config);
+=== README.md
+  - var README_default = PLazy.from(() => (0, import_compress_lz_string104.decompressFromBase64)(`MQAgKgpgTgtglgOwIYBsQDMD2UQHkBGAznACZxIIgDaAhFVBChEoRALoAUAFgC48AO…
+  + var README_default = PLazy.from(() => (0, import_compress_lz_string104.decompressFromBase64)(`MQAgKgpgTgtglgOwIYBsQDMD2UQHkBGAznACZxIIgDaAhFVBChEoRALoAUAFgC48AO…
+=== src/terminal/pseudoterminal.ts
+  -   const apply3 = (action2) => {
+  +   const apply4 = (action2) => {
+=== src/terminal/pseudoterminal.ts
+  -         apply3("resume");
+  +         apply4("resume");
+=== src/terminal/pseudoterminal.ts
+  -         apply3("pause");
+  +         apply4("pause");
+=== src/terminal/pseudoterminal.ts
+  -           apply3("resume");
+  +           apply4("resume");
+=== src/terminal/pseudoterminal.ts
+  -             [style]: [apply3, undo]
+  +             [style]: [apply4, undo]
+=== src/terminal/pseudoterminal.ts
+  -           return `${CONTROL_SEQUENCE_INTRODUCER}${String(apply3)}m${str}${CONTROL_SEQUENCE_INTRODUCER}${String(undo)}m${ansi_escape_sequences_default.styles(sty…
+  +           return `${CONTROL_SEQUENCE_INTRODUCER}${String(apply4)}m${str}${CONTROL_SEQUENCE_INTRODUCER}${String(undo)}m${ansi_escape_sequences_default.styles(sty…

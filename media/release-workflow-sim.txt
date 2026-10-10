@@ -1,0 +1,17 @@
+### 1. Tag matches manifest.json (GITHUB_REF_NAME=3.28.0)
+true
+exit=0
+### 2. Tag does not match manifest.json (GITHUB_REF_NAME=3.29.0, manifest 3.28.0)
+false
+exit=1
+### 3. No release yet -> draft created, titled with the tag, notes from CHANGELOG
+exit=0
+  gh release view 3.28.0
+  gh release create 3.28.0 main.js manifest.json styles.css --draft --title 3.28.0 --notes-file -
+  notes (stdin): 16 non-empty lines, first: ### Minor Changes
+  notes last: - bdd09f5: Remove vulnerable AnyIO and unused asynchronous test dependencies while preserv
+### 4. Release exists (made by hand, untitled) -> titled, its 3 files replaced
+exit=0
+  gh release view 3.28.0
+  gh release edit 3.28.0 --title 3.28.0
+  gh release upload 3.28.0 main.js manifest.json styles.css --clobber
