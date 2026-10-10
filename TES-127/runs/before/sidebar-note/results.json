@@ -1,0 +1,133 @@
+{
+  "label": "before",
+  "scenario": "sidebar-note",
+  "config": {
+    "behavior": "replaceTab",
+    "pinned": false,
+    "sidebarNote": true
+  },
+  "steps": [
+    {
+      "click": 1,
+      "target": "Notes/Target.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": false,
+      "agent": {
+        "pid": 9308,
+        "alive": false,
+        "error": "ENOENT"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND",
+      "scrollbackUnchanged": false,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "markdown",
+            "file": "Notes/Target.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": false,
+        "terminalLeafNowShows": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": false,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "activeFile": "Notes/Target.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    }
+  ],
+  "verdict": {
+    "clicks": 1,
+    "plannedClicks": 1,
+    "allOpenedCorrectFile": true,
+    "terminalNeverReplaced": false,
+    "agentAliveAfterEveryClick": false,
+    "scrollbackUnchangedAfterEveryClick": false,
+    "focusInOpenedNoteEveryClick": true,
+    "openedNoteVisibleEveryClick": true,
+    "promptRestored": false,
+    "pass": false
+  },
+  "modalsOpenBeforeClicks": 0,
+  "baseline": {
+    "scrollbackSha": "60f388197832",
+    "agent": {
+      "pid": 9308,
+      "alive": true,
+      "state": "S",
+      "ppid": 9307,
+      "tty": "/dev/pts/0"
+    },
+    "processTree": "  PID  PPID STAT TT       COMMAND\n 9306  9278 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 9307  9306 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 9308  9307 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+    "state": {
+      "leaves": [
+        {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        }
+      ],
+      "terminalLeafAttached": true,
+      "terminalLeafStillHasTerminalView": true,
+      "terminalLeafNowShows": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "terminalViewMounted": true,
+      "activeLeaf": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "activeFile": null,
+      "focusInActiveLeaf": true,
+      "focusIsEditor": false,
+      "focusElement": "textarea.xterm-helper-textarea",
+      "activeMode": null,
+      "activeLeafVisible": true,
+      "activeLeafRoot": "main/popout"
+    }
+  },
+  "agentAfterSettle": {
+    "pid": 9308,
+    "alive": false,
+    "error": "ENOENT"
+  },
+  "processTreeAfterSettle": "  PID  PPID STAT TT       COMMAND",
+  "promptRestored": false,
+  "finalAgent": {
+    "pid": 9308,
+    "alive": false,
+    "error": "ENOENT"
+  }
+}

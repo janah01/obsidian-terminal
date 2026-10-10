@@ -1,0 +1,3 @@
+{"scenario": "tab-unpinned", "mostRecentLeafAtClick": {"isTerminalLeaf": true, "type": "terminal:terminal"}}
+{"scenario": "split", "mostRecentLeafAtClick": {"isTerminalLeaf": true, "type": "terminal:terminal"}}
+{"scenario": "popout", "mostRecentLeafAtClick": {"isTerminalLeaf": true, "type": "terminal:terminal"}}

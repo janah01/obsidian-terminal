@@ -1,0 +1,685 @@
+{
+  "label": "after",
+  "scenario": "ten-clicks",
+  "config": {
+    "behavior": "replaceTab",
+    "pinned": false
+  },
+  "steps": [
+    {
+      "click": 1,
+      "target": "Notes/Target.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Notes/Target.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Notes/Target.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 2,
+      "target": "Nested/a/b/c/Deep.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Nested/a/b/c/Deep.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Nested/a/b/c/Deep.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Nested/a/b/c/Deep.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 3,
+      "target": "Unicode/Café-naïve.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Unicode/Café-naïve.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Unicode/Café-naïve.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Unicode/Café-naïve.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 4,
+      "target": "Notes/Target.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Notes/Target.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Notes/Target.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 5,
+      "target": "Nested/a/b/c/Deep.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Nested/a/b/c/Deep.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Nested/a/b/c/Deep.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Nested/a/b/c/Deep.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 6,
+      "target": "Unicode/Café-naïve.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Unicode/Café-naïve.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Unicode/Café-naïve.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Unicode/Café-naïve.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 7,
+      "target": "Notes/Target.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Notes/Target.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Notes/Target.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 8,
+      "target": "Nested/a/b/c/Deep.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Nested/a/b/c/Deep.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Nested/a/b/c/Deep.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Nested/a/b/c/Deep.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 9,
+      "target": "Unicode/Café-naïve.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Unicode/Café-naïve.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Unicode/Café-naïve.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Unicode/Café-naïve.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    },
+    {
+      "click": 10,
+      "target": "Notes/Target.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8206,
+        "alive": true,
+        "state": "S",
+        "ppid": 8205,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Notes/Target.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Notes/Target.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    }
+  ],
+  "verdict": {
+    "clicks": 10,
+    "plannedClicks": 10,
+    "allOpenedCorrectFile": true,
+    "terminalNeverReplaced": true,
+    "agentAliveAfterEveryClick": true,
+    "scrollbackUnchangedAfterEveryClick": true,
+    "focusInOpenedNoteEveryClick": true,
+    "openedNoteVisibleEveryClick": true,
+    "promptRestored": true,
+    "pass": true
+  },
+  "modalsOpenBeforeClicks": 0,
+  "baseline": {
+    "scrollbackSha": "156ecded718d",
+    "agent": {
+      "pid": 8206,
+      "alive": true,
+      "state": "S",
+      "ppid": 8205,
+      "tty": "/dev/pts/0"
+    },
+    "processTree": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+    "state": {
+      "leaves": [
+        {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        }
+      ],
+      "terminalLeafAttached": true,
+      "terminalLeafStillHasTerminalView": true,
+      "terminalLeafNowShows": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "terminalViewMounted": true,
+      "activeLeaf": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "activeFile": null,
+      "focusInActiveLeaf": true,
+      "focusIsEditor": false,
+      "focusElement": "textarea.xterm-helper-textarea",
+      "activeMode": null,
+      "activeLeafVisible": true,
+      "activeLeafRoot": "main/popout"
+    }
+  },
+  "agentAfterSettle": {
+    "pid": 8206,
+    "alive": true,
+    "state": "S",
+    "ppid": 8205,
+    "tty": "/dev/pts/0"
+  },
+  "processTreeAfterSettle": "  PID  PPID STAT TT       COMMAND\n 8204  8171 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8205  8204 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8206  8205 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+  "promptRestored": true,
+  "finalAgent": {
+    "pid": 8206,
+    "alive": true,
+    "state": "S",
+    "ppid": 8205,
+    "tty": "/dev/pts/0"
+  }
+}

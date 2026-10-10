@@ -1,0 +1,145 @@
+{
+  "label": "after",
+  "scenario": "tab-pinned",
+  "config": {
+    "behavior": "replaceTab",
+    "pinned": true
+  },
+  "steps": [
+    {
+      "click": 1,
+      "target": "Notes/Target.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": true,
+      "agent": {
+        "pid": 8359,
+        "alive": true,
+        "state": "S",
+        "ppid": 8357,
+        "tty": "/dev/pts/0"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND\n 8356  8319 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8357  8356 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8359  8357 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+      "scrollbackUnchanged": true,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "terminal:terminal",
+            "file": null,
+            "pinned": true,
+            "window": "main",
+            "isTerminalLeaf": true
+          },
+          {
+            "type": "markdown",
+            "file": "Notes/Target.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": true,
+        "terminalLeafNowShows": {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": true,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": true,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        "activeFile": "Notes/Target.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    }
+  ],
+  "verdict": {
+    "clicks": 1,
+    "plannedClicks": 1,
+    "allOpenedCorrectFile": true,
+    "terminalNeverReplaced": true,
+    "agentAliveAfterEveryClick": true,
+    "scrollbackUnchangedAfterEveryClick": true,
+    "focusInOpenedNoteEveryClick": true,
+    "openedNoteVisibleEveryClick": true,
+    "promptRestored": true,
+    "pass": true
+  },
+  "modalsOpenBeforeClicks": 0,
+  "baseline": {
+    "scrollbackSha": "73587df4b8de",
+    "agent": {
+      "pid": 8359,
+      "alive": true,
+      "state": "S",
+      "ppid": 8357,
+      "tty": "/dev/pts/0"
+    },
+    "processTree": "  PID  PPID STAT TT       COMMAND\n 8356  8319 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8357  8356 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8359  8357 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+    "state": {
+      "leaves": [
+        {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": true,
+          "window": "main",
+          "isTerminalLeaf": true
+        }
+      ],
+      "terminalLeafAttached": true,
+      "terminalLeafStillHasTerminalView": true,
+      "terminalLeafNowShows": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": true,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "terminalViewMounted": true,
+      "activeLeaf": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": true,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "activeFile": null,
+      "focusInActiveLeaf": true,
+      "focusIsEditor": false,
+      "focusElement": "textarea.xterm-helper-textarea",
+      "activeMode": null,
+      "activeLeafVisible": true,
+      "activeLeafRoot": "main/popout"
+    }
+  },
+  "agentAfterSettle": {
+    "pid": 8359,
+    "alive": true,
+    "state": "S",
+    "ppid": 8357,
+    "tty": "/dev/pts/0"
+  },
+  "processTreeAfterSettle": "  PID  PPID STAT TT       COMMAND\n 8356  8319 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8357  8356 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8359  8357 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+  "promptRestored": true,
+  "finalAgent": {
+    "pid": 8359,
+    "alive": true,
+    "state": "S",
+    "ppid": 8357,
+    "tty": "/dev/pts/0"
+  }
+}

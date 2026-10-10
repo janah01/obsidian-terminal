@@ -1,0 +1,14 @@
+zsh /home/claude/e2e/run/vault # python3 /home/claude/e2e/fake-ag
+ent.py
+* agent session 4f6df8  pid 7789  (stand-in for Claude Code)
+
+⏺ Updated Notes/Target.md
+⏺ Read (Projects/Folder With Spaces/Meeting notes 2026.md)
+⏺ Read (Quotes/Don't panic.md)
+⏺ Wrote "Quoted/wrapped-in-quotes.md"
+⏺ Read (Unicode/日本語 ノート.md)
+⏺ Read Unicode/Café-naïve.md
+⏺ Read Nested/a/b/c/Deep.md
+
+Done. 7 files touched. Ask me anything.
+agent[4f6df8]> 

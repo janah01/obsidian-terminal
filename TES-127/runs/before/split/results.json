@@ -1,0 +1,147 @@
+{
+  "label": "before",
+  "scenario": "split",
+  "config": {
+    "behavior": "newVerticalSplit",
+    "pinned": false,
+    "openFirst": "Welcome.md"
+  },
+  "steps": [
+    {
+      "click": 1,
+      "target": "Notes/Target.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": false,
+      "agent": {
+        "pid": 8769,
+        "alive": false,
+        "error": "ENOENT"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND",
+      "scrollbackUnchanged": false,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "markdown",
+            "file": "Welcome.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": false
+          },
+          {
+            "type": "markdown",
+            "file": "Notes/Target.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": false,
+        "terminalLeafNowShows": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": false,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Notes/Target.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "activeFile": "Notes/Target.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    }
+  ],
+  "verdict": {
+    "clicks": 1,
+    "plannedClicks": 1,
+    "allOpenedCorrectFile": true,
+    "terminalNeverReplaced": false,
+    "agentAliveAfterEveryClick": false,
+    "scrollbackUnchangedAfterEveryClick": false,
+    "focusInOpenedNoteEveryClick": true,
+    "openedNoteVisibleEveryClick": true,
+    "promptRestored": false,
+    "pass": false
+  },
+  "modalsOpenBeforeClicks": 0,
+  "baseline": {
+    "scrollbackSha": "d6a306990011",
+    "agent": {
+      "pid": 8769,
+      "alive": true,
+      "state": "S",
+      "ppid": 8767,
+      "tty": "/dev/pts/0"
+    },
+    "processTree": "  PID  PPID STAT TT       COMMAND\n 8766  8720 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 8767  8766 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 8769  8767 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+    "state": {
+      "leaves": [
+        {
+          "type": "markdown",
+          "file": "Welcome.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": false
+        },
+        {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        }
+      ],
+      "terminalLeafAttached": true,
+      "terminalLeafStillHasTerminalView": true,
+      "terminalLeafNowShows": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "terminalViewMounted": true,
+      "activeLeaf": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "activeFile": null,
+      "focusInActiveLeaf": true,
+      "focusIsEditor": false,
+      "focusElement": "textarea.xterm-helper-textarea",
+      "activeMode": null,
+      "activeLeafVisible": true,
+      "activeLeafRoot": "main/popout"
+    }
+  },
+  "agentAfterSettle": {
+    "pid": 8769,
+    "alive": false,
+    "error": "ENOENT"
+  },
+  "processTreeAfterSettle": "  PID  PPID STAT TT       COMMAND",
+  "promptRestored": false,
+  "finalAgent": {
+    "pid": 8769,
+    "alive": false,
+    "error": "ENOENT"
+  }
+}

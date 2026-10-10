@@ -1,0 +1,132 @@
+{
+  "label": "before",
+  "scenario": "special",
+  "config": {
+    "behavior": "replaceTab",
+    "pinned": false
+  },
+  "steps": [
+    {
+      "click": 1,
+      "target": "Projects/Folder With Spaces/Meeting notes 2026.md",
+      "hovered": true,
+      "openedCorrectFile": true,
+      "terminalKeptItsView": false,
+      "agent": {
+        "pid": 9034,
+        "alive": false,
+        "error": "ENOENT"
+      },
+      "processTree": "  PID  PPID STAT TT       COMMAND",
+      "scrollbackUnchanged": false,
+      "focusInOpenedNote": true,
+      "openedNoteVisible": true,
+      "state": {
+        "leaves": [
+          {
+            "type": "markdown",
+            "file": "Projects/Folder With Spaces/Meeting notes 2026.md",
+            "pinned": false,
+            "window": "main",
+            "isTerminalLeaf": true
+          }
+        ],
+        "terminalLeafAttached": true,
+        "terminalLeafStillHasTerminalView": false,
+        "terminalLeafNowShows": {
+          "type": "markdown",
+          "file": "Projects/Folder With Spaces/Meeting notes 2026.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "terminalViewMounted": false,
+        "activeLeaf": {
+          "type": "markdown",
+          "file": "Projects/Folder With Spaces/Meeting notes 2026.md",
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        },
+        "activeFile": "Projects/Folder With Spaces/Meeting notes 2026.md",
+        "focusInActiveLeaf": true,
+        "focusIsEditor": true,
+        "focusElement": "div.cm-content.cm-lineWrapping",
+        "activeMode": "source",
+        "activeLeafVisible": true,
+        "activeLeafRoot": "main/popout"
+      }
+    }
+  ],
+  "verdict": {
+    "clicks": 1,
+    "plannedClicks": 6,
+    "allOpenedCorrectFile": false,
+    "terminalNeverReplaced": false,
+    "agentAliveAfterEveryClick": false,
+    "scrollbackUnchangedAfterEveryClick": false,
+    "focusInOpenedNoteEveryClick": false,
+    "openedNoteVisibleEveryClick": false,
+    "promptRestored": false,
+    "pass": false
+  },
+  "modalsOpenBeforeClicks": 0,
+  "baseline": {
+    "scrollbackSha": "a58d50abd403",
+    "agent": {
+      "pid": 9034,
+      "alive": true,
+      "state": "S",
+      "ppid": 9033,
+      "tty": "/dev/pts/0"
+    },
+    "processTree": "  PID  PPID STAT TT       COMMAND\n 9032  9003 S<   ?             |       |       \\_ python3 -c <unix_pseudoterminal.py host>\n 9033  9032 S<s  pts/0         |       |           \\_ /bin/zsh --login\n 9034  9033 S<+  pts/0         |       |               \\_ python3 /home/claude/e2e/fake-agent.py",
+    "state": {
+      "leaves": [
+        {
+          "type": "terminal:terminal",
+          "file": null,
+          "pinned": false,
+          "window": "main",
+          "isTerminalLeaf": true
+        }
+      ],
+      "terminalLeafAttached": true,
+      "terminalLeafStillHasTerminalView": true,
+      "terminalLeafNowShows": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "terminalViewMounted": true,
+      "activeLeaf": {
+        "type": "terminal:terminal",
+        "file": null,
+        "pinned": false,
+        "window": "main",
+        "isTerminalLeaf": true
+      },
+      "activeFile": null,
+      "focusInActiveLeaf": true,
+      "focusIsEditor": false,
+      "focusElement": "textarea.xterm-helper-textarea",
+      "activeMode": null,
+      "activeLeafVisible": true,
+      "activeLeafRoot": "main/popout"
+    }
+  },
+  "agentAfterSettle": {
+    "pid": 9034,
+    "alive": false,
+    "error": "ENOENT"
+  },
+  "processTreeAfterSettle": "  PID  PPID STAT TT       COMMAND",
+  "promptRestored": false,
+  "finalAgent": {
+    "pid": 9034,
+    "alive": false,
+    "error": "ENOENT"
+  }
+}
