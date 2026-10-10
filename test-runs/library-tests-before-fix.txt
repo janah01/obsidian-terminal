@@ -1,0 +1,64 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v4.1.10 /home/claude/obsidian-terminal/vendor/obsidian-plugin-library
+
+ ❯ tests/src/obsidian.spec.ts (61 tests | 2 failed | 58 skipped) 27ms
+       × keeps the caret of a focused input when its setting refreshes 20ms
+       × keeps the caret of a focused textarea mid-document 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/src/obsidian.spec.ts > obsidian.ts — Obsidian API utilities > UpdatableUI.newSetting refresh of a text field > keeps the caret of a focused input when its setting refreshes
+AssertionError: expected [ 8, 8 ] to deeply equal [ 1, 1 ]
+
+- Expected
++ Received
+
+  [
+-   1,
+-   1,
++   8,
++   8,
+  ]
+
+ ❯ tests/src/obsidian.spec.ts:535:58
+    533|       expect(stored).toBe("upython3");
+    534|       expect(input.value).toBe("upython3");
+    535|       expect([input.selectionStart, input.selectionEnd]).toEqual([1, 1…
+       |                                                          ^
+    536|     });
+    537|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/src/obsidian.spec.ts > obsidian.ts — Obsidian API utilities > UpdatableUI.newSetting refresh of a text field > keeps the caret of a focused textarea mid-document
+AssertionError: expected [ 32, 32 ] to deeply equal [ 24, 24 ]
+
+- Expected
++ Received
+
+  [
+-   24,
+-   24,
++   32,
++   32,
+  ]
+
+ ❯ tests/src/obsidian.spec.ts:566:64
+    564|
+    565|       expect(textArea.value).toBe('{\n  "fontFamily": "monoXspace"\n}'…
+    566|       expect([textArea.selectionStart, textArea.selectionEnd]).toEqual…
+       |                                                                ^
+    567|         caret + 1,
+    568|         caret + 1,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed | 58 skipped (61)
+Type Errors  no errors
+   Start at  12:48:41
+   Duration  1.02s (transform 334ms, setup 38ms, import 444ms, tests 27ms, environment 329ms)
+

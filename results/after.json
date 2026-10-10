@@ -1,0 +1,394 @@
+[
+  {
+    "id": "S1",
+    "field": "Settings ▸ Notice timeout (s)",
+    "action": "caret at start, type 12",
+    "inputType": "number",
+    "original": "5",
+    "expectedValue": "125",
+    "actualValue": "125",
+    "expectedCaret": 2,
+    "actualCaret": "n/a (number input)",
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "S2",
+    "field": "Settings ▸ Error notice timeout (s)",
+    "action": "caret at start, type 12",
+    "inputType": "number",
+    "original": "0",
+    "expectedValue": "120",
+    "actualValue": "120",
+    "expectedCaret": 2,
+    "actualCaret": "n/a (number input)",
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "T1",
+    "field": "Terminal options ▸ Font family",
+    "action": "value monospace, caret after 'mono', type XY",
+    "inputType": "text",
+    "original": "monospace",
+    "expectedValue": "monoXYspace",
+    "actualValue": "monoXYspace",
+    "expectedCaret": 6,
+    "actualCaret": [
+      6,
+      6
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "T2",
+    "field": "Terminal options ▸ Font size (number)",
+    "action": "value 14, caret after '1', type 23",
+    "inputType": "number",
+    "original": "14",
+    "expectedValue": "1234",
+    "actualValue": "1234",
+    "expectedCaret": 3,
+    "actualCaret": "n/a (number input)",
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "T3",
+    "field": "Terminal options ▸ Font weight",
+    "action": "value 400, caret after '4', type 12",
+    "inputType": "text",
+    "original": "400",
+    "expectedValue": "41200",
+    "actualValue": "41200",
+    "expectedCaret": 3,
+    "actualCaret": [
+      3,
+      3
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "T4",
+    "field": "Terminal options ▸ Bold font weight",
+    "action": "value 700, caret after '7', type 12",
+    "inputType": "text",
+    "original": "700",
+    "expectedValue": "71200",
+    "actualValue": "71200",
+    "expectedCaret": 3,
+    "actualCaret": [
+      3,
+      3
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "T5",
+    "field": "Terminal options ▸ Data (raw JSON)",
+    "action": "caret inside the fontFamily string, 4 chars in, type ZW (stays valid JSON)",
+    "inputType": "textarea",
+    "original": "{\n  \"documentOverride\": null,\n  \"fontFamily\": \"monospace\"\n}",
+    "expectedValue": "{\n  \"documentOverride\": null,\n  \"fontFamily\": \"monoZWspace\"\n}",
+    "actualValue": "{\n  \"documentOverride\": null,\n  \"fontFamily\": \"monoZWspace\"\n}",
+    "expectedCaret": 53,
+    "actualCaret": [
+      53,
+      53
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "T7",
+    "field": "Terminal options ▸ Font family",
+    "action": "dedicated field reflects raw JSON edit",
+    "expectedValue": "monoZWspace",
+    "actualValue": "monoZWspace",
+    "pass": true
+  },
+  {
+    "id": "T6",
+    "field": "Terminal options ▸ Data (raw JSON)",
+    "action": "type \" (invalid JSON), then Backspace (valid again)",
+    "inputType": "textarea",
+    "original": "{\n  \"documentOverride\": null,\n  \"fontFamily\": \"monospace\"\n}",
+    "expectedValue": "{\n  \"documentOverride\": null,\n  \"fontFamily\": \"monospace\"\n}",
+    "actualValue": "{\n  \"documentOverride\": null,\n  \"fontFamily\": \"monospace\"\n}",
+    "expectedCaret": 51,
+    "actualCaret": [
+      51,
+      51
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "T8",
+    "field": "Terminal options ▸ Font family ⇄ Data",
+    "action": "type '0xProto Nerd Font Mono', monospace in field; JSON keeps it verbatim",
+    "expectedValue": "\"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"",
+    "actualValue": "\"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"",
+    "pass": true
+  },
+  {
+    "id": "A2",
+    "field": "All settings ▸ Data (raw JSON, scrolled)",
+    "action": "caret before the noticeTimeout digits, type 9 then 8 (each keystroke valid)",
+    "inputType": "textarea",
+    "original": "{\n  \"addToCommand\": true,\n  \"addToContextMenu\": true,\n  \"createInstanceNearExistingOnes\": true,\n  \"errorNoticeTimeout\": 120,\n  \"exposeInternalModules\": true,\n  \"focusOnNewInstance\": true,\n  \"hideStatusBar\": \"focused\",\n  \"showTerminalTabPrefix\": false,\n  \"interceptKeysWhenFocused\": true,\n  \"interceptLogging\": true,\n  \"keymappings\": [\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"\\r\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Enter\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": true\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": -1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageUp\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": 1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageDown\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToTop\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Home\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToBottom\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"End\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"b\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"f\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"01\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"05\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"17\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"15\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"d\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Delete\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    }\n  ],\n  \"language\": \"\",\n  \"macOSOptionKeyPassthrough\": true,\n  \"rightClickAction\": \"copyPaste\",\n  \"newInstanceBehavior\": \"newHorizontalSplit\",\n  \"noticeTimeout\": 125,\n  \"openChangelogOnUpdate\": true,\n  \"pinNewInstance\": true,\n  \"preferredRenderer\": \"webgl\",\n  \"prewarmConPty\": true,\n  \"pythonExecutable\": \"\",\n  \"profiles\": {\n    \"darwinExternalDefault\": {\n      \"args\": [\n        \"\\\"$PWD\\\"\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/System/Applications/Utilities/Terminal.app/Contents/macOS/Terminal\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"darwinIntegratedDefault\": {\n      \"args\": [\n        \"--login\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/bin/zsh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"developerConsole\": {\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"developerConsole\"\n    },\n    \"linuxExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"xterm\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"linuxIntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"/bin/sh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"win32ExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"win32IntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"pythonExecutable\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    }\n  },\n  \"defaultProfile\": null,\n  \"terminalOptions\": {\n    \"documentOverride\": null,\n    \"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"\n  }\n}",
+    "expectedValue": "{\n  \"addToCommand\": true,\n  \"addToContextMenu\": true,\n  \"createInstanceNearExistingOnes\": true,\n  \"errorNoticeTimeout\": 120,\n  \"exposeInternalModules\": true,\n  \"focusOnNewInstance\": true,\n  \"hideStatusBar\": \"focused\",\n  \"showTerminalTabPrefix\": false,\n  \"interceptKeysWhenFocused\": true,\n  \"interceptLogging\": true,\n  \"keymappings\": [\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"\\r\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Enter\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": true\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": -1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageUp\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": 1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageDown\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToTop\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Home\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToBottom\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"End\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"b\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"f\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"01\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"05\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"17\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"15\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"d\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Delete\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    }\n  ],\n  \"language\": \"\",\n  \"macOSOptionKeyPassthrough\": true,\n  \"rightClickAction\": \"copyPaste\",\n  \"newInstanceBehavior\": \"newHorizontalSplit\",\n  \"noticeTimeout\": 98125,\n  \"openChangelogOnUpdate\": true,\n  \"pinNewInstance\": true,\n  \"preferredRenderer\": \"webgl\",\n  \"prewarmConPty\": true,\n  \"pythonExecutable\": \"\",\n  \"profiles\": {\n    \"darwinExternalDefault\": {\n      \"args\": [\n        \"\\\"$PWD\\\"\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/System/Applications/Utilities/Terminal.app/Contents/macOS/Terminal\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"darwinIntegratedDefault\": {\n      \"args\": [\n        \"--login\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/bin/zsh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"developerConsole\": {\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"developerConsole\"\n    },\n    \"linuxExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"xterm\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"linuxIntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"/bin/sh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"win32ExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"win32IntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"pythonExecutable\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    }\n  },\n  \"defaultProfile\": null,\n  \"terminalOptions\": {\n    \"documentOverride\": null,\n    \"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"\n  }\n}",
+    "actualValue": "{\n  \"addToCommand\": true,\n  \"addToContextMenu\": true,\n  \"createInstanceNearExistingOnes\": true,\n  \"errorNoticeTimeout\": 120,\n  \"exposeInternalModules\": true,\n  \"focusOnNewInstance\": true,\n  \"hideStatusBar\": \"focused\",\n  \"showTerminalTabPrefix\": false,\n  \"interceptKeysWhenFocused\": true,\n  \"interceptLogging\": true,\n  \"keymappings\": [\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"\\r\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Enter\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": true\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": -1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageUp\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": 1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageDown\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToTop\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Home\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToBottom\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"End\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"b\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"f\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"01\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"05\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"17\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"15\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"d\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Delete\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    }\n  ],\n  \"language\": \"\",\n  \"macOSOptionKeyPassthrough\": true,\n  \"rightClickAction\": \"copyPaste\",\n  \"newInstanceBehavior\": \"newHorizontalSplit\",\n  \"noticeTimeout\": 98125,\n  \"openChangelogOnUpdate\": true,\n  \"pinNewInstance\": true,\n  \"preferredRenderer\": \"webgl\",\n  \"prewarmConPty\": true,\n  \"pythonExecutable\": \"\",\n  \"profiles\": {\n    \"darwinExternalDefault\": {\n      \"args\": [\n        \"\\\"$PWD\\\"\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/System/Applications/Utilities/Terminal.app/Contents/macOS/Terminal\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"darwinIntegratedDefault\": {\n      \"args\": [\n        \"--login\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/bin/zsh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"developerConsole\": {\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"developerConsole\"\n    },\n    \"linuxExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"xterm\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"linuxIntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"/bin/sh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"win32ExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"win32IntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"pythonExecutable\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    }\n  },\n  \"defaultProfile\": null,\n  \"terminalOptions\": {\n    \"documentOverride\": null,\n    \"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"\n  }\n}",
+    "expectedCaret": 2944,
+    "actualCaret": [
+      2944,
+      2944
+    ],
+    "focusKept": true,
+    "scrollBefore": 2681,
+    "scrollAfter": 2681,
+    "pass": true
+  },
+  {
+    "id": "A1",
+    "field": "All settings ▸ Data (raw JSON, scrolled)",
+    "action": "caret mid-document after the key name, type _x then Backspace×2 (valid again)",
+    "inputType": "textarea",
+    "original": "{\n  \"addToCommand\": true,\n  \"addToContextMenu\": true,\n  \"createInstanceNearExistingOnes\": true,\n  \"errorNoticeTimeout\": 120,\n  \"exposeInternalModules\": true,\n  \"focusOnNewInstance\": true,\n  \"hideStatusBar\": \"focused\",\n  \"showTerminalTabPrefix\": false,\n  \"interceptKeysWhenFocused\": true,\n  \"interceptLogging\": true,\n  \"keymappings\": [\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"\\r\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Enter\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": true\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": -1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageUp\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": 1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageDown\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToTop\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Home\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToBottom\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"End\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"b\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"f\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"01\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"05\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"17\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"15\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"d\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Delete\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    }\n  ],\n  \"language\": \"\",\n  \"macOSOptionKeyPassthrough\": true,\n  \"rightClickAction\": \"copyPaste\",\n  \"newInstanceBehavior\": \"newHorizontalSplit\",\n  \"noticeTimeout\": 77,\n  \"openChangelogOnUpdate\": true,\n  \"pinNewInstance\": true,\n  \"preferredRenderer\": \"webgl\",\n  \"prewarmConPty\": true,\n  \"pythonExecutable\": \"\",\n  \"profiles\": {\n    \"darwinExternalDefault\": {\n      \"args\": [\n        \"\\\"$PWD\\\"\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/System/Applications/Utilities/Terminal.app/Contents/macOS/Terminal\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"darwinIntegratedDefault\": {\n      \"args\": [\n        \"--login\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/bin/zsh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"developerConsole\": {\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"developerConsole\"\n    },\n    \"linuxExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"xterm\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"linuxIntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"/bin/sh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"win32ExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"win32IntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"pythonExecutable\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    }\n  },\n  \"defaultProfile\": null,\n  \"terminalOptions\": {\n    \"documentOverride\": null,\n    \"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"\n  }\n}",
+    "expectedValue": "{\n  \"addToCommand\": true,\n  \"addToContextMenu\": true,\n  \"createInstanceNearExistingOnes\": true,\n  \"errorNoticeTimeout\": 120,\n  \"exposeInternalModules\": true,\n  \"focusOnNewInstance\": true,\n  \"hideStatusBar\": \"focused\",\n  \"showTerminalTabPrefix\": false,\n  \"interceptKeysWhenFocused\": true,\n  \"interceptLogging\": true,\n  \"keymappings\": [\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"\\r\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Enter\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": true\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": -1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageUp\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": 1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageDown\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToTop\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Home\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToBottom\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"End\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"b\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"f\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"01\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"05\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"17\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"15\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"d\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Delete\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    }\n  ],\n  \"language\": \"\",\n  \"macOSOptionKeyPassthrough\": true,\n  \"rightClickAction\": \"copyPaste\",\n  \"newInstanceBehavior\": \"newHorizontalSplit\",\n  \"noticeTimeout\": 77,\n  \"openChangelogOnUpdate\": true,\n  \"pinNewInstance\": true,\n  \"preferredRenderer\": \"webgl\",\n  \"prewarmConPty\": true,\n  \"pythonExecutable\": \"\",\n  \"profiles\": {\n    \"darwinExternalDefault\": {\n      \"args\": [\n        \"\\\"$PWD\\\"\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/System/Applications/Utilities/Terminal.app/Contents/macOS/Terminal\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"darwinIntegratedDefault\": {\n      \"args\": [\n        \"--login\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/bin/zsh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"developerConsole\": {\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"developerConsole\"\n    },\n    \"linuxExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"xterm\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"linuxIntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"/bin/sh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"win32ExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"win32IntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"pythonExecutable\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    }\n  },\n  \"defaultProfile\": null,\n  \"terminalOptions\": {\n    \"documentOverride\": null,\n    \"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"\n  }\n}",
+    "actualValue": "{\n  \"addToCommand\": true,\n  \"addToContextMenu\": true,\n  \"createInstanceNearExistingOnes\": true,\n  \"errorNoticeTimeout\": 120,\n  \"exposeInternalModules\": true,\n  \"focusOnNewInstance\": true,\n  \"hideStatusBar\": \"focused\",\n  \"showTerminalTabPrefix\": false,\n  \"interceptKeysWhenFocused\": true,\n  \"interceptLogging\": true,\n  \"keymappings\": [\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"\\r\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Enter\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": true\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": -1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageUp\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollPages\",\n      \"actionArg\": 1,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"PageDown\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToTop\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Home\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"scrollToBottom\",\n      \"actionArg\": null,\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"End\",\n      \"meta\": false,\n      \"platform\": null,\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"b\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"f\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"01\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowLeft\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"05\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"ArrowRight\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"17\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendHexCode\",\n      \"actionArg\": \"15\",\n      \"alt\": false,\n      \"ctrl\": false,\n      \"key\": \"Backspace\",\n      \"meta\": true,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    },\n    {\n      \"action\": \"sendEscapeSequence\",\n      \"actionArg\": \"d\",\n      \"alt\": true,\n      \"ctrl\": false,\n      \"key\": \"Delete\",\n      \"meta\": false,\n      \"platform\": \"darwin\",\n      \"shift\": false\n    }\n  ],\n  \"language\": \"\",\n  \"macOSOptionKeyPassthrough\": true,\n  \"rightClickAction\": \"copyPaste\",\n  \"newInstanceBehavior\": \"newHorizontalSplit\",\n  \"noticeTimeout\": 77,\n  \"openChangelogOnUpdate\": true,\n  \"pinNewInstance\": true,\n  \"preferredRenderer\": \"webgl\",\n  \"prewarmConPty\": true,\n  \"pythonExecutable\": \"\",\n  \"profiles\": {\n    \"darwinExternalDefault\": {\n      \"args\": [\n        \"\\\"$PWD\\\"\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/System/Applications/Utilities/Terminal.app/Contents/macOS/Terminal\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"darwinIntegratedDefault\": {\n      \"args\": [\n        \"--login\"\n      ],\n      \"environment\": [],\n      \"executable\": \"/bin/zsh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"darwin\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"developerConsole\": {\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"developerConsole\"\n    },\n    \"linuxExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"xterm\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"linuxIntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"/bin/sh\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"linux\": true\n      },\n      \"pythonExecutable\": \"python3\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    },\n    \"win32ExternalDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"external\"\n    },\n    \"win32IntegratedDefault\": {\n      \"args\": [],\n      \"environment\": [],\n      \"executable\": \"C:\\\\Windows\\\\System32\\\\cmd.exe\",\n      \"followTheme\": true,\n      \"name\": \"\",\n      \"platforms\": {\n        \"win32\": true\n      },\n      \"pythonExecutable\": \"\",\n      \"restoreHistory\": false,\n      \"rightClickAction\": \"copyPaste\",\n      \"successExitCodes\": [\n        \"0\",\n        \"SIGINT\",\n        \"SIGTERM\"\n      ],\n      \"terminalOptions\": {\n        \"documentOverride\": null\n      },\n      \"type\": \"integrated\",\n      \"win32Backend\": \"conpty\"\n    }\n  },\n  \"defaultProfile\": null,\n  \"terminalOptions\": {\n    \"documentOverride\": null,\n    \"fontFamily\": \"'0xProto Nerd Font Mono', monospace\"\n  }\n}",
+    "expectedCaret": 2971,
+    "actualCaret": [
+      2971,
+      2971
+    ],
+    "focusKept": true,
+    "scrollBefore": 2732,
+    "scrollAfter": 2732,
+    "pass": true
+  },
+  {
+    "id": "P1",
+    "field": "Profile ▸ Name",
+    "action": "value Linux, caret at start, type 'My '",
+    "inputType": "text",
+    "original": "Linux",
+    "expectedValue": "My Linux",
+    "actualValue": "My Linux",
+    "expectedCaret": 3,
+    "actualCaret": [
+      3,
+      3
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P2",
+    "field": "Profile ▸ Executable",
+    "action": "value /bin/sh, caret at start, type /usr",
+    "inputType": "text",
+    "original": "/bin/sh",
+    "expectedValue": "/usr/bin/sh",
+    "actualValue": "/usr/bin/sh",
+    "expectedCaret": 4,
+    "actualCaret": [
+      4,
+      4
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P3",
+    "field": "Profile ▸ Python executable",
+    "action": "value python3, caret before 'p', type 'uvx ' (the recorded scenario)",
+    "inputType": "text",
+    "original": "python3",
+    "expectedValue": "uvx python3",
+    "actualValue": "uvx python3",
+    "expectedCaret": 4,
+    "actualCaret": [
+      4,
+      4
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P4",
+    "field": "Profile ▸ Python executable",
+    "action": "caret after 'uvx ', Backspace then type ' ' (delete mid-value)",
+    "inputType": "text",
+    "original": "uvx python3",
+    "expectedValue": "uvx python3",
+    "actualValue": "uvx python3",
+    "expectedCaret": 4,
+    "actualCaret": [
+      4,
+      4
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P5",
+    "field": "Profile ▸ Python executable",
+    "action": "caret after 'uvx ', paste ~/.venv/bin/ with Ctrl+V",
+    "inputType": "text",
+    "original": "uvx python3",
+    "expectedValue": "uvx ~/.venv/bin/python3",
+    "actualValue": "uvx ~/.venv/bin/python3",
+    "expectedCaret": 16,
+    "actualCaret": [
+      16,
+      16
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P6",
+    "field": "Profile ▸ Python executable",
+    "action": "select '~/.venv/bin/' (Shift+→×12) and type /opt/ to replace it",
+    "inputType": "text",
+    "original": "uvx ~/.venv/bin/python3",
+    "expectedValue": "uvx /opt/python3",
+    "actualValue": "uvx /opt/python3",
+    "expectedCaret": 9,
+    "actualCaret": [
+      9,
+      9
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P7",
+    "field": "Profile ▸ Data (raw JSON)",
+    "action": "caret at the start of the executable string, type /opt (stays valid JSON)",
+    "inputType": "textarea",
+    "original": "{\n  \"args\": [],\n  \"environment\": [],\n  \"executable\": \"/usr/bin/sh\",\n  \"followTheme\": true,\n  \"name\": \"My Linux\",\n  \"platforms\": {\n    \"linux\": true\n  },\n  \"pythonExecutable\": \"uvx /opt/python3\",\n  \"restoreHistory\": false,\n  \"rightClickAction\": \"copyPaste\",\n  \"successExitCodes\": [\n    \"0\",\n    \"SIGINT\",\n    \"SIGTERM\"\n  ],\n  \"terminalOptions\": {\n    \"documentOverride\": null\n  },\n  \"type\": \"integrated\",\n  \"win32Backend\": \"conpty\"\n}",
+    "expectedValue": "{\n  \"args\": [],\n  \"environment\": [],\n  \"executable\": \"/opt/usr/bin/sh\",\n  \"followTheme\": true,\n  \"name\": \"My Linux\",\n  \"platforms\": {\n    \"linux\": true\n  },\n  \"pythonExecutable\": \"uvx /opt/python3\",\n  \"restoreHistory\": false,\n  \"rightClickAction\": \"copyPaste\",\n  \"successExitCodes\": [\n    \"0\",\n    \"SIGINT\",\n    \"SIGTERM\"\n  ],\n  \"terminalOptions\": {\n    \"documentOverride\": null\n  },\n  \"type\": \"integrated\",\n  \"win32Backend\": \"conpty\"\n}",
+    "actualValue": "{\n  \"args\": [],\n  \"environment\": [],\n  \"executable\": \"/opt/usr/bin/sh\",\n  \"followTheme\": true,\n  \"name\": \"My Linux\",\n  \"platforms\": {\n    \"linux\": true\n  },\n  \"pythonExecutable\": \"uvx /opt/python3\",\n  \"restoreHistory\": false,\n  \"rightClickAction\": \"copyPaste\",\n  \"successExitCodes\": [\n    \"0\",\n    \"SIGINT\",\n    \"SIGTERM\"\n  ],\n  \"terminalOptions\": {\n    \"documentOverride\": null\n  },\n  \"type\": \"integrated\",\n  \"win32Backend\": \"conpty\"\n}",
+    "expectedCaret": 58,
+    "actualCaret": [
+      58,
+      58
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P8",
+    "field": "Profile ▸ Terminal options ▸ Font family",
+    "action": "value mono, caret at start, type ui-",
+    "inputType": "text",
+    "original": "mono",
+    "expectedValue": "ui-mono",
+    "actualValue": "ui-mono",
+    "expectedCaret": 3,
+    "actualCaret": [
+      3,
+      3
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P9",
+    "field": "Profile ▸ Success exit codes ▸ 1st",
+    "action": "value 0, caret at start, type 13",
+    "inputType": "textarea",
+    "original": "0",
+    "expectedValue": "130",
+    "actualValue": "130",
+    "expectedCaret": 2,
+    "actualCaret": [
+      2,
+      2
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P10",
+    "field": "Profile ▸ Arguments ▸ 1st",
+    "action": "value --login, caret after '--', type no-",
+    "inputType": "textarea",
+    "original": "--login",
+    "expectedValue": "--no-login",
+    "actualValue": "--no-login",
+    "expectedCaret": 5,
+    "actualCaret": [
+      5,
+      5
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P11",
+    "field": "Profile ▸ Environment variables ▸ key",
+    "action": "key PATH, caret at start, type MY_",
+    "inputType": "textarea",
+    "original": "PATH",
+    "expectedValue": "MY_PATH",
+    "actualValue": "MY_PATH",
+    "expectedCaret": 3,
+    "actualCaret": [
+      3,
+      3
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "P12",
+    "field": "Profile ▸ Environment variables ▸ value",
+    "action": "value /bin, caret at start, type /usr",
+    "inputType": "textarea",
+    "original": "/bin",
+    "expectedValue": "/usr/bin",
+    "actualValue": "/usr/bin",
+    "expectedCaret": 4,
+    "actualCaret": [
+      4,
+      4
+    ],
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "K1",
+    "field": "Keymappings ▸ PageUp ▸ argument",
+    "action": "number arg -1, caret after '-', type 20",
+    "inputType": "number",
+    "original": "-1",
+    "expectedValue": "-201",
+    "actualValue": "-201",
+    "expectedCaret": 3,
+    "actualCaret": "n/a (number input)",
+    "focusKept": true,
+    "pass": true
+  },
+  {
+    "id": "K2",
+    "field": "Keymappings ▸ Shift+Enter ▸ argument",
+    "action": "string arg, caret at start, type ab",
+    "inputType": "textarea",
+    "original": "\n",
+    "expectedValue": "ab\n",
+    "actualValue": "ab\n",
+    "expectedCaret": 2,
+    "actualCaret": [
+      2,
+      2
+    ],
+    "focusKept": true,
+    "pass": true
+  }
+]

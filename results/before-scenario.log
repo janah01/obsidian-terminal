@@ -1,0 +1,5 @@
+BOX 543 385 220 30
+typed "u" → "upython3" caret 8
+typed "v" → "upython3v" caret 9
+typed "x" → "upython3vx" caret 10
+typed " " → "upython3vx " caret 11
