@@ -1,5 +1,11 @@
 # obsidian-terminal <!-- markdownlint-disable-file MD024 -->
 
+## 0.0.2
+
+### Patch Changes
+
+- Scratch entry for the release workflow dry run. Not a release.
+
 ## 3.28.0
 
 ### Minor Changes
