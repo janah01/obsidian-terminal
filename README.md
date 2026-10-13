@@ -15,6 +15,11 @@ never merged.
   Claude Code. Files ending in `-v2` replace the file of the same name: the same still with the guest's taskbar or
   top bar cut off. The `types-ob` and Claude Code stills are cut the same way; in the Claude Code ones the account
   line is covered and the lines under the input box are cut off.
+  `tes-89-<guest>-types-claude.gif|mp4`: the 17 `types-ob` drags onto Claude Code as a clip, 3.28.0 first and the PR
+  build second. Put together from repeated screenshots of the VM (about 6 a second), played at twice the speed,
+  still stretches shortened to half a second. In every frame the account line is covered and the taskbar or top
+  bar and the lines under the input box are cut off; on Windows the update notice above the input box is covered.
+  On Ubuntu the yellow mark is the pointer position drawn by the VM host.
 
 Recorded in Obsidian 1.14.4 in a throwaway vault. In the Claude Code clips the account line and the status line
 are covered.
