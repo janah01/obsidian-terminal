@@ -10,7 +10,11 @@ never merged.
 - `tes-207/`: the Unix PTY proxy input deadlock (PR 7), release 3.28.0 next to the PR build.
 - `tes-89/`: real pointer drags on Windows 11 and Ubuntu 26.04 (PR 6). One still per source and terminal: release
   3.28.0 on top, the PR build below, each half labelled with action, expected, actual, environment and verdict.
-  PowerShell, `/bin/sh` and bash terminals only.
+  `*-types-ob-*`: 17 items of the fixture vault (16 files of different types and a folder) dragged one at a time out
+  of Obsidian's file explorer, on PowerShell, bash and Claude Code. `tes-89-ubuntu-gf-*-claude`: GNOME Files on
+  Claude Code. Files ending in `-v2` replace the file of the same name: the same still with the guest's taskbar or
+  top bar cut off. The `types-ob` and Claude Code stills are cut the same way; in the Claude Code ones the account
+  line is covered and the lines under the input box are cut off.
 
 Recorded in Obsidian 1.14.4 in a throwaway vault. In the Claude Code clips the account line and the status line
 are covered.
