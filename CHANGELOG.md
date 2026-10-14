@@ -1,5 +1,9 @@
 # obsidian-terminal <!-- markdownlint-disable-file MD024 -->
 
+## 0.0.999
+
+Release workflow rehearsal only; not a production release.
+
 ## 3.28.0
 
 ### Minor Changes
