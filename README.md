@@ -106,7 +106,7 @@ This behavior can be turned off via the `Intercept keys when terminal is focused
   - Unfocus terminal: \(unbound; useful if you want separate keys for focus and unfocus\)
 - Open root directory or current directory in terminal \(default, external, integrated, select\) and open developer console: \(unbound, except open root directory in terminal \(integrated\) above; a hotkey you assign also works here\)
   - A hotkey of one of these commands, the default above or one you assign, works everywhere in Obsidian. In a focused terminal it wins over a default shortcut of this list on the same keys, so do not ignore a conflict that Obsidian reports for it.
-  - The commands that open the current directory need an active file. In a focused terminal there is none, so a hotkey you assign to one of them shows a notice and does not reach the shell.
+  - The commands that open the current directory use the folder of the active file. Without one, for example in a focused terminal, on an empty tab or in the graph view, they use the folder of the file you looked at last, and show a notice only when no file is open or recently opened. A hotkey you assign to one of them does not reach the shell.
 
 ### Theming
 
