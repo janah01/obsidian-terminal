@@ -63,6 +63,9 @@ This file is automatically opened on first install. You can reopen it in setting
 - To save and restore integrated terminal history
   1. Keep the terminal open when exiting Obsidian.
   2. Terminal history will be restored next time Obsidian is opened.
+- To insert the path of a file or folder
+  1. Drag it onto an integrated terminal, from the vault or from another app such as Finder, Explorer or VS Code.
+  2. The path is escaped or quoted for the shell of the terminal's profile, and a notice says so when something could not be inserted.
 - Additional actions
   - Includes
     - Clear terminal: \(1\), \(4\)
@@ -87,6 +90,8 @@ The keyboard shortcuts can be customized in hotkeys settings.
 
 - Toggle focus on last terminal: `Ctrl`+`Shift`+`` ` ``
   - Focus on last terminal: \(unbound; useful if you want separate keys for focus and unfocus\)
+- Open root directory in terminal \(integrated\): `Ctrl`+`Shift`+`H`, `Command`+`Shift`+`H` \(Apple\)
+  - Another plugin may use the same keys. Obsidian then shows a conflict, which you can resolve under Settings → Hotkeys.
 
 #### Terminal is focused
 
@@ -99,6 +104,9 @@ This behavior can be turned off via the `Intercept keys when terminal is focused
 - Find in terminal: `Ctrl`+`Shift`+`F`, `Command`+`Shift`+`F` \(Apple\)
 - Toggle focus on last terminal: `Ctrl`+`Shift`+`` ` `` \(same as above\)
   - Unfocus terminal: \(unbound; useful if you want separate keys for focus and unfocus\)
+- Open root directory or current directory in terminal \(default, external, integrated, select\) and open developer console: \(unbound, except open root directory in terminal \(integrated\) above; a hotkey you assign also works here\)
+  - A hotkey of one of these commands, the default above or one you assign, works everywhere in Obsidian. In a focused terminal it wins over a default shortcut of this list on the same keys, so do not ignore a conflict that Obsidian reports for it.
+  - The commands that open the current directory need an active file. In a focused terminal there is none, so a hotkey you assign to one of them shows a notice and does not reach the shell.
 
 ### Theming
 
@@ -139,6 +147,16 @@ When setting up a terminal profile, you need to distinguish between shells and t
 - Windows Terminal: `wt`
 - iTerm2: `/Applications/iTerm.app/Contents/MacOS/iTerm2 "$PWD"`
 - xterm: `xterm`
+
+### Experimental features
+
+Features that are not finished are listed under `Experimental`, the last section of the plugin settings. The section is shown only when the installed version has such features.
+
+- Every experimental feature is off until you turn it on. An update never turns one on.
+- Each row says what the feature does, what the known risk is, and where to send feedback.
+- To try a feature, turn on its toggle. To stop, turn it off. The plugin then behaves as it did before, and nothing you stored is lost. A change applies at once unless the row says it needs new terminals or a restart.
+- An experimental feature may change or be removed in a later version. When one becomes a regular feature, its toggle leaves the section and the changelog says so.
+- The choice is stored with the other plugin settings, so it follows the vault to every device that syncs them.
 
 ### Miscellaneous
 
@@ -248,6 +266,14 @@ See [`assets/locales/README.md`](assets/locales/README.md).
 
 We hope that there will never be any security vulnerabilities, but unfortunately it does happen. Please [report](#reporting-a-vulnerability) them!
 
+### System access
+
+Obsidian's [community Scorecard][community plugin scorecard] flags the plugin for reading system information and for using Node.js `fs`. A terminal cannot work without them:
+
+- **Environment variables.** Terminals inherit Obsidian's environment, such as `HOME` and `PATH`. The plugin removes variables left by the terminal or editor Obsidian was started from (such as `TMUX` and `VSCODE_*`) and, for integrated terminals, sets `TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, and `PYTHONIOENCODING`. Your profile's variables are applied last. The environment goes only to the processes the plugin starts.
+- **System `PATH` and Windows version.** Obsidian started from a desktop launcher often has a short `PATH`. To find shells and Python, the plugin adds the system `PATH`: from `/usr/libexec/path_helper` on macOS, `/etc/environment` or `getconf PATH` on Linux, and the registry on Windows. On Windows, it also reads the OS build number, which tells the terminal display how ConPTY wraps lines.
+- **Files outside the vault.** The plugin runs the shells, terminal emulators, and Python interpreters named in your profiles or settings. On Windows, when no configured Python executable works, it tries `python`, `python3`, and the `py` launcher (run with `-3`) from `PATH`. On Windows, it writes the ConPTY host script (`obsidian-terminal-conpty-*.py`) to the system temporary folder and keeps it for later sessions. With the ConHost backend, it also writes a `.bat` file holding the command line to that folder and deletes that file when the terminal exits. When a drop on a terminal names files by URI, as a drag out of VS Code does, it asks the file system whether each path is a file or a folder before it inserts the path. It does not read the files.
+
 ### Supported versions
 
 | Version  | Supported |
@@ -264,6 +290,7 @@ Please report a vulnerability by opening a [private vulnerability report][new se
 [Buy Me a Coffee/embed]: https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=polyipseity&button_colour=40DCA5&font_colour=ffffff&font_family=Lato&outline_colour=000000&coffee_colour=FFDD00
 [changelog]: https://github.com/polyipseity/obsidian-terminal/blob/main/CHANGELOG.md
 [community plugin]: https://obsidian.md/plugins?id=terminal
+[community plugin scorecard]: https://community.obsidian.md/plugins/terminal#scorecard
 [latest release]: https://github.com/polyipseity/obsidian-terminal/releases/latest
 [new security advisory]: https://github.com/polyipseity/obsidian-terminal/security/advisories/new
 [Obsidian]: https://obsidian.md/

@@ -149,6 +149,7 @@
     },
     "terminal": {
       "display-name": "$t(generic.terminal, capitalize): {{title}}",
+      "drag-insert-path": "Insert path",
       "edit-modal": {
         "profile": "$t(generic.profile, capitalize)",
         "profile-edit": "$t(generic.edit, capitalize)",
@@ -181,6 +182,7 @@
       "bold-font-weight": "Bold $t(generic.font-weight)",
       "description-HTML": "See <a aria-label=\"https://xtermjs.org/docs/api/terminal/interfaces/iterminaloptions/\" class=\"external-link\" data-tooltip-position=\"top\" href=\"https://xtermjs.org/docs/api/terminal/interfaces/iterminaloptions/\" rel=\"noopener\" target=\"_blank\"><code>ITerminalOptions</code></a> for all $t(generic.option_other).",
       "font-family": "$t(generic.font, capitalize) family",
+      "font-family-description": "A CSS font-family list. Quote a name that starts with a digit or has spaces, e.g. '0xProto Nerd Font Mono', monospace",
       "font-size": "$t(generic.font, capitalize) size",
       "font-weight": "$t(generic.font-weight, capitalize)",
       "invalid-description": "$t(generic.invalid, capitalize)",
@@ -327,7 +329,11 @@
   "notices": {
     "Python-status-entry-": "{{name}}: {{version}} (satisfied: {{requirement}})",
     "Python-status-entry-unsatisfied": "{{name}}: {{version}} (unsatisfied: {{requirement}})",
+    "drop-no-paths": "Nothing to insert: no local file path was found in the dropped items.",
+    "drop-skipped-paths": "Some dropped items could not be inserted as paths.",
+    "drop-typed-while-waiting": "Nothing was inserted: you typed before the dropped paths were ready. Drop them again.",
     "no-default-profile": "No $t(generic.default) $t(generic.profile) for $t(generic.type) '$t(generic.profile-types.{{type}}, capitalize)'",
+    "no-file-for-current-directory": "No active file: open a file to start a $t(generic.terminal) in its folder.",
     "resizer-install-command-copied": "Install command copied.",
     "spawning-terminal": "$t(generic.spawn_gerund, capitalize) $t(generic.terminal): {{title}}",
     "terminal-exited": "$t(generic.terminal, capitalize) $t(generic.exit_past): {{code}}",
@@ -389,6 +395,14 @@
       "donate": "$t(generic.documentations.donate, capitalize)",
       "readme": "$t(generic.documentations.readme, capitalize)"
     },
+    "experimental": "Experimental",
+    "experimental-applies": {
+      "newTerminals": "Applies to terminals opened after the change.",
+      "restart": "Restart Obsidian to apply the change."
+    },
+    "experimental-description": "These features are not finished. They may change or be removed in a later version. Each one is off until you turn it on.",
+    "experimental-feedback": "Send feedback",
+    "experimental-risk": "Known risk: {{risk}}",
     "expose-internal-modules": "Expose internal modules",
     "expose-internal-modules-description-HTML": "<code>obsidian</code>, <code>@codemirror/*</code>, <code>@lezer/*</code>…",
     "focus-on-new-instance": "$t(generic.focus, capitalize) on new $t(generic.instance)",

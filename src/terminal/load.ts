@@ -137,6 +137,13 @@ export function loadTerminal(context: TerminalPlugin): void {
               if (active?.parent) {
                 return adapter.getFullPath(active.parent.path);
               }
+              if (!checking) {
+                notice2(
+                  () => i18n.t("notices.no-file-for-current-directory"),
+                  settings.value.noticeTimeout,
+                  context,
+                );
+              }
               return null;
             }
             // No default
@@ -379,20 +386,22 @@ export function loadTerminal(context: TerminalPlugin): void {
 
   /* Always register command for interop with other plugins */
 
-  addCommand(context, () => i18n.t("commands.open-developer-console"), {
-    checkCallback(checking) {
-      if (!settings.value.addToCommand) {
-        return false;
-      }
-      return openDefaultProfileOfType("developerConsole", void 0, checking);
-    },
-    icon: i18n.t("asset:commands.open-developer-console-icon"),
-    id: "open-terminal.developerConsole",
-  });
+  TerminalView.allowWhileFocused(
+    addCommand(context, () => i18n.t("commands.open-developer-console"), {
+      checkCallback(checking) {
+        if (!settings.value.addToCommand) {
+          return false;
+        }
+        return openDefaultProfileOfType("developerConsole", void 0, checking);
+      },
+      icon: i18n.t("asset:commands.open-developer-console-icon"),
+      id: "open-terminal.developerConsole",
+    }),
+  );
 
   for (const type of PROFILE_TYPES) {
     for (const cwd of CWD_TYPES) {
-      addCommand(
+      const opening = addCommand(
         context,
         () =>
           i18n.t(`commands.open-terminal-${cwd}`, {
@@ -406,10 +415,28 @@ export function loadTerminal(context: TerminalPlugin): void {
             }
             return command(type, cwd)(checking);
           },
+          /*
+           * A default hotkey on purpose, against Obsidian's advice to avoid
+           * them: one key then opens a terminal from anywhere, also from a
+           * focused terminal. A letter stays on its printed key on every
+           * layout, unlike a backtick. "H", not "h": only the uppercase key
+           * code name matches on non-Latin layouts.
+           */
+          ...(type === "integrated" && cwd === "root"
+            ? { hotkeys: [{ key: "H", modifiers: ["Mod", "Shift"] }] }
+            : {}),
           icon: i18n.t(`asset:commands.open-terminal-${cwd}-icon`),
           id: `open-terminal.${type}.${cwd}`,
         },
       );
+      /*
+       * A focused terminal has no active file, so "current" only shows a
+       * notice there. Allowing it still lets the focused listener consume a
+       * hotkey the user assigned to it instead of the shell: ConPTY turns
+       * Ctrl+Shift+<letter> into that letter's control character, e.g.
+       * Ctrl+Shift+H into 0x08, which cmd.exe treats as backspace.
+       */
+      TerminalView.allowWhileFocused(opening);
     }
   }
 

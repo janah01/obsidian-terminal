@@ -407,6 +407,26 @@ export class Vault extends Events {
   }
 }
 
+// ===== FileSystemAdapter =====
+
+/**
+ * Desktop adapter of a vault on the local file system. The mock `Vault` does
+ * not use it; code under test checks `vault.adapter instanceof FileSystemAdapter`.
+ */
+export class FileSystemAdapter {
+  getName(): string {
+    return "mock-vault";
+  }
+
+  getBasePath(): string {
+    return "/mock-vault";
+  }
+
+  getFullPath(normalizedPath: string): string {
+    return `${this.getBasePath()}/${normalizedPath}`;
+  }
+}
+
 // ===== FileManager =====
 
 export class FileManager {
@@ -820,6 +840,7 @@ export class MetadataCache extends Events {
 // ===== Workspace =====
 
 export class WorkspaceLeaf {
+  private static readonly container = {};
   view: { file: TFile | null } = { file: null };
   private readonly root = {};
   private viewState: { type: string; state: unknown } = {
@@ -838,6 +859,11 @@ export class WorkspaceLeaf {
 
   getRoot(): object {
     return this.root;
+  }
+
+  /** The window the leaf is in: one for every leaf, unless a test stubs it. */
+  getContainer(): object {
+    return WorkspaceLeaf.container;
   }
 
   setPinned(_pinned: boolean): void {}
@@ -898,6 +924,11 @@ export class Workspace extends Events {
     return [];
   }
 
+  /** The mock's layout is always ready, so the callback runs at once. */
+  onLayoutReady(callback: () => unknown): void {
+    callback();
+  }
+
   on(
     name: "active-leaf-change" | "file-open" | "layout-change" | "quit",
     callback: (...args: unknown[]) => unknown,
@@ -908,6 +939,19 @@ export class Workspace extends Events {
 }
 
 // ===== Keymap & Scope =====
+
+export interface KeymapContext {
+  modifiers: string | null;
+  key: string | null;
+  vkey: string;
+}
+
+export type KeymapEventListener = (
+  evt: KeyboardEvent,
+  ctx: KeymapContext,
+) => unknown;
+
+const MODIFIER_KEYS: readonly string[] = ["Alt", "Control", "Meta", "Shift"];
 
 export class Keymap {
   pushScope(scope: Scope): void {
@@ -924,21 +968,74 @@ export class Keymap {
   getScopes(): Scope[] {
     return [...state.keymapScopes];
   }
+
+  /**
+   * Mirrors Obsidian's private `Keymap.onKeyEvent`, which Obsidian adds as a
+   * capture `keydown` listener on every window: modifier-only keys skip the
+   * scopes; otherwise the top scope handles the key, and `false` consumes it.
+   * Modifiers use this mock's `register` format, in Ctrl+Meta+Alt+Shift order.
+   */
+  onKeyEvent(evt: KeyboardEvent): void {
+    const scope = state.keymapScopes.at(-1);
+    if (scope === undefined || MODIFIER_KEYS.includes(evt.key)) {
+      return;
+    }
+    const modifiers = [
+      evt.ctrlKey && "Ctrl",
+      evt.metaKey && "Meta",
+      evt.altKey && "Alt",
+      evt.shiftKey && "Shift",
+    ]
+      .filter(Boolean)
+      .join("+");
+    if (
+      scope.handleKey(evt, { modifiers, key: evt.key, vkey: evt.key }) === false
+    ) {
+      evt.preventDefault();
+      evt.stopPropagation();
+    }
+  }
 }
 
 export class Scope {
-  keys: Array<{ modifiers: string; key: string | null; func: () => unknown }> =
-    [];
+  keys: Array<{
+    modifiers: string | null;
+    key: string | null;
+    func: KeymapEventListener;
+  }> = [];
 
-  register(modifiers: string[], key: string | null, func: () => unknown): void {
-    this.keys.push({ modifiers: modifiers.join("+"), key, func });
+  constructor(public readonly parent?: Scope) {}
+
+  register(
+    modifiers: readonly string[] | null,
+    key: string | null,
+    func: KeymapEventListener,
+  ): void {
+    this.keys.push({ modifiers: modifiers?.join("+") ?? null, key, func });
   }
 
-  unregister(func: () => unknown): void {
+  unregister(func: KeymapEventListener): void {
     const index = this.keys.findIndex((k) => k.func === func);
     if (index >= 0) {
       this.keys.splice(index, 1);
     }
+  }
+
+  /**
+   * Runs the matching handlers (`null` matches anything) until one returns
+   * `false`, then defers to the parent scope, as Obsidian's scopes do.
+   */
+  handleKey(evt: KeyboardEvent, ctx: KeymapContext): unknown {
+    for (const { modifiers, key, func } of this.keys) {
+      if (
+        (modifiers === null || modifiers === ctx.modifiers) &&
+        (key === null || key === ctx.key) &&
+        func(evt, ctx) === false
+      ) {
+        return false;
+      }
+    }
+    return this.parent?.handleKey(evt, ctx);
   }
 }
 
@@ -968,6 +1065,8 @@ export const Platform = {
   isIosApp: false,
   isAndroidApp: false,
   isDesktopApp: true,
+  // Desktop form: `app://` and an id that is random per installation.
+  resourcePathPrefix: "app://0123456789abcdef/",
 };
 
 // ===== Plugin & PluginManifest =====
@@ -1360,6 +1459,42 @@ export class ButtonComponent {
   }
 }
 
+/**
+ * The small icon button at the end of a setting row. Its click handler runs
+ * when `extraSettingsEl` is clicked, as in Obsidian.
+ */
+export class ExtraButtonComponent {
+  public readonly extraSettingsEl: HTMLElement = document.createElement("div");
+  private disabled = false;
+
+  constructor(containerEl?: HTMLElement) {
+    containerEl?.append(this.extraSettingsEl);
+  }
+
+  setDisabled(disabled: boolean): this {
+    this.disabled = disabled;
+    return this;
+  }
+
+  setTooltip(tooltip: string): this {
+    this.extraSettingsEl.setAttribute("aria-label", tooltip);
+    return this;
+  }
+
+  setIcon(_icon: string): this {
+    return this;
+  }
+
+  onClick(callback: () => unknown): this {
+    this.extraSettingsEl.onclick = (): void => {
+      if (!this.disabled) {
+        callback();
+      }
+    };
+    return this;
+  }
+}
+
 // --------- Add a lightweight `Setting` helper used by plugin tests ---------
 export class Setting {
   constructor(public capturedButtons?: ButtonComponent[]) {}
@@ -1443,7 +1578,16 @@ export class ToggleComponent {
   }
 }
 
-export class TextComponent {
+// The plugin library tells controls apart with `instanceof` on these two
+// bases; text fields and text areas are siblings under the second, as in
+// Obsidian.
+export class ValueComponent {
+  registerOptionListener(): this {
+    return this;
+  }
+}
+
+export class AbstractTextComponent extends ValueComponent {
   private value = "";
   private changeHandler: ((value: string) => void) | null = null;
   private placeholder = "";
@@ -1484,6 +1628,10 @@ export class TextComponent {
     return this;
   }
 }
+
+export class TextComponent extends AbstractTextComponent {}
+
+export class TextAreaComponent extends AbstractTextComponent {}
 
 export class ColorComponent {
   private value = "#000000";

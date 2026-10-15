@@ -1,14 +1,30 @@
-import { ProfileModal } from "../../src/modals.js";
+import {
+  KeymappingEditModal,
+  ProfileModal,
+  TerminalOptionsModal,
+} from "../../src/modals.js";
 import * as doctor from "../../src/terminal/win32-doctor.js";
+import { Keymap, Scope } from "../mocks/obsidian.js";
 import { Settings } from "../../src/settings-data.js";
-import { PROFILE_PRESETS } from "../../src/terminal/profile-presets.js";
+import {
+  DEFAULT_TERMINAL_OPTIONS,
+  PROFILE_PRESETS,
+} from "../../src/terminal/profile-presets.js";
 import {
   capturePythonRows,
   pythonSettingsContext,
   typePythonValue,
   withPythonSpare,
 } from "../fixtures/python-settings-ui.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import en from "../../assets/locales/en/translation.json" with { type: "json" };
 import {
   type Win32PythonDiagnosis,
@@ -100,9 +116,11 @@ describe("Windows profile editor status", () => {
   });
 });
 
-const { displayed, execFile } = vi.hoisted(() => ({
+const { displayed, execFile, platform } = vi.hoisted(() => ({
   displayed: new Map<string, Win32PythonDiagnosis>(),
   execFile: vi.fn().mockResolvedValue({ stdout: "Python 3.12.0", stderr: "" }),
+  // The device platform. Tests that change it restore "win32" afterwards.
+  platform: { current: "win32" },
 }));
 vi.mock("@polyipseity/obsidian-plugin-library", async (importOriginal) => {
   const actual =
@@ -111,7 +129,12 @@ vi.mock("@polyipseity/obsidian-plugin-library", async (importOriginal) => {
     >();
   return {
     ...actual,
-    Platform: { ...actual.Platform, CURRENT: "win32" },
+    Platform: {
+      ...actual.Platform,
+      get CURRENT() {
+        return platform.current;
+      },
+    },
     notice2: vi.fn(),
     dynamicRequire: (...args: Parameters<typeof actual.dynamicRequire>) =>
       args[1] === "node:util"
@@ -158,6 +181,92 @@ const windowsProfile = {
   ...Settings.Profile.DEFAULTS.integrated,
   platforms: { ...Settings.Profile.DEFAULTS.integrated.platforms, win32: true },
 } satisfies Settings.Profile;
+
+describe("profile editor Windows-only rows", () => {
+  const pythonRow = "components.profile.integrated.Python-executable",
+    backendRow = "components.profile.integrated.win32-backend",
+    resizerRow = "components.profile.integrated.resizer-packages",
+    // A profile synced from a Windows device: enabled there, ConHost chosen.
+    syncedProfile = {
+      ...windowsProfile,
+      platforms: { darwin: true, linux: true, win32: true },
+      win32Backend: "legacy",
+    } satisfies Settings.Profile;
+
+  afterEach(() => {
+    platform.current = "win32";
+    vi.restoreAllMocks();
+  });
+
+  it.each(["darwin", "linux"])(
+    "omits the Windows terminal backend and resizer rows on %s",
+    async (current) => {
+      platform.current = current;
+      const rows = capturePythonRows(),
+        modal = new PythonProfileModal(
+          await pythonSettingsContext(),
+          syncedProfile,
+          vi.fn(),
+        );
+      modal.renderPython();
+      expect(rows.has(pythonRow)).toBe(true);
+      expect(rows.has(backendRow)).toBe(false);
+      expect(rows.has(resizerRow)).toBe(false);
+      // The i18n stub returns keys, so no row may carry a Windows backend key.
+      for (const row of rows.values()) {
+        expect(row.descEl.textContent).not.toMatch(/win32-backend|resizer/u);
+      }
+      modal.onClose();
+    },
+  );
+
+  it("keeps the Windows terminal backend and resizer rows on win32", async () => {
+    platform.current = "win32";
+    const rows = capturePythonRows(),
+      modal = new PythonProfileModal(
+        await pythonSettingsContext(),
+        syncedProfile,
+        vi.fn(),
+      );
+    modal.renderPython();
+    expect(rows.has(pythonRow)).toBe(true);
+    expect(rows.get(backendRow)?.descEl.textContent).toBe(
+      "components.profile.integrated.win32-backend-description components.profile.integrated.win32-backend-status-legacy",
+    );
+    expect(rows.get(resizerRow)?.settingEl.style.display).toBe("none");
+    modal.onClose();
+  });
+
+  it.each(["darwin", "linux"])(
+    "keeps a stored ConHost choice through an edit on %s",
+    async (current) => {
+      platform.current = current;
+      const rows = capturePythonRows(),
+        saved = vi.fn<(profile: Settings.Profile) => void>(),
+        modal = new PythonProfileModal(
+          await pythonSettingsContext(),
+          syncedProfile,
+          saved,
+        );
+      modal.renderPython();
+      typePythonValue(rows.get(pythonRow)?.texts[0], "python3.12");
+      await vi.waitFor(() => {
+        expect(saved).toHaveBeenCalled();
+      });
+      const stored = saved.mock.lastCall?.[0];
+      expect(stored).toMatchObject({
+        pythonExecutable: "python3.12",
+        win32Backend: "legacy",
+      });
+      // The settings fixer must keep the value as well.
+      expect(Settings.Profile.fix(stored).value).toMatchObject({
+        win32Backend: "legacy",
+      });
+      expect(modal.profile).toHaveProperty("win32Backend", "legacy");
+      modal.onClose();
+    },
+  );
+});
 
 describe("profile Python automatic checks", () => {
   beforeEach(() => {
@@ -787,5 +896,237 @@ describe("profile Python automatic checks", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(checkWindowsResizerPackages).not.toHaveBeenCalled();
     modal.onClose();
+  });
+});
+
+describe("terminal options font family", () => {
+  const cssList = "'0xProto Nerd Font Mono', monospace";
+
+  async function openTerminalOptions(): Promise<{
+    readonly field: HTMLInputElement;
+    readonly json: HTMLTextAreaElement;
+    readonly description: string | undefined;
+    readonly inNameColumn: string;
+  }> {
+    const rows = capturePythonRows(),
+      modal = new TerminalOptionsModal(
+        await pythonSettingsContext(),
+        DEFAULT_TERMINAL_OPTIONS,
+      );
+    modal.open();
+    onTestFinished(() => {
+      modal.close();
+    });
+    const font = rows.get("components.terminal-options.font-family"),
+      field = font?.texts[0]?.inputEl,
+      json = rows.get("components.edit-data.data")?.textAreas[0]?.inputEl;
+    if (!field || !json) throw new Error("terminal options rows missing");
+    return {
+      // The line right under the row, as wide as the dialog.
+      description: font.settingEl.nextElementSibling?.textContent,
+      field,
+      inNameColumn: font.descEl.textContent,
+      json,
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("describes the value as a CSS font-family list with a quoted example", async () => {
+    const { description } = await openTerminalOptions();
+
+    expect(description).toBe(
+      "components.terminal-options.font-family-description",
+    );
+    expect(
+      en.components["terminal-options"]["font-family-description"],
+    ).toMatch(/CSS font-family list.*'0xProto Nerd Font Mono', monospace/u);
+  });
+
+  it("keeps the description out of the row's narrow name column", async () => {
+    const { inNameColumn } = await openTerminalOptions();
+
+    expect(inNameColumn).toBe("");
+  });
+
+  it("writes a quoted family with a fallback to the raw JSON unchanged", async () => {
+    const { field, json } = await openTerminalOptions();
+
+    field.value = cssList;
+    field.dispatchEvent(new Event("input"));
+
+    await vi.waitFor(() => {
+      expect(JSON.parse(json.value)).toMatchObject({ fontFamily: cssList });
+    });
+  });
+
+  it("reads a quoted family with a fallback from the raw JSON unchanged", async () => {
+    const { field, json } = await openTerminalOptions();
+
+    json.value = `{ "documentOverride": null, "fontFamily": "${cssList}" }`;
+    json.dispatchEvent(new Event("input"));
+
+    await vi.waitFor(() => {
+      expect(field.value).toBe(cssList);
+    });
+  });
+});
+
+describe("keymapping editor key recorder", () => {
+  // Obsidian's keymap listens on every window in the capture phase, so it sees
+  // each key before any document listener and consumes keys its scopes handle.
+  const keymap = new Keymap(),
+    onKeyEvent = (evt: KeyboardEvent): void => {
+      keymap.onKeyEvent(evt);
+    },
+    previous = {
+      ...Settings.Keymapping.DEFAULT,
+      ctrl: true,
+      key: "k",
+    } satisfies Settings.Keymapping;
+  let runHotkey = vi.fn(),
+    closeModal = vi.fn(),
+    modalScope = new Scope();
+
+  beforeEach(() => {
+    // An Obsidian hotkey bound to every key, behind the open modal's scope,
+    // whose Escape handler closes the modal.
+    const appScope = new Scope();
+    runHotkey = vi.fn().mockReturnValue(false);
+    closeModal = vi.fn().mockReturnValue(false);
+    modalScope = new Scope(appScope);
+    appScope.register(null, null, runHotkey);
+    modalScope.register([], "Escape", closeModal);
+    keymap.pushScope(modalScope);
+    self.addEventListener("keydown", onKeyEvent, true);
+  });
+  afterEach(() => {
+    self.removeEventListener("keydown", onKeyEvent, true);
+    for (const scope of keymap.getScopes()) {
+      keymap.popScope(scope);
+    }
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  async function openRecorder(): Promise<{
+    readonly callback: ReturnType<typeof vi.fn>;
+    readonly modal: KeymappingEditModal;
+    readonly press: (init: KeyboardEventInit) => KeyboardEvent;
+    readonly record: () => void;
+    readonly recordDesc: () => string | null | undefined;
+  }> {
+    const rows = capturePythonRows(),
+      context = await pythonSettingsContext(),
+      callback = vi.fn(),
+      modal = new KeymappingEditModal(context, previous, callback);
+    document.body.append(modal.contentEl);
+    modal.open();
+    const row = (): ReturnType<typeof rows.get> =>
+      rows.get("components.keymappings.record");
+    return {
+      callback,
+      modal,
+      press: (init) => {
+        const evt = new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        });
+        modal.contentEl.dispatchEvent(evt);
+        return evt;
+      },
+      record: () => {
+        row()?.buttons[0]?.buttonEl.click();
+      },
+      recordDesc: () => row()?.descEl.textContent,
+    };
+  }
+
+  it("records a key bound to an Obsidian hotkey instead of running the hotkey", async () => {
+    const { callback, modal, press, record, recordDesc } = await openRecorder();
+    record();
+    expect(modal.titleEl.textContent).toBe("components.keymappings.recording");
+    expect(recordDesc()).toBe("components.keymappings.recording");
+    const evt = press({ key: "p", metaKey: true });
+    expect(runHotkey).not.toHaveBeenCalled();
+    expect(evt.defaultPrevented).toBe(true);
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      ...previous,
+      ctrl: false,
+      key: "p",
+      meta: true,
+    });
+    expect(modal.titleEl.textContent).toBe("Meta+p");
+    expect(recordDesc()).toBe("Meta+p");
+    expect(keymap.getScopes()).toEqual([modalScope]);
+    modal.close();
+  });
+
+  it("keeps recording through modifier-only keydowns", async () => {
+    const { callback, modal, press, record } = await openRecorder();
+    record();
+    press({ ctrlKey: true, key: "Control" });
+    expect(callback).not.toHaveBeenCalled();
+    expect(modal.titleEl.textContent).toBe("components.keymappings.recording");
+    press({ ctrlKey: true, key: "j" });
+    expect(runHotkey).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledExactlyOnceWith({ ...previous, key: "j" });
+    modal.close();
+  });
+
+  it("cancels on a bare Escape, keeping the previous key and the modal open", async () => {
+    const { callback, modal, press, record, recordDesc } = await openRecorder();
+    record();
+    const evt = press({ key: "Escape" });
+    expect(closeModal).not.toHaveBeenCalled();
+    expect(evt.defaultPrevented).toBe(true);
+    expect(callback).not.toHaveBeenCalled();
+    expect(modal.titleEl.textContent).toBe("Ctrl+k");
+    expect(recordDesc()).toBe("Ctrl+k");
+    expect(keymap.getScopes()).toEqual([modalScope]);
+    modal.close();
+  });
+
+  it("records Escape pressed with a modifier", async () => {
+    const { callback, modal, press, record } = await openRecorder();
+    record();
+    press({ key: "Escape", shiftKey: true });
+    expect(closeModal).not.toHaveBeenCalled();
+    expect(runHotkey).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      ...previous,
+      ctrl: false,
+      key: "Escape",
+      shift: true,
+    });
+    expect(keymap.getScopes()).toEqual([modalScope]);
+    modal.close();
+  });
+
+  it("returns keys to Obsidian when the record button is pressed again", async () => {
+    const { callback, modal, press, record, recordDesc } = await openRecorder();
+    record();
+    expect(keymap.getScopes()).toHaveLength(2);
+    record();
+    expect(keymap.getScopes()).toEqual([modalScope]);
+    expect(recordDesc()).toBe("Ctrl+k");
+    press({ ctrlKey: true, key: "p" });
+    expect(runHotkey).toHaveBeenCalledOnce();
+    expect(callback).not.toHaveBeenCalled();
+    modal.close();
+  });
+
+  it("returns keys to Obsidian when the modal closes while recording", async () => {
+    const { callback, modal, press, record } = await openRecorder();
+    record();
+    expect(keymap.getScopes()).toHaveLength(2);
+    modal.close();
+    expect(keymap.getScopes()).toEqual([modalScope]);
+    press({ ctrlKey: true, key: "p" });
+    expect(runHotkey).toHaveBeenCalledOnce();
+    expect(callback).not.toHaveBeenCalled();
   });
 });

@@ -13,7 +13,6 @@ import {
   clearProperties,
   cloneAsWritable,
   composeSetters,
-  consumeEvent,
   createChildElement,
   createDocumentFragment,
   deopaque,
@@ -32,7 +31,7 @@ import {
   useSubsettings,
 } from "@polyipseity/obsidian-plugin-library";
 import { identity, noop } from "es-toolkit/function";
-import { Modal, Setting } from "obsidian";
+import { Modal, Scope, Setting } from "obsidian";
 import type { DeepWritable } from "ts-essentials";
 import { BUNDLE } from "./imports.js";
 import {
@@ -168,6 +167,18 @@ export class TerminalOptionsModal extends EditDataModal<Settings.Profile.Termina
             ),
           );
       })
+      // A line of its own: the row's name column is too narrow for the sentence.
+      .new(
+        () => createChildElement(element, "div"),
+        (ele) => {
+          ele.textContent = i18n.t(
+            "components.terminal-options.font-family-description",
+          );
+        },
+        (ele) => {
+          ele.remove();
+        },
+      )
       .newSetting(element, (setting) => {
         setting
           .setName(i18n.t("components.terminal-options.font-size"))
@@ -1461,80 +1472,84 @@ export class ProfileModal extends Modal {
                 ),
               );
           });
-          ui.newSetting(element, (setting) => {
-            const pluginPython = settings.value.pythonExecutable,
-              effective = inheritedPythonExecutable(
-                profile.pythonExecutable,
-                pluginPython,
-              ),
-              win32Eligible = isWin32Eligible(),
-              diagnosis = getWindowsPythonDiagnosis(effective, pluginPython),
-              busy =
-                checkingPython ||
-                isPluginPythonCheckPending(context, effective),
-              notAutomatic = !canCheckAutomatically() && !diagnosis && !busy,
-              backendStatus =
-                profile.win32Backend === "legacy"
-                  ? "legacy"
-                  : busy
-                    ? "checking"
-                    : !diagnosis
-                      ? "unverified"
-                      : windowsConPtyStatus(diagnosis, effective, pluginPython);
-            setting
-              .setName(
-                i18n.t(`components.profile.${profile.type}.win32-backend`),
-              )
-              .setDesc(
-                i18n.t(
-                  `components.profile.${profile.type}.win32-backend-description`,
-                ) +
-                  (win32Eligible
-                    ? ` ${i18n.t(
-                        notAutomatic && profile.win32Backend !== "legacy"
-                          ? "components.profile.integrated.Python-status-not-automatic"
-                          : `components.profile.integrated.win32-backend-status-${backendStatus}`,
-                      )}`
-                    : ""),
-              )
-              .addDropdown(
-                linkSetting(
-                  (): string => profile.win32Backend,
-                  setTextToEnum(Settings.Profile.WIN32_BACKENDS, (value) => {
-                    profile.win32Backend = value;
-                  }),
-                  async () => this.postMutate(),
-                  {
-                    pre: (dropdown) => {
-                      dropdown.addOptions(
-                        Object.fromEntries(
-                          Settings.Profile.WIN32_BACKENDS.map((backend) => [
-                            backend,
-                            i18n.t(
-                              `components.profile.${profile.type}.win32-backend-options-${backend}`,
-                            ),
-                          ]),
-                        ),
-                      );
-                    },
-                  },
-                ),
-              )
-              .addExtraButton(
-                resetButton(
-                  i18n.t(
-                    `asset:components.profile.${profile.type}.win32-backend-icon`,
-                  ),
-                  i18n.t("components.profile.reset"),
-                  () => {
-                    profile.win32Backend =
-                      Settings.Profile.DEFAULTS[profile.type].win32Backend;
-                  },
-                  async () => this.postMutate(),
-                ),
-              );
-          });
           if (deopaque(Platform.CURRENT) === "win32") {
+            ui.newSetting(element, (setting) => {
+              const pluginPython = settings.value.pythonExecutable,
+                effective = inheritedPythonExecutable(
+                  profile.pythonExecutable,
+                  pluginPython,
+                ),
+                win32Eligible = isWin32Eligible(),
+                diagnosis = getWindowsPythonDiagnosis(effective, pluginPython),
+                busy =
+                  checkingPython ||
+                  isPluginPythonCheckPending(context, effective),
+                notAutomatic = !canCheckAutomatically() && !diagnosis && !busy,
+                backendStatus =
+                  profile.win32Backend === "legacy"
+                    ? "legacy"
+                    : busy
+                      ? "checking"
+                      : !diagnosis
+                        ? "unverified"
+                        : windowsConPtyStatus(
+                            diagnosis,
+                            effective,
+                            pluginPython,
+                          );
+              setting
+                .setName(
+                  i18n.t(`components.profile.${profile.type}.win32-backend`),
+                )
+                .setDesc(
+                  i18n.t(
+                    `components.profile.${profile.type}.win32-backend-description`,
+                  ) +
+                    (win32Eligible
+                      ? ` ${i18n.t(
+                          notAutomatic && profile.win32Backend !== "legacy"
+                            ? "components.profile.integrated.Python-status-not-automatic"
+                            : `components.profile.integrated.win32-backend-status-${backendStatus}`,
+                        )}`
+                      : ""),
+                )
+                .addDropdown(
+                  linkSetting(
+                    (): string => profile.win32Backend,
+                    setTextToEnum(Settings.Profile.WIN32_BACKENDS, (value) => {
+                      profile.win32Backend = value;
+                    }),
+                    async () => this.postMutate(),
+                    {
+                      pre: (dropdown) => {
+                        dropdown.addOptions(
+                          Object.fromEntries(
+                            Settings.Profile.WIN32_BACKENDS.map((backend) => [
+                              backend,
+                              i18n.t(
+                                `components.profile.${profile.type}.win32-backend-options-${backend}`,
+                              ),
+                            ]),
+                          ),
+                        );
+                      },
+                    },
+                  ),
+                )
+                .addExtraButton(
+                  resetButton(
+                    i18n.t(
+                      `asset:components.profile.${profile.type}.win32-backend-icon`,
+                    ),
+                    i18n.t("components.profile.reset"),
+                    () => {
+                      profile.win32Backend =
+                        Settings.Profile.DEFAULTS[profile.type].win32Backend;
+                    },
+                    async () => this.postMutate(),
+                  ),
+                );
+            });
             ui.newSetting(element, (setting) => {
               // Always rendered; visibility toggled (see settings.ts
               // newPythonWidgets).
@@ -1763,8 +1778,7 @@ export class KeymappingEditModal extends Modal {
   protected readonly ui = new UpdatableUI();
   protected readonly data: DeepWritable<Settings.Keymapping>;
   readonly #callback: (data: DeepWritable<Settings.Keymapping>) => unknown;
-  #recordDoc: Document | null = null;
-  #recordHandler: ((event: KeyboardEvent) => void) | null = null;
+  #recordScope: Scope | null = null;
 
   public constructor(
     protected readonly context: TerminalPlugin,
@@ -1780,20 +1794,32 @@ export class KeymappingEditModal extends Modal {
     super.onOpen();
     const { context, data, ui, titleEl, modalUI } = this,
       { element: listEl, remover: listElRemover } = useSettings(this.contentEl),
-      doc = this.contentEl.ownerDocument,
       { language } = context,
       { value: i18n, onChangeLanguage } = language;
 
     const startRecording = async (): Promise<void> => {
-      if (this.#recordHandler !== null) {
+      if (this.#recordScope !== null) {
         return;
       }
-      const handler = (event: KeyboardEvent): void => {
-        consumeEvent(event);
+      // Obsidian's keymap sees keys before document listeners and runs the
+      // matching hotkey or modal handler; the top scope takes every key first.
+      // Returning `false` makes Obsidian consume the key.
+      const scope = new Scope();
+      scope.register(null, null, (event) => {
         if (["Meta", "Control", "Alt", "Shift"].includes(event.key)) {
-          return;
+          return false;
         }
         this.#stopRecording();
+        if (
+          event.key === "Escape" &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !event.metaKey &&
+          !event.shiftKey
+        ) {
+          // A bare Escape cancels recording and keeps the previous key.
+          return false;
+        }
 
         data.key = event.key;
         data.ctrl = event.ctrlKey;
@@ -1805,10 +1831,10 @@ export class KeymappingEditModal extends Modal {
         })().catch((error: unknown) => {
           activeSelf(event).console.error(error);
         });
-      };
-      this.#recordHandler = handler;
-      this.#recordDoc = doc;
-      doc.addEventListener("keydown", handler, true);
+        return false;
+      });
+      this.#recordScope = scope;
+      this.app.keymap.pushScope(scope);
       ui.update();
       modalUI.update();
     };
@@ -1823,7 +1849,7 @@ export class KeymappingEditModal extends Modal {
         () => titleEl,
         (ele) => {
           ele.textContent =
-            this.#recordHandler !== null
+            this.#recordScope !== null
               ? i18n.t("components.keymappings.recording")
               : KeymappingEditModal.formatShortcut(data, i18n);
         },
@@ -1839,7 +1865,7 @@ export class KeymappingEditModal extends Modal {
 
     // Key recording row: desc shows current shortcut; button toggles recording
     ui.newSetting(listEl, (setting) => {
-      const isRecording = this.#recordHandler !== null;
+      const isRecording = this.#recordScope !== null;
       setting
         .setName(i18n.t("components.keymappings.record"))
         .setDesc(
@@ -1983,14 +2009,12 @@ export class KeymappingEditModal extends Modal {
   }
 
   #stopRecording(): void {
-    const recordDoc = this.#recordDoc,
-      recordHandler = this.#recordHandler;
-    if (recordDoc === null || recordHandler === null) {
+    const recordScope = this.#recordScope;
+    if (recordScope === null) {
       return;
     }
-    recordDoc.removeEventListener("keydown", recordHandler, true);
-    this.#recordHandler = null;
-    this.#recordDoc = null;
+    this.app.keymap.popScope(recordScope);
+    this.#recordScope = null;
     this.modalUI.update();
     this.ui.update();
   }

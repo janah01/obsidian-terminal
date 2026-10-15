@@ -5,11 +5,13 @@
 import * as v from "valibot";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  FileSystemAdapter,
   getApp,
   getVault,
   makeEditor,
   normalizePath,
   parseYaml,
+  Platform,
   reset,
   setRequestHandler,
   setRequestResponse,
@@ -165,6 +167,22 @@ describe("Obsidian Mock", () => {
         mtime: expect.any(Number) satisfies number as number,
         size: "content".length,
       });
+    });
+  });
+
+  describe("FileSystemAdapter", () => {
+    it("resolves vault paths under its base path", () => {
+      const adapter = new FileSystemAdapter();
+
+      expect(adapter.getFullPath("Notes/a.md")).toBe(
+        `${adapter.getBasePath()}/Notes/a.md`,
+      );
+    });
+  });
+
+  describe("Platform", () => {
+    it("serves local files from an app:// origin, as the desktop app does", () => {
+      expect(Platform.resourcePathPrefix).toMatch(/^app:\/\/[0-9a-f]+\/$/u);
     });
   });
 
@@ -857,6 +875,29 @@ describe("Obsidian Mock", () => {
       expect(toggle.getValue()).toBe(false);
     });
 
+    it("ExtraButtonComponent runs its handler on click unless disabled", async () => {
+      const { ExtraButtonComponent } = await import("./obsidian.js");
+      const container = document.createElement("div"),
+        button = new ExtraButtonComponent(container);
+      let calls = 0;
+
+      expect(button.extraSettingsEl.parentElement).toBe(container);
+      expect(button.setIcon("flask-conical")).toBe(button);
+      expect(button.setTooltip("Reset")).toBe(button);
+      expect(
+        button.onClick(() => {
+          calls += 1;
+        }),
+      ).toBe(button);
+
+      button.extraSettingsEl.click();
+      expect(calls).toBe(1);
+
+      expect(button.setDisabled(true)).toBe(button);
+      button.extraSettingsEl.click();
+      expect(calls).toBe(1);
+    });
+
     it("TextComponent respects disabled state", async () => {
       const { TextComponent } = await import("./obsidian.js");
       const text = new TextComponent();
@@ -871,6 +912,22 @@ describe("Obsidian Mock", () => {
       text.setDisabled(false);
       text.setValue("changed");
       expect(text.getValue()).toBe("changed");
+    });
+
+    it("text fields and text areas are sibling text value components", async () => {
+      const {
+        AbstractTextComponent,
+        TextAreaComponent,
+        TextComponent,
+        ValueComponent,
+      } = await import("./obsidian.js");
+      const text = new TextComponent(),
+        textArea = new TextAreaComponent();
+
+      expect(text).toBeInstanceOf(AbstractTextComponent);
+      expect(textArea).toBeInstanceOf(AbstractTextComponent);
+      expect(text).toBeInstanceOf(ValueComponent);
+      expect(textArea).not.toBeInstanceOf(TextComponent);
     });
   });
 });

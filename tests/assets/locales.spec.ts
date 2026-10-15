@@ -41,6 +41,40 @@ describe("PluginLocales", () => {
     });
   });
 
+  describe("provides the drop notices and the drag label in every declared locale", () => {
+    it.each(Array.from(PluginLocales.LANGUAGES))("%s", async (language) => {
+      const { components, notices } =
+        await PluginLocales.RESOURCES[language].translation();
+
+      expect(notices["drop-no-paths"]).toMatch(/\S/u);
+      expect(notices["drop-skipped-paths"]).toMatch(/\S/u);
+      expect(notices["drop-typed-while-waiting"]).toMatch(/\S/u);
+      expect(components.terminal["drag-insert-path"]).toMatch(/\S/u);
+    });
+  });
+
+  // The notice also shows for files of this computer: one of another vault's
+  // window, or one whose lookup on disk had no answer in time. A translation
+  // may word it freely; the English text that every locale starts from must
+  // not say that the dropped items are no files of this computer.
+  describe("does not deny in any declared locale that a drop without a path held local files", () => {
+    it.each(Array.from(PluginLocales.LANGUAGES))("%s", async (language) => {
+      const { notices } = await PluginLocales.RESOURCES[language].translation();
+
+      expect(notices["drop-no-paths"]).not.toMatch(
+        /not files on this computer/iu,
+      );
+    });
+
+    it("says in English that no path was found", async () => {
+      const { notices } = await PluginLocales.RESOURCES.en.translation();
+
+      expect(notices["drop-no-paths"]).toBe(
+        "Nothing to insert: no local file path was found in the dropped items.",
+      );
+    });
+  });
+
   it("lists languages and includes expected entries", () => {
     const langs = Array.from(PluginLocales.LANGUAGES);
     expect(langs).toEqual(expect.arrayContaining(["en", "pt", "pt-BR"]));
@@ -132,6 +166,23 @@ describe("PluginLocales", () => {
       ).toBeTruthy();
       expect(translation.notices["win32-python-posix-path"]).toBeTruthy();
     }
+  });
+
+  it("provides the Experimental section texts in every declared locale", async () => {
+    for (const language of PluginLocales.LANGUAGES) {
+      const { settings } =
+        await PluginLocales.RESOURCES[language].translation();
+      expect(settings.experimental, language).toMatch(/\S/u);
+      expect(settings["experimental-description"], language).toMatch(/\S/u);
+      expect(settings["experimental-feedback"], language).toMatch(/\S/u);
+      expect(settings["experimental-applies"].newTerminals, language).toMatch(
+        /\S/u,
+      );
+      expect(settings["experimental-applies"].restart, language).toMatch(/\S/u);
+      expect(settings["experimental-risk"], language).toContain("{{risk}}");
+    }
+    const asset = await PluginLocales.RESOURCES.en.asset();
+    expect(asset.settings["experimental-feature-icon"]).toMatch(/\S/u);
   });
 
   it("scopes initialization errors and empty Python fields identically in all 49 locales", async () => {
