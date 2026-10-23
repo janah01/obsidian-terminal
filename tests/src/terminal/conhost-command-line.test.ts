@@ -1,10 +1,11 @@
 /**
  * Windows probe: what reaches a program that the ConHost batch file starts.
  *
- * Runs real `cmd.exe` on batch files written three ways (the shipped
- * encoding, an escaped command line, and a command line passed through the
- * environment) and checks what the program receives against the command line
- * the ConPTY host builds (`quote_argument` in `win32_conpty.py`).
+ * Runs real `cmd.exe` and `conhost.exe` on batch files that take the command
+ * line from the environment, with delayed expansion or with percent expansion
+ * and the variables cleared before the program starts, and checks what the
+ * program receives against the command line the ConPTY host builds
+ * (`quote_argument` in `win32_conpty.py`).
  */
 import { execFile, spawn } from "node:child_process";
 import {
@@ -18,9 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { TerminalPlugin } from "../../../src/main.js";
-import { WindowsPseudoterminal } from "../../../src/terminal/pseudoterminal.js";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const WINDOWS = process.platform === "win32",
   RUN_TIMEOUT_MS = 20_000,
@@ -43,13 +42,6 @@ const WINDOWS = process.platform === "win32",
     "sys.exit(int(os.environ.get('PROBE_CODE', '0')))",
     "",
   ].join("\r\n");
-
-/** The shipped escaping, reached through a subclass. */
-class Shipped extends WindowsPseudoterminal {
-  public static escape(arg: string): string {
-    return super.escapeArgumentForBat(arg);
-  }
-}
 
 /** `quote_argument` of `win32_conpty.py`, ported. */
 function quoteArgument(argument: string): string {
@@ -75,41 +67,10 @@ function refuseLineBreaks(text: string): void {
     throw new Error("a batch line cannot carry CR, LF, NUL or Ctrl+Z");
 }
 
-/** Text placed between real quotes in the batch line. */
-function insideQuotes(text: string): string {
+/** Text that percent expansion inserts with delayed expansion off. */
+function caretEscaped(text: string): string {
   refuseLineBreaks(text);
-  // Delayed expansion parses a token only when it holds a `!`.
-  const delayed = /[!"]/u.test(text);
-  return text.replace(/[%"^!]/gu, (character) => {
-    switch (character) {
-      case "%":
-        return "%%";
-      case '"':
-        return "!q!";
-      default:
-        return delayed ? `^${character}` : character;
-    }
-  });
-}
-
-/** Text placed with no real quotes: every quote becomes `!q!`. */
-function withoutQuotes(text: string): string {
-  refuseLineBreaks(text);
-  const delayed = /[!"]/u.test(text);
-  return text.replace(/[%"^!&|<>()]/gu, (character) => {
-    switch (character) {
-      case "%":
-        return "%%";
-      case '"':
-        return "!q!";
-      case "^":
-        return delayed ? "^^^^" : "^^";
-      case "!":
-        return "^^!";
-      default:
-        return `^${character}`;
-    }
-  });
+  return text.replace(/[\^&|<>()"]/gu, "^$&");
 }
 
 interface Run {
@@ -127,34 +88,22 @@ type Design = (run: Run) => {
 
 const HEADER = "@echo off\r\nsetlocal EnableDelayedExpansion\r\n",
   DESIGNS: Readonly<Record<string, Design>> = {
-    shipped: ({ args, exe, exitFile }) => ({
-      batch: `${HEADER}set q=\\"\r\n${[exe, ...args]
-        .map((arg) => Shipped.escape(arg))
-        .join(" ")} & echo !ERRORLEVEL! > ${Shipped.escape(exitFile)}`,
-      env: {},
-    }),
-    escaped: ({ args, exe, exitFile }) => ({
-      batch: `${HEADER}set "q=""\r\n"${insideQuotes(exe)}"${
-        args.length
-          ? ` ${withoutQuotes(args.map(quoteArgument).join(" "))}`
-          : ""
-      }& echo !ERRORLEVEL! > "${insideQuotes(exitFile)}"`,
-      env: {},
-    }),
-    escapedSpaced: ({ args, exe, exitFile }) => ({
-      batch: `${HEADER}set "q=""\r\n"${insideQuotes(exe)}"${
-        args.length
-          ? ` ${withoutQuotes(args.map(quoteArgument).join(" "))}`
-          : ""
-      } & echo !ERRORLEVEL! > "${insideQuotes(exitFile)}"`,
-      env: {},
-    }),
     environment: ({ args, exe, exitFile }) => ({
       batch: `${HEADER}"!PROBE_EXE!"${
         args.length ? " !PROBE_ARGS!" : ""
       }& echo !ERRORLEVEL! > "!PROBE_EXIT!"`,
       env: {
         PROBE_ARGS: args.map(quoteArgument).join(" "),
+        PROBE_EXE: exe,
+        PROBE_EXIT: exitFile,
+      },
+    }),
+    environmentCleared: ({ args, exe, exitFile }) => ({
+      batch: `@echo off\r\nsetlocal DisableDelayedExpansion\r\nset "PROBE_ARGS=" & set "PROBE_EXE=" & set "PROBE_EXIT=" & "%PROBE_EXE%"${
+        args.length ? " %PROBE_ARGS%" : ""
+      }& >"%PROBE_EXIT%" call echo %%ERRORLEVEL%%`,
+      env: {
+        PROBE_ARGS: caretEscaped(args.map(quoteArgument).join(" ")),
         PROBE_EXE: exe,
         PROBE_EXIT: exitFile,
       },
@@ -185,7 +134,11 @@ async function readOrNull(path: string): Promise<string | null> {
   }
 }
 
-async function runBatch(design: string, run: Run): Promise<Outcome> {
+async function runBatch(
+  design: string,
+  run: Run,
+  host: "cmd" | "conhost" = "cmd",
+): Promise<Outcome> {
   let built;
   try {
     built = DESIGNS[design]?.(run);
@@ -197,16 +150,20 @@ async function runBatch(design: string, run: Run): Promise<Outcome> {
     batchPath = join(dir, "run.bat"),
     probeOut = join(dir, "probe.json");
   await writeFile(batchPath, built.batch, "utf-8");
-  const child = spawn(CMD, ["/d", "/c", batchPath], {
-      env: { ...process.env, PROBE_OUT: probeOut, ...run.env, ...built.env },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    }),
+  const child = spawn(
+      host === "cmd" ? CMD : "C:\\Windows\\System32\\conhost.exe",
+      host === "cmd" ? ["/d", "/c", batchPath] : [batchPath],
+      {
+        env: { ...process.env, PROBE_OUT: probeOut, ...run.env, ...built.env },
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    ),
     stdout: Buffer[] = [],
     stderr: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
   child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  child.stdin.end(run.stdin ?? "");
+  if (host === "cmd") child.stdin.end(run.stdin ?? "");
   const cmdExit = await new Promise<number | null>((resolve) => {
     const timer = window.setTimeout(() => {
       child.kill();
@@ -437,47 +394,22 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
     );
   });
 
-  describe("shipped ConHost terminal through conhost.exe", () => {
-    const context = {
-      language: { value: { t: vi.fn((key: string) => key) } },
-      settings: { value: { errorNoticeTimeout: 0 } },
-    } as unknown as TerminalPlugin;
-
-    async function open(
-      executable: string,
-      args: readonly string[],
-      environment: readonly (readonly [string, string])[] = [],
-    ): Promise<number | string> {
-      const pty = new WindowsPseudoterminal(context, {
-          args,
-          environment,
-          executable,
-        }),
-        shell = await pty.shell;
-      shell.stdout.resume();
-      shell.stderr.resume();
-      return Promise.race([
-        pty.onExit,
-        new Promise<"timeout">((resolve) =>
-          window.setTimeout(() => {
-            shell.kill();
-            resolve("timeout");
-          }, RUN_TIMEOUT_MS),
-        ),
-      ]);
-    }
-
-    it.each<readonly [string, readonly string[], number]>([
-      ["prompt", ["/d", "/c", "prompt CMD$G$S"], 0],
-      ["exit in quotes", ["/d", "/c", "exit 3"], 3],
-      ["chained", ["/d", "/c", "echo a & exit 4"], 4],
-      ["split", ["/d", "/c", "exit", "5"], 5],
+  describe.each(DESIGN_NAMES)("%s through conhost.exe", (design) => {
+    it.each<readonly [string, readonly string[], string]>([
+      ["prompt", ["/d", "/c", "prompt CMD$G$S"], "0"],
+      ["exit in quotes", ["/d", "/c", "exit 3"], "3"],
+      ["chained", ["/d", "/c", "echo a & exit 4"], "4"],
+      ["split", ["/d", "/c", "exit", "5"], "5"],
     ])(
       "cmd runs %s",
       async (label, args, expected) => {
-        const code = await open(CMD, args);
-        report(`conhost cmd ${label}`, code);
-        expect(code).toBe(expected);
+        const outcome = await runBatch(
+          design,
+          { args, env: {}, exe: CMD, exitFile: await freshExitFile() },
+          "conhost",
+        );
+        report(`${design}Conhost cmd ${label}`, outcome);
+        expect(outcome.exit).toBe(expected);
       },
       TEST_TIMEOUT_MS,
     );
@@ -486,26 +418,31 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       PYTHON_CASES.filter(([label]) =>
         [
           "plain",
+          "switches",
           "caret",
           "trailing backslash",
-          "switches",
           "non-ASCII",
+          "mixed",
+          "line feed",
         ].includes(label),
       ),
     )(
       "python receives %s",
       async (label, args) => {
-        const probeOut = join(await mkdtemp(join(work, "c-")), "probe.json"),
-          code = await open(
-            python,
-            [probePy, ...args],
-            [["PROBE_OUT", probeOut]],
-          ),
-          text = await readOrNull(probeOut),
-          probe = text === null ? null : (JSON.parse(text) as Outcome["probe"]);
-        report(`conhost python ${label}`, { code, probe });
-        expect.soft(probe?.argv).toEqual(args);
-        expect.soft(code).toBe(0);
+        const outcome = await runBatch(
+          design,
+          {
+            args: [probePy, ...args],
+            env: { PROBE_CODE: "0" },
+            exe: python,
+            exitFile: await freshExitFile(),
+          },
+          "conhost",
+        );
+        report(`${design}Conhost python ${label}`, outcome);
+        if (outcome.refused !== undefined) return;
+        expect.soft(outcome.probe?.argv).toEqual(args);
+        expect.soft(outcome.exit).toBe("0");
       },
       TEST_TIMEOUT_MS,
     );
