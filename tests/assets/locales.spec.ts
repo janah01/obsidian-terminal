@@ -75,6 +75,36 @@ describe("PluginLocales", () => {
     });
   });
 
+  // The profile list says which profile a command of one terminal type opens.
+  describe("says in every declared locale which profile a command of one type opens", () => {
+    async function profileListDescription(
+      language: (typeof PluginLocales.LANGUAGES)[number],
+    ): Promise<string> {
+      const translation = await PluginLocales.RESOURCES[language].translation(),
+        i18n = createInstance();
+      await i18n.init({
+        lng: language,
+        fallbackLng: false,
+        resources: { [language]: { translation } },
+      });
+      return i18n.t("settings.profile-list.description");
+    }
+
+    it.each(Array.from(PluginLocales.LANGUAGES))("%s", async (language) => {
+      const text = await profileListDescription(language);
+      expect(text).toMatch(/\S/u);
+      // A reference that does not resolve shows its key.
+      expect(text).not.toContain("$t(");
+      expect(text).not.toContain("generic.");
+    });
+
+    it("names the default profile first in English", async () => {
+      expect(await profileListDescription("en")).toBe(
+        "A command for one terminal type opens the default profile when it has that type, otherwise the first compatible profile of that type in the list.",
+      );
+    });
+  });
+
   it("lists languages and includes expected entries", () => {
     const langs = Array.from(PluginLocales.LANGUAGES);
     expect(langs).toEqual(expect.arrayContaining(["en", "pt", "pt-BR"]));

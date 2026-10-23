@@ -445,7 +445,7 @@
     "profile-defaults": "$t(generic.profile, capitalize) defaults",
     "profile-defaults-description": "Default options for $t(generic.profile_other). Acts as a fallback for every $t(generic.profile) unless a $t(generic.profile) explicitly overrides them.",
     "profile-list": {
-      "description": "$t(generic.list)内の最初の$t(generic.compatible)$t(generic.profile)が、その$t(generic.terminal)$t(generic.type)の$t(generic.default)になります。"
+      "description": "$t(generic.terminal)$t(generic.type)ごとの$t(generic.command)は、$t(generic.default)$t(generic.profile)がその$t(generic.type)であればそれを開き、そうでなければ$t(generic.list)内でその$t(generic.type)の最初の$t(generic.compatible)$t(generic.profile)を開きます。"
     },
     "profiles": "$t(generic.profile_other)",
     "profiles-description": "$t(generic.list-description)",
