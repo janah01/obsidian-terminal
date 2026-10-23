@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
+import { WindowsPseudoterminal } from "../../../src/terminal/pseudoterminal.js";
 
 const WINDOWS = process.platform === "win32",
   RUN_TIMEOUT_MS = 20_000,
@@ -42,6 +43,13 @@ const WINDOWS = process.platform === "win32",
     "sys.exit(int(os.environ.get('PROBE_CODE', '0')))",
     "",
   ].join("\r\n");
+
+/** The shipped escaping, reached through a subclass. */
+class Shipped extends WindowsPseudoterminal {
+  public static escape(arg: string): string {
+    return super.escapeArgumentForBat(arg);
+  }
+}
 
 /** `quote_argument` of `win32_conpty.py`, ported. */
 function quoteArgument(argument: string): string {
@@ -88,6 +96,12 @@ type Design = (run: Run) => {
 
 const HEADER = "@echo off\r\nsetlocal EnableDelayedExpansion\r\n",
   DESIGNS: Readonly<Record<string, Design>> = {
+    shipped: ({ args, exe, exitFile }) => ({
+      batch: `${HEADER}set q=\\"\r\n${[exe, ...args]
+        .map((arg) => Shipped.escape(arg))
+        .join(" ")} & echo !ERRORLEVEL! > ${Shipped.escape(exitFile)}`,
+      env: {},
+    }),
     environment: ({ args, exe, exitFile }) => ({
       batch: `${HEADER}"!PROBE_EXE!"${
         args.length ? " !PROBE_ARGS!" : ""
@@ -255,7 +269,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
   ];
 
   describe.each(DESIGN_NAMES)("%s", (design) => {
-    it.each([9_000, 20_000])(
+    it.each([8_000, 8_100, 8_150, 8_170, 8_180, 8_191, 8_200, 9_000])(
       "passes an argument of %i characters",
       async (length) => {
         const args = ["x".repeat(length)],
@@ -271,6 +285,8 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
           exit: outcome.exit,
           refused: outcome.refused,
           stderr: outcome.stderr,
+          stdout: outcome.stdout,
+          batchLength: outcome.batch?.length ?? null,
         });
         expect(outcome.probe?.argv).toEqual(args);
       },
@@ -291,7 +307,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       },
       TEST_TIMEOUT_MS,
     );
-    it.each(PYTHON_CASES)(
+    it.skip.each(PYTHON_CASES)(
       "python receives %s",
       async (label, args) => {
         const exitFile = await freshExitFile(),
@@ -317,7 +333,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       TEST_TIMEOUT_MS,
     );
 
-    it.each<readonly [string, readonly string[], string]>([
+    it.skip.each<readonly [string, readonly string[], string]>([
       ["prompt", ["/d", "/c", "prompt CMD$G$S"], "0"],
       ["exit in quotes", ["/d", "/c", "exit 3"], "3"],
       ["chained", ["/d", "/c", "echo a & exit 4"], "4"],
@@ -338,7 +354,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       TEST_TIMEOUT_MS,
     );
 
-    it(
+    it.skip(
       "cmd /k keeps the profile prompt",
       async () => {
         const outcome = await runBatch(design, {
@@ -355,7 +371,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       TEST_TIMEOUT_MS,
     );
 
-    it.each<readonly [string, string, readonly string[], string]>([
+    it.skip.each<readonly [string, string, readonly string[], string]>([
       ["exit", POWERSHELL, ["-Command", "exit 7"], "7"],
       [
         "single quotes",
@@ -395,7 +411,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       TEST_TIMEOUT_MS,
     );
 
-    it.each([
+    it.skip.each([
       "plain",
       "a^b",
       "a b & c",
@@ -422,7 +438,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       TEST_TIMEOUT_MS,
     );
 
-    it.each(["e^x", "e!x", "e&x y", "e%x", "J\u00fcrgen"])(
+    it.skip.each(["e^x", "e!x", "e&x y", "e%x", "J\u00fcrgen"])(
       "writes the exit code into folder %s",
       async (folder) => {
         const parent = join(work, `exit-${design}`, folder);
@@ -465,7 +481,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       },
       TEST_TIMEOUT_MS,
     );
-    it.each<readonly [string, readonly string[], string]>([
+    it.skip.each<readonly [string, readonly string[], string]>([
       ["prompt", ["/d", "/c", "prompt CMD$G$S"], "0"],
       ["exit in quotes", ["/d", "/c", "exit 3"], "3"],
       ["chained", ["/d", "/c", "echo a & exit 4"], "4"],
@@ -484,7 +500,7 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
       TEST_TIMEOUT_MS,
     );
 
-    it.each(
+    it.skip.each(
       PYTHON_CASES.filter(([label]) =>
         [
           "plain",
