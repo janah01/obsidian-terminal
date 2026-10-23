@@ -3174,6 +3174,119 @@ def _spawn_grandchild(
     return [getattr(sys, "_base_executable", sys.executable), "-c", code]
 
 
+"""Kinds of descendant ``_spawn_breakaway_descendants`` publishes, in order."""
+_DESCENDANT_KINDS = ("newConsole", "noWindow", "gui", "guiChild", "breakaway")
+
+
+def _spawn_breakaway_descendants(ready_file: Path, exit_gate: Path) -> list[str]:
+    """Start one descendant of each kind outside the pseudoconsole; gate exit.
+
+    ``newConsole`` and ``noWindow`` are console programs left in a hidden
+    console by a launcher that has exited: the ``Start-Process -WindowStyle
+    Hidden`` shape and the console a Node helper gets. ``gui`` is a program of
+    the GUI subsystem, ``guiChild`` a console program it runs, and
+    ``breakaway`` a console program created with ``CREATE_BREAKAWAY_FROM_JOB``.
+    The shell publishes the PIDs, or an ``error``, then waits for ``exit_gate``
+    and exits 42.
+    """
+    sleeper = "import time; time.sleep(120)"
+    launcher_code = (
+        "import subprocess, sys\n"
+        "child = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {sleeper!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "print(child.pid)\n"
+    )
+    gui_code = (
+        "import json, os, subprocess, sys, time\n"
+        "child = subprocess.Popen(\n"
+        f"    [sys.argv[1], '-c', {sleeper!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        "with open(sys.argv[2] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': os.getpid(), 'child': child.pid}, stream)\n"
+        "os.replace(sys.argv[2] + '.tmp', sys.argv[2])\n"
+        "time.sleep(120)\n"
+    )
+    gui_file = str(ready_file) + ".gui"
+    code = (
+        "import json, os, subprocess, sys, time\n"
+        f"sleeper = {sleeper!r}\n"
+        f"launcher = {launcher_code!r}\n"
+        f"gui_code = {gui_code!r}\n"
+        "def hidden():\n"
+        "    info = subprocess.STARTUPINFO()\n"
+        "    info.dwFlags = subprocess.STARTF_USESHOWWINDOW\n"
+        "    info.wShowWindow = subprocess.SW_HIDE\n"
+        "    return info\n"
+        "def quiet(command, **kwargs):\n"
+        "    return subprocess.Popen(\n"
+        "        command,\n"
+        "        stdin=subprocess.DEVNULL,\n"
+        "        stdout=subprocess.DEVNULL,\n"
+        "        stderr=subprocess.DEVNULL,\n"
+        "        **kwargs,\n"
+        "    )\n"
+        "def launch(flags):\n"
+        "    done = subprocess.run(\n"
+        "        [sys.executable, '-c', launcher],\n"
+        "        stdin=subprocess.DEVNULL,\n"
+        "        capture_output=True,\n"
+        "        check=True,\n"
+        "        creationflags=flags,\n"
+        "        startupinfo=hidden(),\n"
+        "    )\n"
+        "    return int(done.stdout)\n"
+        "def start():\n"
+        "    pythonw = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe')\n"
+        "    if not os.path.isfile(pythonw):\n"
+        "        raise FileNotFoundError(pythonw)\n"
+        "    record = {'pid': os.getpid()}\n"
+        "    record['newConsole'] = launch(subprocess.CREATE_NEW_CONSOLE)\n"
+        "    record['noWindow'] = launch(subprocess.CREATE_NO_WINDOW)\n"
+        f"    gui = quiet([pythonw, '-c', gui_code, sys.executable, {gui_file!r}])\n"
+        "    deadline = time.monotonic() + 30\n"
+        f"    while not os.path.exists({gui_file!r}):\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            raise TimeoutError('the GUI program did not start')\n"
+        "        time.sleep(0.05)\n"
+        f"    with open({gui_file!r}, encoding='utf-8') as stream:\n"
+        "        published = json.load(stream)\n"
+        "    record['gui'] = gui.pid\n"
+        "    record['guiChild'] = published['child']\n"
+        "    record['breakaway'] = quiet(\n"
+        "        [sys.executable, '-c', sleeper],\n"
+        "        creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB\n"
+        "        | subprocess.CREATE_NO_WINDOW,\n"
+        "    ).pid\n"
+        "    return record\n"
+        "try:\n"
+        "    record = start()\n"
+        "except Exception as error:\n"
+        "    record = {'error': repr(error)}\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump(record, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "if 'error' in record:\n"
+        "    sys.exit(2)\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    # As in ``_spawn_grandchild``: the base interpreter is the shell the host
+    # reports, and ``pythonw.exe`` is installed beside it.
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
 def _create_marker(marker: Path) -> list[str]:
     """Return a child command whose only effect is to create ``marker``."""
     return [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"]
@@ -3656,6 +3769,71 @@ def test_descendant_lifetime_follows_console_attachment(
                 assert result.code == 42, result
         # Assert through pinned handles before closing the watch kills survivors.
         survivors = grandchild_pids if detached else []
+        assert watch.survivors(15.0, expected=survivors) == survivors
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill", "host-death"))
+def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """Console programs left in a hidden console end with the session.
+
+    A GUI program, the console program it runs, and a program that asked to
+    break away from the job keep running. A host that is killed cannot act,
+    so everything it tracked survives that, as before.
+    """
+    ready_file = tmp_path / "descendants.json"
+    exit_gate = tmp_path / "shell-exit"
+    records: list[dict[str, int]] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and every descendant before the shutdown starts."""
+            assert isinstance(ready["childPid"], int)
+            watch.pin(ready["childPid"])
+            published: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(published, dict), published
+            assert "error" not in published, published
+            pids = {
+                kind: pid
+                for kind, pid in (
+                    (kind, published.get(kind)) for kind in _DESCENDANT_KINDS
+                )
+                if isinstance(pid, int)
+            }
+            assert len(pids) == len(_DESCENDANT_KINDS), published
+            for pid in pids.values():
+                watch.pin(pid)
+            records.append(pids)
+            assert watch.survivors(0.0) == [ready["childPid"], *pids.values()]
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+            elif shutdown == "host-death":
+                # On Windows SIGTERM calls TerminateProcess on the host.
+                assert isinstance(ready["hostPid"], int)
+                os.kill(ready["hostPid"], signal.SIGTERM)
+
+        result = _run_host(
+            _spawn_breakaway_descendants(ready_file, exit_gate),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=90.0,
+        )
+        # A startup failure must not pass the host-death case with no handles.
+        assert len(records) == 1, result
+        pids = records[0]
+        if shutdown == "host-death":
+            assert "exit" not in [message["event"] for message in result.messages]
+            kept: tuple[str, ...] = _DESCENDANT_KINDS
+        else:
+            assert result.messages[-1] == {"event": "exit", "code": result.code}
+            if shutdown == "natural-exit":
+                assert result.code == 42, result
+            kept = ("gui", "guiChild", "breakaway")
+        # Assert through pinned handles before closing the watch kills survivors.
+        survivors = [pids[kind] for kind in kept]
         assert watch.survivors(15.0, expected=survivors) == survivors
 
 
