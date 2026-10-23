@@ -190,6 +190,15 @@ function report(label: string, outcome: unknown): void {
   console.log(`PROBE ${JSON.stringify({ label, outcome })}`);
 }
 
+const CTRL_C_PY = [
+  "import ctypes, signal, sys, time",
+  "signal.signal(signal.SIGINT, lambda *_: None)",
+  "ctypes.windll.kernel32.GenerateConsoleCtrlEvent(0, 0)",
+  "time.sleep(1)",
+  "sys.exit(7)",
+  "",
+].join("\r\n");
+
 let python = "",
   probePy = "",
   work = "";
@@ -212,6 +221,8 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
     work = await mkdtemp(join(tmpdir(), "conhost-probe-"));
     probePy = join(work, "probe.py");
     await writeFile(probePy, PROBE_PY, "utf-8");
+    await writeFile(join(work, "ctrl_c.py"), CTRL_C_PY, "utf-8");
+    await writeFile(join(work, "nine.cmd"), "@exit /b 9\r\n", "utf-8");
     report("setup", { python, work });
   }, TEST_TIMEOUT_MS);
 
@@ -244,6 +255,42 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
   ];
 
   describe.each(DESIGN_NAMES)("%s", (design) => {
+    it.each([9_000, 20_000])(
+      "passes an argument of %i characters",
+      async (length) => {
+        const args = ["x".repeat(length)],
+          outcome = await runBatch(design, {
+            args: [probePy, ...args],
+            env: { PROBE_CODE: "0" },
+            exe: python,
+            exitFile: await freshExitFile(),
+          });
+        report(`${design} long ${String(length)}`, {
+          argvLength: outcome.probe?.argv[0]?.length ?? null,
+          cmdExit: outcome.cmdExit,
+          exit: outcome.exit,
+          refused: outcome.refused,
+          stderr: outcome.stderr,
+        });
+        expect(outcome.probe?.argv).toEqual(args);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "reports the exit code of a .cmd program",
+      async () => {
+        const outcome = await runBatch(design, {
+          args: [],
+          env: {},
+          exe: join(work, "nine.cmd"),
+          exitFile: await freshExitFile(),
+        });
+        report(`${design} cmd-file exit`, outcome);
+        expect(outcome.exit).toBe("9");
+      },
+      TEST_TIMEOUT_MS,
+    );
     it.each(PYTHON_CASES)(
       "python receives %s",
       async (label, args) => {
@@ -395,6 +442,29 @@ describe.runIf(WINDOWS)("ConHost batch command line on real cmd.exe", () => {
   });
 
   describe.each(DESIGN_NAMES)("%s through conhost.exe", (design) => {
+    it(
+      "keeps the exit code after Ctrl+C in the console",
+      async () => {
+        const outcome = await runBatch(
+          design,
+          {
+            args: [join(work, "ctrl_c.py")],
+            env: {},
+            exe: python,
+            exitFile: await freshExitFile(),
+          },
+          "conhost",
+        );
+        report(`${design}Conhost ctrl-c`, {
+          ...outcome,
+          terminatePrompt: /Terminate batch job/iu.test(outcome.stdout ?? ""),
+        });
+        expect.soft(outcome.cmdExit).not.toBeNull();
+        expect.soft(outcome.exit).toBe("7");
+        expect.soft(outcome.stdout ?? "").not.toMatch(/Terminate batch job/iu);
+      },
+      TEST_TIMEOUT_MS,
+    );
     it.each<readonly [string, readonly string[], string]>([
       ["prompt", ["/d", "/c", "prompt CMD$G$S"], "0"],
       ["exit in quotes", ["/d", "/c", "exit 3"], "3"],
