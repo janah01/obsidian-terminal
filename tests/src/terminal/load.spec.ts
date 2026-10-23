@@ -46,6 +46,7 @@ const ribbonMenu = vi.hoisted(() => {
 vi.mock("obsidian", async (importOriginal) => ({
   ...(await importOriginal<typeof import("obsidian")>()),
   FileSystemAdapter: vi.fn(),
+  TFolder: vi.fn(),
   Menu: vi.fn(
     class {
       public readonly showAtMouseEvent = ribbonMenu.showAtMouseEvent;
@@ -381,6 +382,247 @@ describe("terminal ribbon profile access", () => {
       );
     },
   );
+});
+
+describe("commands and menu items of one profile type", () => {
+  afterEach(() => {
+    vi.mocked(addCommand).mockReset();
+  });
+
+  const integrated = {
+      ...Settings.Profile.DEFAULTS.integrated,
+      platforms: { win32: true },
+    },
+    external = {
+      ...Settings.Profile.DEFAULTS.external,
+      platforms: { win32: true },
+    },
+    developerConsole = Settings.Profile.DEFAULTS.developerConsole;
+
+  async function load(initial: unknown) {
+    vi.mocked(addCommand).mockImplementation((_context, name, command) => ({
+      ...command,
+      name: name(),
+    }));
+    const context = await terminalContext(initial),
+      fileMenus: ((menu: unknown, file: unknown) => void)[] = [];
+    Object.assign(context.language, {
+      value: await createI18n(
+        PluginLocales.RESOURCES,
+        PluginLocales.FORMATTERS,
+        { lng: "en", fallbackLng: "en" },
+      ),
+    });
+    Object.assign(context.app.vault, {
+      adapter: Object.assign(new FileSystemAdapter(), {
+        getBasePath: vi.fn().mockReturnValue("C:\\Vault"),
+        getFullPath: vi.fn((path: string) => `C:\\Vault\\${path}`),
+      }),
+    });
+    Object.assign(context.app.workspace, {
+      onLayoutReady: vi.fn(),
+      on: vi.fn(
+        (name: string, callback: (menu: unknown, file: unknown) => void) => {
+          if (name === "file-menu") fileMenus.push(callback);
+          return {};
+        },
+      ),
+    });
+    loadTerminal(context);
+    const commands = vi
+      .mocked(addCommand)
+      .mock.calls.map(([, , command]) => command);
+    function run(id: string, checking = false): unknown {
+      const command = commands.find((command0) => command0.id === id);
+      if (!command?.checkCallback) throw new Error(`No command: ${id}`);
+      return command.checkCallback(checking);
+    }
+    // Right-clicks a note in the folder "Notes" and chooses the item titled so.
+    function clickFolderMenuItem(title: string): void {
+      const items = new Map<string, () => void>(),
+        menu = {
+          addSeparator: vi.fn(),
+          addItem(configure: (item: unknown) => void): void {
+            const record = { title: "", click: (): void => {} },
+              item = {
+                setTitle(value: string): unknown {
+                  record.title = value;
+                  return item;
+                },
+                setIcon(): unknown {
+                  return item;
+                },
+                onClick(value: () => void): unknown {
+                  record.click = value;
+                  return item;
+                },
+              };
+            configure(item);
+            items.set(record.title, record.click);
+          },
+        };
+      for (const listener of fileMenus)
+        listener(menu, { parent: { path: "Notes" } });
+      const click = items.get(title);
+      if (!click) throw new Error(`No menu item: ${title}`);
+      click();
+    }
+    return { clickFolderMenuItem, context, run };
+  }
+
+  it("opens the default profile from a command of its type", async () => {
+    const { context, run } = await load({
+      defaultProfile: "chosen",
+      profiles: {
+        first: integrated,
+        chosen: { ...integrated, name: "Chosen" },
+      },
+    });
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["chosen"],
+      { cwd: "C:\\Vault", profileSourceId: "chosen" },
+    );
+  });
+
+  it("opens the default profile from a menu item of its type", async () => {
+    const { clickFolderMenuItem, context } = await load({
+      defaultProfile: "chosen",
+      profiles: {
+        first: integrated,
+        chosen: { ...integrated, name: "Chosen" },
+      },
+    });
+    clickFolderMenuItem("Open in terminal: Integrated");
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["chosen"],
+      { cwd: "C:\\Vault\\Notes", profileSourceId: "chosen" },
+    );
+  });
+
+  it("opens the first profile of the type when the default has another type", async () => {
+    const { context, run } = await load({
+      defaultProfile: "outside",
+      profiles: {
+        outside: external,
+        first: integrated,
+        second: { ...integrated, name: "Second" },
+      },
+    });
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["first"],
+      { cwd: "C:\\Vault", profileSourceId: "first" },
+    );
+  });
+
+  it("opens the first compatible profile of the type when the default does not run on this platform", async () => {
+    const { context, run } = await load({
+      defaultProfile: "chosen",
+      profiles: {
+        chosen: { ...integrated, platforms: { darwin: true } },
+        first: integrated,
+      },
+    });
+    expect(context.settings.value.defaultProfile).toBe("chosen");
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["first"],
+      { cwd: "C:\\Vault", profileSourceId: "first" },
+    );
+  });
+
+  it("opens the first profile of the type when the default profile is gone", async () => {
+    const { context, run } = await load({
+      profiles: {
+        first: integrated,
+        second: { ...integrated, name: "Second" },
+      },
+    });
+    // The settings fixer drops a dangling id; a running plugin can still hold one.
+    Object.assign(context.settings, {
+      value: { ...context.settings.value, defaultProfile: "gone" },
+    });
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["first"],
+      { cwd: "C:\\Vault", profileSourceId: "first" },
+    );
+  });
+
+  it("only reports the command as available while checking", async () => {
+    const { run } = await load({
+      defaultProfile: "chosen",
+      profiles: {
+        first: integrated,
+        chosen: { ...integrated, name: "Chosen" },
+      },
+    });
+    expect(run("open-terminal.integrated.root", true)).toBe(true);
+    expect(spawnTerminal).not.toHaveBeenCalled();
+    expect(notice2).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["second", "second"],
+    ["chosen", "first"],
+  ])(
+    "lets the external commands follow the same rule (default %s opens %s)",
+    async (defaultProfile, opened) => {
+      const { context, run } = await load({
+        defaultProfile,
+        profiles: {
+          first: external,
+          second: { ...external, name: "Second" },
+          chosen: integrated,
+        },
+      });
+      expect(run("open-terminal.external.root")).toBe(true);
+      expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+        context,
+        context.settings.value.profiles[opened],
+        { cwd: "C:\\Vault", profileSourceId: opened },
+      );
+    },
+  );
+
+  it("opens a developer console default from the developer console command", async () => {
+    const { context, run } = await load({
+      defaultProfile: "chosen",
+      profiles: {
+        first: developerConsole,
+        chosen: { ...developerConsole, name: "Chosen" },
+      },
+    });
+    expect(run("open-terminal.developerConsole")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["chosen"],
+      { cwd: undefined, profileSourceId: "chosen" },
+    );
+  });
+
+  it("keeps the notice when no profile has the type", async () => {
+    const { context, run } = await load({
+      defaultProfile: "outside",
+      profiles: { outside: external },
+    });
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).not.toHaveBeenCalled();
+    expect(notice2).toHaveBeenCalledExactlyOnceWith(
+      expect.any(Function),
+      context.settings.value.noticeTimeout,
+      context,
+    );
+    expect(vi.mocked(notice2).mock.calls[0]?.[0]()).toBe(
+      "No default profile for type 'Integrated'",
+    );
+  });
 });
 
 describe("opening commands while a terminal has focus", () => {
