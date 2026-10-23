@@ -2,7 +2,6 @@ import {
   LanguageManager,
   type PluginContext,
   SI_PREFIX_SCALE,
-  type SemVerString,
   SettingsManager,
   StatusBarHider,
   StorageSettingsManager,
@@ -25,7 +24,7 @@ export class TerminalPlugin
   extends Plugin
   implements PluginContext<Settings, LocalSettings>
 {
-  public readonly version: SemVerString | null;
+  public readonly version;
   public readonly language: LanguageManager;
   public readonly localSettings: StorageSettingsManager<LocalSettings>;
   public readonly settings: SettingsManager<Settings>;
