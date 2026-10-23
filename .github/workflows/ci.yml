@@ -144,6 +144,11 @@ jobs:
       - name: Install the locked Windows test environment
         run: uv sync --locked --python ${{ matrix.python }}
 
+      - name: Probe the ConHost batch command line
+        run: >-
+          uv run --locked --python ${{ matrix.python }}
+          bun x vitest run tests/src/terminal/conhost-command-line.test.ts
+
       - name: Run ConPTY host and ConHost resizer tests
         run: >-
           uv run --locked --python ${{ matrix.python }} pytest
