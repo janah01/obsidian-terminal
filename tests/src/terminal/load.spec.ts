@@ -688,9 +688,20 @@ describe("opening commands on the focused list follow Add to command", () => {
     await new Promise((resolve) => {
       self.setTimeout(resolve, 0);
     });
-    const writes = write.mock.calls.length;
     loadTerminal(context);
-    return { context, listed, mutate, settings, write, writes };
+    // What the start itself may still change and save.
+    await new Promise((resolve) => {
+      self.setTimeout(resolve, 0);
+    });
+    return {
+      context,
+      listed,
+      mutate,
+      mutates: mutate.mock.calls.length,
+      settings,
+      write,
+      writes: write.mock.calls.length,
+    };
   }
 
   it.each([
@@ -719,7 +730,7 @@ describe("opening commands on the focused list follow Add to command", () => {
   ])(
     "follows the setting loaded from a %s data.json until the plugin unloads",
     async (_version, data) => {
-      const { context, listed, mutate, settings, write, writes } =
+      const { context, listed, mutate, mutates, settings, write, writes } =
         await loadManaged(await data());
       expect([...listed]).toEqual([]);
 
@@ -729,7 +740,7 @@ describe("opening commands on the focused list follow Add to command", () => {
       expect([...listed]).toEqual(OPENING_IDS);
       expect(reload).toHaveBeenCalledExactlyOnceWith(context);
       // The list follows the setting and stores nothing of its own.
-      expect(mutate).toHaveBeenCalledOnce();
+      expect(mutate).toHaveBeenCalledTimes(mutates + 1);
       expect(write).toHaveBeenCalledTimes(writes);
 
       for (const [dispose] of vi.mocked(context).register.mock.calls) dispose();
