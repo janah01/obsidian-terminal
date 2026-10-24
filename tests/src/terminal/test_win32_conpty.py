@@ -330,6 +330,24 @@ def test_sweep_ends_only_candidates_the_console_check_confirms() -> None:
     assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == [10]
 
 
+def test_sweep_keeps_what_a_console_less_program_runs() -> None:
+    """A detached program keeps the console programs it runs itself.
+
+    Detached programs stay because daemons that serve other applications must
+    go on working. A daemon whose workers end with the session does not: the
+    worker in a hidden console under it stays as well.
+    """
+    records = [
+        # The shell.
+        _record(10, 1, "console"),
+        # A daemon it started detached, without a console.
+        _record(20, 10, "console"),
+        # The daemon's worker, in a hidden console of its own.
+        _record(30, 20, "console"),
+    ]
+    assert _MODULE.select_descendants_to_end(records, _consoles(10, 30)) == [10]
+
+
 def _pe_header(magic: int, subsystem: int, signature_offset: int = 0x80) -> bytes:
     """Build the start of a PE image with the given optional-header fields."""
     header = bytearray(signature_offset + 24 + 70)
@@ -4171,6 +4189,117 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
     # Only now the guard: a refusal here is the regression the breakaway job
     # must prevent, and the lifetimes above must not hide behind it.
     assert refusals == [None], refusals
+
+
+def _spawn_detached_supervisor(ready_file: Path, exit_gate: Path) -> list[str]:
+    """Start a detached program that runs a worker in a hidden console; gate exit.
+
+    This is how a daemon started from the terminal looks on Windows: Node's
+    ``detached`` gives it no console, and each worker it starts with
+    ``windowsHide`` gets a hidden console of its own. The daemon publishes its
+    PID and the worker's once the worker runs. The shell waits for
+    ``exit_gate`` and exits 42.
+    """
+    worker_code = (
+        "import sys, time\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as stream:\n"
+        "    stream.write('up')\n"
+        "time.sleep(120)\n"
+    )
+    daemon_code = (
+        "import json, os, subprocess, sys, time\n"
+        "up = sys.argv[1] + '.worker'\n"
+        "worker = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {worker_code!r}, up],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        "deadline = time.monotonic() + 30\n"
+        "while not os.path.exists(up) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.05)\n"
+        "record = {'pid': os.getpid(), 'worker': worker.pid}\n"
+        "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump(record, stream)\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+        "time.sleep(120)\n"
+    )
+    code = (
+        "import os, subprocess, sys, time\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {daemon_code!r}, {str(ready_file)!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.DETACHED_PROCESS,\n"
+        ")\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_keeps_the_workers_of_a_detached_program(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A detached program keeps running together with the workers it runs itself.
+
+    Detached programs outlive the session so that daemons serving other
+    applications go on working. A daemon whose workers are ended under it is
+    running, but no longer working.
+    """
+    ready_file = tmp_path / "daemon.json"
+    exit_gate = tmp_path / "shell-exit"
+    published: list[tuple[int, int]] = []
+    consoles: list[dict[int, bool]] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell, the daemon and its worker; check their consoles."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(record, dict), record
+            daemon, worker = record.get("pid"), record.get("worker")
+            assert isinstance(daemon, int) and isinstance(worker, int), record
+            watch.pin(daemon)
+            watch.pin(worker)
+            published.append((daemon, worker))
+            handles = {
+                pid: _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
+                for pid in (daemon, worker)
+            }
+            try:
+                consoles.append(_MODULE._console_owners(handles))
+            finally:
+                for handle in handles.values():
+                    _MODULE._close(handle)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+
+        result = _run_host(
+            _spawn_detached_supervisor(ready_file, exit_gate),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        assert len(published) == 1, result
+        daemon, worker = published[0]
+        # The shape holds: the daemon has no console, its worker has one.
+        assert consoles == [{daemon: False, worker: True}], consoles
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        if shutdown == "natural-exit":
+            assert result.code == 42, result
+        survivors = [daemon, worker]
+        assert watch.survivors(15.0, expected=survivors) == survivors, result.stderr
 
 
 """Hidden-console programs one session leaves behind in the many-program test.
