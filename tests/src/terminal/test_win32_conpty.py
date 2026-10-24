@@ -4179,17 +4179,36 @@ _CHILD_IN_JOBS = (
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_console_owner_check_tells_consoles_apart() -> None:
-    """A program with a hidden console of its own has a console host; a detached one has none."""
-    sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
-    own = subprocess.Popen(sleeper, creationflags=_CREATE_NO_WINDOW)
-    detached = subprocess.Popen(sleeper, creationflags=_DETACHED_PROCESS)
+def test_console_owner_check_tells_consoles_apart(tmp_path: Path) -> None:
+    """A program with a hidden console of its own has a console host; a detached one has none.
+
+    Asked before a child has finished starting, the check still sees the
+    console host it inherited from its creator, so both children report that
+    they are up before the question is put.
+    """
+    started = (tmp_path / "own", tmp_path / "detached")
+    sleeper = (
+        "import sys, time\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as stream:\n"
+        "    stream.write('up')\n"
+        "time.sleep(60)\n"
+    )
+    own = subprocess.Popen(
+        [sys.executable, "-c", sleeper, str(started[0])],
+        creationflags=_CREATE_NO_WINDOW,
+    )
+    detached = subprocess.Popen(
+        [sys.executable, "-c", sleeper, str(started[1])],
+        creationflags=_DETACHED_PROCESS,
+    )
     handles = {
         pid: _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
         for pid in (own.pid, detached.pid, os.getpid())
     }
     try:
         assert all(handles.values()), handles
+        for marker in started:
+            assert _read_when_published(marker, 30.0) == "up"
         owners = _MODULE._console_owners(handles)
         assert owners.get(own.pid) is True, owners
         assert owners.get(detached.pid) is False, owners
