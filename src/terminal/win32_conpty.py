@@ -785,42 +785,53 @@ def select_descendants_to_end(
 ) -> list[int]:
     """Choose the tracked processes that end with the session.
 
-    A process ends when its image is a console program, no GUI program above
-    it still runs, and ``consoles`` answers ``own``: it has a console of its
-    own, hidden or with a window. A process attached to the session's
+    A process ends when its image is a console program, ``consoles`` answers
+    ``own`` for it (a console of its own, hidden or with a window), and no
+    program above it that keeps running shelters it. GUI programs shelter
+    what runs under them, and so do console programs without a console
+    (``none``, the detached ones): a daemon that was meant to outlive the
+    terminal keeps its workers. A process attached to the session's
     pseudoconsole (``attached``) is left to that console host, which closes
-    it with the pseudoconsole and gives it the usual time to answer; the
-    programs it left in consoles of their own are not spared on its account.
+    it with the pseudoconsole and gives it the usual time to answer, and
+    shelters nothing: what it left in consoles of its own is the leak.
     Parent links are followed only through records created no later than the
     child, so a reused parent PID breaks the chain, and an orphan whose
     launcher has exited has no ancestor at all. GUI programs, programs whose
-    image cannot be read, console programs without a console (``none``, the
-    detached ones) and anything ``consoles`` leaves unanswered are kept.
+    image cannot be read, console programs without a console and anything
+    ``consoles`` leaves unanswered are kept.
     """
     by_pid = {record.pid: record for record in records}
+    asked = [record.pid for record in records if record.subsystem == _SUBSYSTEM_CONSOLE]
+    if not asked:
+        return []
+    kinds = consoles(asked)
 
-    def under_gui(record: DescendantRecord) -> bool:
-        """Report whether a running GUI program is an ancestor of ``record``."""
+    def shelters(record: DescendantRecord) -> bool:
+        """Report whether ``record`` keeps running and keeps what runs under it."""
+        return (
+            record.subsystem == _SUBSYSTEM_GUI or kinds.get(record.pid) == _CONSOLE_NONE
+        )
+
+    def sheltered(record: DescendantRecord) -> bool:
+        """Report whether a running sheltering program is an ancestor of ``record``."""
         seen = {record.pid}
         child = record
         while True:
             parent = by_pid.get(child.parent_pid)
             if parent is None or parent.pid in seen or parent.created > child.created:
                 return False
-            if parent.subsystem == _SUBSYSTEM_GUI:
+            if shelters(parent):
                 return True
             seen.add(parent.pid)
             child = parent
 
-    candidates = [
+    return [
         record.pid
         for record in records
-        if record.subsystem == _SUBSYSTEM_CONSOLE and not under_gui(record)
+        if record.subsystem == _SUBSYSTEM_CONSOLE
+        and kinds.get(record.pid) == _CONSOLE_OWN
+        and not sheltered(record)
     ]
-    if not candidates:
-        return []
-    kinds = consoles(candidates)
-    return [pid for pid in candidates if kinds.get(pid) == _CONSOLE_OWN]
 
 
 def job_process_ids(

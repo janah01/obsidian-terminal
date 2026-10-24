@@ -305,14 +305,18 @@ def test_sweep_leaves_attached_programs_to_the_console_host() -> None:
     assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == [30]
 
 
-def test_sweep_probes_only_the_console_candidates() -> None:
-    """The console check is asked about console images without a GUI ancestor."""
+def test_sweep_asks_the_console_check_about_console_images_only() -> None:
+    """Every console image is asked about once, GUI and unreadable ones never.
+
+    A console image under a GUI program is asked about as well: its answer
+    decides whether it shelters what runs under it.
+    """
     asked: list[list[int]] = []
 
-    def probe(candidates: Sequence[int]) -> Mapping[int, str]:
-        """Record the question and give every candidate a console of its own."""
-        asked.append(list(candidates))
-        return {pid: "own" for pid in candidates}
+    def probe(pids: Sequence[int]) -> Mapping[int, str]:
+        """Record the question and give every process a console of its own."""
+        asked.append(list(pids))
+        return {pid: "own" for pid in pids}
 
     records = [
         _record(10, 1, "console"),
@@ -321,7 +325,7 @@ def test_sweep_probes_only_the_console_candidates() -> None:
         _record(40, 1, "unknown"),
     ]
     assert _MODULE.select_descendants_to_end(records, probe) == [10]
-    assert asked == [[10]]
+    assert asked == [[10, 30]]
     probe_mock = Mock()
     assert _MODULE.select_descendants_to_end([_record(20, 1, "gui")], probe_mock) == []
     probe_mock.assert_not_called()
