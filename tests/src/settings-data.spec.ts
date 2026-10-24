@@ -957,6 +957,38 @@ describe("src/settings-data.ts", () => {
       expect(Settings.Profile.byId(stored, "__proto__")?.type).toBe("external");
     });
 
+    it("lists every stored profile once, whatever a device's order holds", () => {
+      // Ids such as 2 and 10, and one stored under __proto__, as JSON gives.
+      const stored = JSON.parse(
+          `{"b":${JSON.stringify(integrated)},"10":${JSON.stringify(integrated)},"a":${JSON.stringify(external)},"2":${JSON.stringify(integrated)},"__proto__":${JSON.stringify(external)}}`,
+        ) as Settings.Profiles,
+        storedIds = Object.keys(stored),
+        pool = [...storedIds, "gone", "constructor", "toString", "", "02"];
+      let seed = 233;
+      const next = (bound: number): number => {
+        seed = (seed * 48_271) % 2_147_483_647;
+        return seed % bound;
+      };
+      for (let round = 0; round < 500; round += 1) {
+        const order = Array.from(
+            { length: next(12) },
+            () => pool[next(pool.length)] ?? "",
+          ),
+          entries = Settings.Profile.orderedEntries(stored, order),
+          named = [...new Set(order.filter((id) => Object.hasOwn(stored, id)))];
+        expect([...ids(entries)].sort()).toEqual([...storedIds].sort());
+        // The stored ids the order names, in its order, then the others.
+        expect(ids(entries)).toEqual([
+          ...named,
+          ...storedIds.filter((id) => !named.includes(id)),
+        ]);
+        for (const [id, profile] of entries) {
+          expect(profile).toBe(Settings.Profile.byId(stored, id));
+          expect(profile).not.toBeNull();
+        }
+      }
+    });
+
     it("takes the first compatible profile of a type in a device's order", () => {
       const mixed: Settings.Profiles = {
         outside: external,
