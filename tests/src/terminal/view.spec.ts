@@ -56,6 +56,7 @@ import {
   type Pseudoterminal,
   pipeShellToTerminal,
 } from "../../../src/terminal/pseudoterminal.js";
+import { spawnTerminal } from "../../../src/terminal/spawn.js";
 import {
   EditTerminalModal,
   TerminalView,
@@ -1830,6 +1831,507 @@ describe("TerminalView.spawn", () => {
 
     expect(reveal).toHaveBeenCalledExactlyOnceWith(leaf);
     expect(activate).toHaveBeenCalledExactlyOnceWith(leaf, { focus: true });
+  });
+});
+
+describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
+  const external = {
+    ...Settings.Profile.DEFAULTS.external,
+    executable: "/usr/bin/true",
+    name: "Stand-in",
+    platforms: { darwin: true, linux: true, win32: true },
+  };
+
+  afterEach(() => {
+    platform.windows = false;
+  });
+
+  // Watches every way the workspace could make, move, pin or show a leaf.
+  function bed(overrides: Partial<Settings> = {}) {
+    const made = makeTerminalContext(overrides),
+      { workspace } = made;
+    return {
+      ...made,
+      left: vi.spyOn(workspace, "getLeftLeaf"),
+      right: vi.spyOn(workspace, "getRightLeaf"),
+      pin: vi.spyOn(WorkspaceLeaf.prototype, "setPinned"),
+      notice: vi.spyOn(library, "notice2").mockImplementation(vi.fn()),
+      report: vi.spyOn(library, "printError").mockImplementation(vi.fn()),
+      open: vi.spyOn(profileProperties, "openProfile").mockResolvedValue(null),
+    };
+  }
+  type Bed = ReturnType<typeof bed>;
+
+  function opening(
+    overrides: Partial<TerminalView.State> = {},
+  ): TerminalView.State {
+    return {
+      ...TerminalView.State.DEFAULT,
+      cwd: "/vault",
+      profile: external,
+      ...overrides,
+    };
+  }
+
+  function expectNoLeaf(spies: Bed): void {
+    const { allocate, left, right, activate, reveal, pin } = spies;
+    expect(allocate).not.toHaveBeenCalled();
+    expect(left).not.toHaveBeenCalled();
+    expect(right).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
+    expect(reveal).not.toHaveBeenCalled();
+    expect(pin).not.toHaveBeenCalled();
+  }
+
+  // Two terminal tabs: "second" opened last, then the user went back to "first".
+  async function twoTabs(spies: Bed) {
+    const { context, workspace } = spies,
+      first = makeTerminalLeaf(context),
+      second = makeTerminalLeaf(context);
+    vi.spyOn(workspace, "getLeavesOfType").mockReturnValue([
+      first.leaf,
+      second.leaf,
+    ]);
+    await TerminalView.spawn(context, TerminalView.State.DEFAULT, second.leaf);
+    await TerminalView.spawn(context, TerminalView.State.DEFAULT, first.leaf);
+    for (const spy of [
+      spies.allocate,
+      spies.left,
+      spies.right,
+      spies.activate,
+      spies.reveal,
+      spies.pin,
+    ]) {
+      spy.mockClear();
+    }
+    return { first, second };
+  }
+
+  it.each(Settings.NEW_INSTANCE_BEHAVIORS)(
+    "opens the program once and makes no leaf for %s",
+    async (newInstanceBehavior) => {
+      const spies = bed({
+        createInstanceNearExistingOnes: false,
+        newInstanceBehavior,
+      });
+
+      await TerminalView.spawn(spies.context, opening());
+
+      expectNoLeaf(spies);
+      expect(spies.open).toHaveBeenCalledExactlyOnceWith(
+        spies.context,
+        external,
+        { cwd: "/vault" },
+      );
+    },
+  );
+
+  describe.each([false, true])("on Windows: %s", (windows) => {
+    it("leaves the terminal used last in front and the one to open next to", async () => {
+      platform.windows = windows;
+      const spies = bed({ createInstanceNearExistingOnes: true }),
+        { first } = await twoTabs(spies);
+
+      await TerminalView.spawn(spies.context, opening());
+
+      expectNoLeaf(spies);
+      expect(spies.open).toHaveBeenCalledOnce();
+      // The next terminal still opens next to "first", the one used last.
+      TerminalView.getLeaf(spies.context);
+      expect(spies.activate).toHaveBeenCalledExactlyOnceWith(first.leaf);
+    });
+  });
+
+  it.each(["leftSplit", "rightSplit"] as const)(
+    "makes no sidebar leaf when the terminal used last is in the %s",
+    async (side) => {
+      const spies = bed({ createInstanceNearExistingOnes: true }),
+        { first } = await twoTabs(spies);
+      Object.assign(first.leaf, { getRoot: () => spies.workspace[side] });
+
+      await TerminalView.spawn(spies.context, opening());
+
+      expectNoLeaf(spies);
+      expect(spies.open).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not bring forward a pop-out window that holds the terminal used last", async () => {
+    const spies = bed({ createInstanceNearExistingOnes: true }),
+      { first } = await twoTabs(spies),
+      popout = {};
+    Object.assign(first.leaf, {
+      getContainer: () => popout,
+      getRoot: () => popout,
+    });
+
+    await TerminalView.spawn(spies.context, opening());
+
+    expectNoLeaf(spies);
+    expect(spies.open).toHaveBeenCalledOnce();
+  });
+
+  it("moves no focus when the opening asks for focus", async () => {
+    const spies = bed({ focusOnNewInstance: true, pinNewInstance: true });
+
+    await TerminalView.spawn(spies.context, opening({ focus: true }));
+
+    expectNoLeaf(spies);
+    expect(spies.open).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["its name", { name: "Stand-in" }, "", "Stand-in"],
+    ["its program without a name", { name: "" }, "", "true"],
+    [
+      "a Windows program without a name",
+      { executable: "C:\\Windows\\System32\\cmd.exe", name: "" },
+      "",
+      "cmd",
+    ],
+    [
+      "a macOS app without a name",
+      {
+        executable: "/System/Applications/Utilities/Terminal.app",
+        name: "",
+      },
+      "",
+      "Terminal",
+    ],
+    ["the title the user gave", { name: "Stand-in" }, "Build box", "Build box"],
+    [
+      "a name with markup, unescaped",
+      { name: "Git & <Bash>" },
+      "",
+      "Git & <Bash>",
+    ],
+  ])(
+    "names the program by %s in the opening notice",
+    async (_, profile, userTitle, title) => {
+      const spies = bed({ noticeTimeout: 7 }),
+        { t } = spies.context.language.value;
+
+      await TerminalView.spawn(
+        spies.context,
+        opening({ profile: { ...external, ...profile }, userTitle }),
+      );
+
+      expect(spies.notice).toHaveBeenCalledExactlyOnceWith(
+        expect.any(Function),
+        7,
+        spies.context,
+      );
+      vi.mocked(t).mockClear();
+      const [message] = spies.notice.mock.calls[0] ?? [];
+      message?.();
+      expect(t).toHaveBeenCalledExactlyOnceWith("notices.spawning-terminal", {
+        interpolation: { escapeValue: false },
+        title,
+      });
+    },
+  );
+
+  it("shows the notice before the program starts", async () => {
+    const spies = bed();
+
+    await TerminalView.spawn(spies.context, opening());
+
+    expect(spies.notice.mock.invocationCallOrder[0] ?? Infinity).toBeLessThan(
+      spies.open.mock.invocationCallOrder[0] ?? -Infinity,
+    );
+  });
+
+  it("settles once the program has started", async () => {
+    const spies = bed(),
+      started = deferred();
+    spies.open.mockReturnValue(started.promise.then(() => null));
+    let settled = false;
+
+    const spawning = TerminalView.spawn(spies.context, opening()).then(() => {
+      settled = true;
+    });
+    await tick();
+
+    expect(spies.open).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    started.resolve(undefined);
+    await spawning;
+    expect(settled).toBe(true);
+  });
+
+  it.each([
+    [null, undefined],
+    ["/vault", "/vault"],
+    ["C:\\Users\\Jane Doe\\Vault ü", "C:\\Users\\Jane Doe\\Vault ü"],
+  ])("starts the program in %j", async (cwd, expected) => {
+    const spies = bed();
+
+    await TerminalView.spawn(spies.context, opening({ cwd }));
+
+    expect(spies.open).toHaveBeenCalledExactlyOnceWith(
+      spies.context,
+      external,
+      { cwd: expected },
+    );
+  });
+
+  it.each([new Error("spawn /bin/sh ENOENT"), "not an error"])(
+    "reports a failed start once and still settles: %s",
+    async (failure) => {
+      const spies = bed(),
+        { t } = spies.context.language.value;
+      spies.open.mockRejectedValue(failure);
+
+      await expect(
+        TerminalView.spawn(spies.context, opening()),
+      ).resolves.toBeUndefined();
+      await tick();
+
+      expect(spies.report).toHaveBeenCalledOnce();
+      const [error, message, context] = spies.report.mock.calls[0] ?? [];
+      expect(error).toBeInstanceOf(Error);
+      if (failure instanceof Error) expect(error).toBe(failure);
+      expect(context).toBe(spies.context);
+      vi.mocked(t).mockClear();
+      message?.();
+      expect(t).toHaveBeenCalledExactlyOnceWith(
+        "errors.error-spawning-terminal",
+      );
+      expectNoLeaf(spies);
+    },
+  );
+
+  it("opens the program from a command without a leaf or a logged error", async () => {
+    const spies = bed(),
+      logged = vi.spyOn(self.console, "error").mockImplementation(vi.fn());
+    spies.open.mockRejectedValue(new Error("no shell"));
+
+    // The profile it came from is gone from the settings; the copy still opens.
+    spawnTerminal(spies.context, external, {
+      cwd: "/vault",
+      profileSourceId: "deleted",
+    });
+    await tick();
+
+    expect(spies.open).toHaveBeenCalledExactlyOnceWith(
+      spies.context,
+      external,
+      { cwd: "/vault" },
+    );
+    expect(spies.report).toHaveBeenCalledOnce();
+    expect(logged).not.toHaveBeenCalled();
+    expectNoLeaf(spies);
+  });
+
+  it("opens the program the user picked in the edit dialog without a leaf", async () => {
+    const spies = bed(),
+      close = vi.fn(),
+      confirmations: Promise<void>[] = [];
+    vi.spyOn(EditTerminalModal.prototype, "open").mockImplementation(function (
+      this: EditTerminalModal,
+    ) {
+      // The user switches the dialog to the external profile and confirms.
+      Object.assign(this["state"], { profile: external });
+      confirmations.push(this["confirm"](close));
+    });
+
+    spawnTerminal(spies.context, Settings.Profile.DEFAULTS.integrated, {
+      cwd: "/vault",
+      edit: true,
+    });
+    await Promise.all(confirmations);
+
+    expect(spies.open).toHaveBeenCalledExactlyOnceWith(
+      spies.context,
+      external,
+      { cwd: "/vault" },
+    );
+    expect(close).toHaveBeenCalledOnce();
+    expectNoLeaf(spies);
+  });
+
+  it("still puts the program's state into a leaf the caller gives", async () => {
+    const spies = bed(),
+      { leaf, setViewState } = makeTerminalLeaf(spies.context),
+      type = TerminalView.type.namespaced(spies.context),
+      state = opening(),
+      leaves = vi
+        .spyOn(spies.workspace, "getLeavesOfType")
+        .mockReturnValue([leaf]);
+    // The view opens the program and closes its tab while the state is set.
+    setViewState.mockImplementation(() => {
+      leaves.mockReturnValue([]);
+      return Promise.resolve();
+    });
+
+    await TerminalView.spawn(spies.context, state, leaf, type);
+
+    expect(setViewState).toHaveBeenCalledExactlyOnceWith({
+      state: { [type]: state },
+      type,
+    });
+    expect(spies.open).not.toHaveBeenCalled();
+    expectNoLeaf(spies);
+  });
+
+  it.each(["", "developerConsole", "integrated", "invalid"] as const)(
+    "still opens a %j profile in a new leaf",
+    async (profileType) => {
+      const spies = bed({
+          createInstanceNearExistingOnes: false,
+          newInstanceBehavior: "newTab",
+        }),
+        setViewState = vi.spyOn(spies.next, "setViewState");
+
+      await TerminalView.spawn(
+        spies.context,
+        opening({ profile: Settings.Profile.DEFAULTS[profileType] }),
+      );
+
+      expect(spies.allocate).toHaveBeenCalledExactlyOnceWith("tab");
+      expect(setViewState).toHaveBeenCalledOnce();
+      expect(spies.open).not.toHaveBeenCalled();
+    },
+  );
+
+  it("opens two programs for two runs, also at once", async () => {
+    const spies = bed();
+
+    await Promise.all([
+      TerminalView.spawn(spies.context, opening()),
+      TerminalView.spawn(spies.context, opening({ cwd: "/other" })),
+    ]);
+    await TerminalView.spawn(spies.context, opening());
+
+    expect(spies.open.mock.calls.map(([, , options]) => options)).toEqual([
+      { cwd: "/vault" },
+      { cwd: "/other" },
+      { cwd: "/vault" },
+    ]);
+    expect(spies.notice).toHaveBeenCalledTimes(3);
+    expectNoLeaf(spies);
+  });
+
+  describe("a tab restored with the program's state", () => {
+    class RestoredView extends TerminalView {
+      public override startEmulator(focus: boolean): void {
+        super.startEmulator(focus);
+      }
+    }
+
+    function restore(spies: Bed, state: TerminalView.State) {
+      const leaf = new WorkspaceLeaf(),
+        detach = vi.fn(),
+        view = new RestoredView(spies.context, leaf);
+      Object.assign(leaf, { detach });
+      view.app = spies.context.app;
+      Object.defineProperty(view, "state", { value: state });
+      return { detach, view };
+    }
+
+    it("opens the program once and closes the tab", async () => {
+      const spies = bed(),
+        { t } = spies.context.language.value,
+        { detach, view } = restore(spies, opening({ userTitle: "Restored" }));
+
+      view.startEmulator(false);
+      await tick();
+
+      expect(spies.open).toHaveBeenCalledExactlyOnceWith(
+        spies.context,
+        external,
+        { cwd: "/vault" },
+      );
+      expect(detach).toHaveBeenCalledOnce();
+      expect(view.contentEl.childElementCount).toBe(0);
+      vi.mocked(t).mockClear();
+      const [message] = spies.notice.mock.calls[0] ?? [];
+      message?.();
+      expect(t).toHaveBeenCalledExactlyOnceWith("notices.spawning-terminal", {
+        interpolation: { escapeValue: false },
+        title: "Restored",
+      });
+    });
+
+    it("reports a failed start once and still closes the tab", async () => {
+      const spies = bed(),
+        { detach, view } = restore(spies, opening());
+      spies.open.mockRejectedValue(new Error("no shell"));
+
+      view.startEmulator(false);
+      await tick();
+
+      expect(spies.report).toHaveBeenCalledOnce();
+      expect(detach).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("the tab title of a terminal", () => {
+    interface Shown {
+      readonly profile: Settings.Profile;
+      readonly userTitle?: string;
+      readonly rawTitle?: string;
+    }
+
+    function titleOf({
+      profile,
+      userTitle = "",
+      rawTitle = "",
+    }: Shown): string {
+      const { context, settings } = makeTerminalContext({
+          showTerminalTabPrefix: false,
+        }),
+        view = new TerminalView(context, new WorkspaceLeaf());
+      settings.showTerminalTabPrefix = false;
+      Object.defineProperty(view, "state", {
+        value: { ...TerminalView.State.DEFAULT, profile, userTitle },
+      });
+      Object.defineProperty(view, "rawTitle", { value: rawTitle });
+      return view.getDisplayText();
+    }
+
+    it.each<readonly [string, Shown, string]>([
+      [
+        "the profile's name",
+        { profile: { ...external, name: "Stand-in" } },
+        "Stand-in",
+      ],
+      [
+        "the program's base name",
+        {
+          profile: {
+            ...Settings.Profile.DEFAULTS.integrated,
+            executable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+            name: "",
+          },
+        },
+        "pwsh",
+      ],
+      [
+        "the type for a profile without a program",
+        { profile: Settings.Profile.DEFAULTS.developerConsole },
+        "components.terminal.name.profile-type",
+      ],
+      [
+        "the program's own title",
+        {
+          profile: { ...external, name: "Stand-in" },
+          rawTitle: "vim notes.md",
+        },
+        "vim notes.md",
+      ],
+      [
+        "the user's title over the program's",
+        {
+          profile: { ...external, name: "Stand-in" },
+          rawTitle: "vim notes.md",
+          userTitle: "Build box",
+        },
+        "Build box",
+      ],
+    ])("is %s", (_, shown, expected) => {
+      expect(titleOf(shown)).toBe(expected);
+    });
   });
 });
 
