@@ -331,6 +331,22 @@ describe("this device's store as the plugin saves it", () => {
     expect(malformed).not.toHaveBeenCalled();
   });
 
+  it("keeps a separate choice for each vault on this device", async () => {
+    items.set(key, JSON.stringify(released3290));
+    const upgraded = await start(),
+      added = await start(() => "r3291-other-vault");
+    await migrateProfileChoice(upgraded);
+    await migrateProfileChoice(added);
+    expect(deviceDefaultProfile(upgraded)?.[0]).toBe("zsh");
+    expect(deviceDefaultProfile(added)).toBeNull();
+    await vi.waitFor(() => {
+      expect(
+        JSON.parse(items.get("r3291-other-vault.terminal.settings") ?? "null"),
+      ).toMatchObject({ defaultProfile: null, profileOrder: [] });
+    });
+    expect(stored()).toMatchObject({ defaultProfile: "zsh" });
+  });
+
   it("treats unreadable saved text as a new device", async () => {
     vi.spyOn(console, "debug").mockImplementation(() => {});
     items.set(key, "{not json");
