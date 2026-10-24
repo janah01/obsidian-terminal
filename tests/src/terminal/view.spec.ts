@@ -342,6 +342,7 @@ describe("hotkeys while a terminal has focus", () => {
     return {
       context,
       executeCommand,
+      listener,
       // The user's own hotkey and no default one, as on an opening command.
       addBoundCommand: (id: string, hotkey: Hotkey) => {
         const check = vi.fn((_checking: boolean): boolean => true),
@@ -477,20 +478,18 @@ describe("hotkeys while a terminal has focus", () => {
   });
 
   it("leaves the repeats of a held key to the terminal once its command left the list", () => {
-    const { addBoundCommand, context, executeCommand, press } = loadView(),
+    const { addBoundCommand, context, executeCommand, listener, press } =
+        loadView(),
       { command } = addBoundCommand("open-terminal.integrated.root", {
         key: "r",
         modifiers: ["Ctrl"],
       }),
-      // Spying again hands back the spy of `loadView`.
-      listener = vi.spyOn(ScopeView.scope, "register").mock.lastCall?.[2];
-    if (!listener) throw new Error("Missing focused-scope listener");
-    const repeat = (): unknown =>
-      listener(new KeyboardEvent("keydown", { key: "r", repeat: true }), {
-        key: "r",
-        modifiers: compile(["Ctrl"]),
-        vkey: "r",
-      });
+      repeat = (): unknown =>
+        listener(new KeyboardEvent("keydown", { key: "r", repeat: true }), {
+          key: "r",
+          modifiers: compile(["Ctrl"]),
+          vkey: "r",
+        });
     TerminalView.allowWhileFocused(command);
     press(["Ctrl"], "r");
 

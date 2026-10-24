@@ -883,8 +883,7 @@ export class TerminalView extends ItemView {
       context,
       [context.app],
       (app) => {
-        const { hotkeyManager } = app;
-        hotkeyManager.baked = false;
+        app.hotkeyManager.baked = false;
       },
       noop,
     );
