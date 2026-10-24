@@ -96,6 +96,32 @@ describe("src/settings-data.ts", () => {
     );
   });
 
+  it("keeps every number the number fields store, through a save and a load", () => {
+    // The fields store what is typed: a minus sign, an exponent, a decimal.
+    // A device on 3.29.0 reads them with these same fixers.
+    const [key, profile] = Object.entries(released329.profiles)[0] ?? [];
+    if (!key || !profile) throw new Error("fixture has no profile");
+    const typed = {
+        ...released329,
+        errorNoticeTimeout: -1,
+        noticeTimeout: 0.001,
+        profiles: {
+          ...released329.profiles,
+          [key]: { ...profile, terminalOptions: { fontSize: 14.05 } },
+        },
+        terminalOptions: { ...released329.terminalOptions, fontSize: 1000 },
+      },
+      fixed = Settings.fix(JSON.parse(JSON.stringify(typed)));
+
+    expect(fixed.valid).toBe(true);
+    expect(fixed.value).toMatchObject({
+      errorNoticeTimeout: -1,
+      noticeTimeout: 0.001,
+      profiles: { [key]: { terminalOptions: { fontSize: 14.05 } } },
+      terminalOptions: { fontSize: 1000 },
+    });
+  });
+
   it.each([
     undefined,
     null,
