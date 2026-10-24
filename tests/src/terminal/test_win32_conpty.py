@@ -4173,6 +4173,88 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
     assert refusals == [None], refusals
 
 
+"""Hidden-console programs one session leaves behind in the many-program test.
+
+With their console hosts the tracking job holds more than twice as many
+processes, past the first read of its process list (64) and past the 64
+handles one ``WaitForMultipleObjects`` call takes.
+"""
+_MANY_HELPERS = 70
+
+
+def _spawn_many_hidden_helpers(ready_file: Path, exit_gate: Path) -> list[str]:
+    """Start ``_MANY_HELPERS`` pings in hidden consoles, publish them, gate exit."""
+    code = (
+        "import json, os, subprocess, sys, time\n"
+        "ping = os.path.join(os.environ['SystemRoot'], 'System32', 'PING.EXE')\n"
+        "pids = [\n"
+        "    subprocess.Popen(\n"
+        "        [ping, '-n', '300', '127.0.0.1'],\n"
+        "        stdin=subprocess.DEVNULL,\n"
+        "        stdout=subprocess.DEVNULL,\n"
+        "        stderr=subprocess.DEVNULL,\n"
+        "        creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        "    ).pid\n"
+        f"    for _ in range({_MANY_HELPERS})\n"
+        "]\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pids': pids}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_ends_more_programs_than_one_list_read_holds(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """Every hidden-console program ends, however many, within the exit budget."""
+    ready_file = tmp_path / "helpers.json"
+    exit_gate = tmp_path / "shell-exit"
+    pinned: list[int] = []
+    started: list[float] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and every helper before the shutdown starts."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 60.0))
+            assert isinstance(record, dict), record
+            pids = record.get("pids")
+            assert isinstance(pids, list), record
+            assert len(pids) == _MANY_HELPERS, record
+            for pid in pids:
+                assert isinstance(pid, int), record
+                watch.pin(pid)
+                pinned.append(pid)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+            started.append(time.monotonic())
+
+        result = _run_host(
+            _spawn_many_hidden_helpers(ready_file, exit_gate),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=90.0,
+        )
+        elapsed = time.monotonic() - started[0]
+        assert len(pinned) == _MANY_HELPERS, result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert elapsed < _IGNORED_CLOSE_BOUND, (elapsed, result.stderr)
+        assert watch.survivors(15.0) == [], result.stderr
+        assert b"did not end" not in result.stderr, result.stderr
+
+
 """Creation flag of a child with a hidden console of its own."""
 _CREATE_NO_WINDOW = 0x08000000
 """Creation flag of a child with no console at all."""
