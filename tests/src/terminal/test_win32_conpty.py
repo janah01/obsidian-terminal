@@ -4596,16 +4596,27 @@ _CONSOLE_FREEING_PROGRAM = (
 
 
 def _run_published_program(
-    tmp_path: Path, shutdown: str, program: str, flags: str, shape: str
+    tmp_path: Path,
+    shutdown: str,
+    program: str,
+    flags: str,
+    shape: str,
+    deadline: float = 30.0,
+    announces_start: bool = False,
 ) -> tuple[_HostResult, list[int], list[int]]:
     """Run a session whose shell starts ``program``; return what is still running.
 
     The program's record must report ``shape`` as true before the shutdown.
+    The program publishes it within ``deadline`` seconds of its start; the
+    probe allows 15 seconds more for the start, and the host 15 more again.
+    A program that ``announces_start`` first publishes ``<record>.started``,
+    so a record that does not come says whether the program had started.
     The result holds the host's result, the program's PID, and the pinned
     processes that outlive the session, the program expected among them.
     """
     ready_file = tmp_path / "program.json"
     exit_gate = tmp_path / "shell-exit"
+    read_timeout = deadline + 15.0
     published: list[int] = []
     with closing(_ProcessWatch()) as watch:
 
@@ -4614,7 +4625,13 @@ def _run_published_program(
             shell = ready["childPid"]
             assert isinstance(shell, int), ready
             watch.pin(shell)
-            record: object = json.loads(_read_when_published(ready_file, 45.0))
+            until = time.monotonic() + read_timeout
+            if announces_start:
+                started = Path(f"{ready_file}.started")
+                _read_when_published(started, until - time.monotonic())
+            record: object = json.loads(
+                _read_when_published(ready_file, until - time.monotonic())
+            )
             assert isinstance(record, dict), record
             pid = record.get("pid")
             assert isinstance(pid, int), record
@@ -4629,7 +4646,7 @@ def _run_published_program(
             close_stdin=False,
             replies=({"op": "kill"},) if shutdown == "kill" else (),
             ready_probe=pin_before_shutdown,
-            timeout=60.0,
+            timeout=read_timeout + 15.0,
         )
         assert len(published) == 1, result
         assert result.messages[-1] == {"event": "exit", "code": result.code}
@@ -4657,13 +4674,24 @@ def test_session_end_keeps_a_program_that_freed_its_console(
     assert survivors == published, result.stderr
 
 
+"""Seconds the windowed program waits for its window to show."""
+_WINDOW_DEADLINE = 60.0
+
 """A console program that shows a window, as ``start python app.py`` runs a Tk app.
 
-The window is a message box shown by another thread; the program publishes
-its PID once the window is visible.
+The window is a message box shown by another thread. The program publishes
+its PID to ``<record>.started`` as it starts, then its record once the
+window is visible or ``_WINDOW_DEADLINE`` has passed: whether the window was
+found, whether it is visible, and the seconds it waited.
 """
 _WINDOWED_CONSOLE_PROGRAM = (
     "import ctypes, json, os, sys, threading, time\n"
+    "def publish(path, record):\n"
+    "    with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "        json.dump(record, stream)\n"
+    "    os.replace(path + '.tmp', path)\n"
+    "started = time.monotonic()\n"
+    "publish(sys.argv[1] + '.started', {'pid': os.getpid()})\n"
     "user32 = ctypes.WinDLL('user32', use_last_error=True)\n"
     "user32.FindWindowW.restype = ctypes.c_void_p\n"
     "title = f'session-end window {os.getpid()}'\n"
@@ -4671,15 +4699,20 @@ _WINDOWED_CONSOLE_PROGRAM = (
     "    target=lambda: user32.MessageBoxW(None, 'unsaved work', title, 0),\n"
     "    daemon=True,\n"
     ").start()\n"
-    "deadline = time.monotonic() + 30\n"
     "window = None\n"
-    "while not window and time.monotonic() < deadline:\n"
+    "visible = False\n"
+    f"while not visible and time.monotonic() < started + {_WINDOW_DEADLINE}:\n"
     "    time.sleep(0.05)\n"
     "    window = user32.FindWindowW(None, title)\n"
-    "visible = bool(window) and bool(user32.IsWindowVisible(ctypes.c_void_p(window)))\n"
-    "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
-    "    json.dump({'pid': os.getpid(), 'visible': visible}, stream)\n"
-    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "    visible = bool(window) and bool(\n"
+    "        user32.IsWindowVisible(ctypes.c_void_p(window))\n"
+    "    )\n"
+    "publish(sys.argv[1], {\n"
+    "    'pid': os.getpid(),\n"
+    "    'found': bool(window),\n"
+    "    'visible': visible,\n"
+    "    'waited': round(time.monotonic() - started, 1),\n"
+    "})\n"
     "time.sleep(120)\n"
 )
 
@@ -4701,6 +4734,8 @@ def test_session_end_keeps_a_console_program_that_shows_a_window(
         _WINDOWED_CONSOLE_PROGRAM,
         "subprocess.CREATE_NEW_CONSOLE",
         "visible",
+        deadline=_WINDOW_DEADLINE,
+        announces_start=True,
     )
     assert survivors == published, result.stderr
 
