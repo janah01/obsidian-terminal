@@ -799,8 +799,7 @@ def verified_console_host(pid: int, image: str | None) -> int:
     """
     if image is None:
         return 0
-    name = re.split(r"[\\/]", image)[-1].lower()
-    return pid if name in _CONSOLE_HOST_IMAGES else 0
+    return pid if ntpath.basename(image).lower() in _CONSOLE_HOST_IMAGES else 0
 
 
 def select_descendants_to_end(
