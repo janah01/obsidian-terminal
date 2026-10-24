@@ -1,6 +1,7 @@
 /** Native contract coverage complements the platform-free .spec.ts suite. */
 import {
   execFile,
+  spawn,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -33,6 +34,7 @@ import {
   WindowsNamedPipeControlChannel,
   WindowsPseudoterminal,
   conPtyConsoleHostSpec,
+  quoteWindowsArgument,
 } from "../../../src/terminal/pseudoterminal.js";
 import { writePromise } from "../../../src/utils.js";
 
@@ -1363,4 +1365,240 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
       await fixture.cleanup();
     }
   }, 60_000);
+});
+
+// Probe only, not for the lane branch: compares exit-code lines of the
+// ConHost batch file on real conhost.exe and prints one result per run.
+describe.skipIf(process.platform !== "win32")("probe ConHost exit line", () => {
+  const CONHOST = "C:\\Windows\\System32\\conhost.exe",
+    A = "OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS",
+    X = "OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE",
+    P = "OBSIDIAN_TERMINAL_CONHOST_PROGRAM",
+    HEAD = "@echo off\r\nsetlocal DisableDelayedExpansion\r\n",
+    CLEAR = `set "${A}=" & set "${X}=" & set "${P}=" & `,
+    RUN = (args: boolean): string => `"%${P}%"${args ? ` %${A}%` : ""}`,
+    CMD_ECHO = `call "C:\\Windows\\System32\\cmd.exe" /d /c echo %%ERRORLEVEL%%`,
+    CANDIDATES: Readonly<Record<string, (args: boolean) => string>> = {
+      callEcho: (a) =>
+        `${HEAD}${CLEAR}${RUN(a)}& >"%${X}%" call echo %%ERRORLEVEL%%`,
+      callCmd: (a) => `${HEAD}${CLEAR}${RUN(a)}& >"%${X}%" ${CMD_ECHO}`,
+      callCmdClear: (a) =>
+        `${HEAD}set "ERRORLEVEL=" & ${CLEAR}${RUN(a)}& >"%${X}%" ${CMD_ECHO}`,
+      callEchoParen: (a) =>
+        `${HEAD}${CLEAR}${RUN(a)}& >"%${X}%" call echo(%%ERRORLEVEL%%`,
+      callLabel: (a) =>
+        `${HEAD}${CLEAR}${RUN(a)}& call :done\r\ngoto :eof\r\n:done\r\n>"%~f0" echo(%ERRORLEVEL%`,
+      midDelayed: (a) =>
+        `${HEAD}${CLEAR}${RUN(a)}& setlocal EnableDelayedExpansion & >"%${X}%" echo(!ERRORLEVEL!`,
+      exitB: (a) => `${HEAD}${CLEAR}${RUN(a)}& exit /b`,
+      nextLine: (a) => `${HEAD}${CLEAR}${RUN(a)}\r\n>"%~f0" echo(%ERRORLEVEL%`,
+    };
+
+  interface Scenario {
+    readonly program: string;
+    readonly args: readonly string[];
+    readonly env?: readonly (readonly [string, string])[];
+    readonly folder?: string;
+    readonly name?: string;
+    readonly trap?: "cwd" | "path";
+  }
+
+  let python = "",
+    work = "";
+
+  beforeAll(async () => {
+    const result = await promisify(execFile)(
+      "python",
+      [
+        "-I",
+        "-c",
+        "import sys; print(getattr(sys, '_base_executable', sys.executable))",
+      ],
+      { timeout: TIMEOUT_MS },
+    );
+    python = result.stdout.trim();
+    work = await mkdtemp(win32.join(tmpdir(), "exit-line-probe-"));
+    await writeFile(
+      win32.join(work, "ctrl_c.py"),
+      [
+        "import ctypes, signal, sys, time",
+        "signal.signal(signal.SIGINT, lambda *_: None)",
+        "for _ in range(int(sys.argv[1])):",
+        "    ctypes.windll.kernel32.GenerateConsoleCtrlEvent(0, 0)",
+        "    time.sleep(1)",
+        "sys.exit(7)",
+        "",
+      ].join("\r\n"),
+      "utf8",
+    );
+    await writeFile(
+      win32.join(work, "leak.py"),
+      [
+        "import json, os, sys",
+        "names = sorted(n for n in os.environ if n.upper().startswith('OBSIDIAN_TERMINAL_CONHOST') or n.upper() == 'ERRORLEVEL')",
+        "print('LEAKED=' + json.dumps(names))",
+        "sys.exit(5)",
+        "",
+      ].join("\r\n"),
+      "utf8",
+    );
+    await writeFile(win32.join(work, "nine.cmd"), "@exit /b 9\r\n", "utf8");
+  }, TIMEOUT_MS + 1000);
+
+  function scenarios(): Readonly<Record<string, Scenario>> {
+    const exit = (code: number): readonly string[] => [
+      "-c",
+      `import sys; sys.exit(${String(code)})`,
+    ];
+    return {
+      exit3: { args: exit(3), program: python },
+      exit0: { args: exit(0), program: python },
+      negative: { args: exit(-1073741510), program: python },
+      ctrlC1: { args: [win32.join(work, "ctrl_c.py"), "1"], program: python },
+      ctrlC2: { args: [win32.join(work, "ctrl_c.py"), "2"], program: python },
+      cmd9: { args: [], program: win32.join(work, "nine.cmd") },
+      trapCwd: { args: exit(12), program: python, trap: "cwd" },
+      trapPath: { args: exit(12), program: python, trap: "path" },
+      errorlevelEnv: {
+        args: exit(3),
+        env: [["ERRORLEVEL", "42"]],
+        program: python,
+      },
+      leak: { args: [win32.join(work, "leak.py")], program: python },
+    };
+  }
+
+  function mergedEnv(
+    pairs: readonly (readonly [string, string])[],
+  ): Record<string, string> {
+    const names = new Set(pairs.map(([name]) => name.toUpperCase())),
+      env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && !names.has(key.toUpperCase()))
+        env[key] = value;
+    }
+    for (const [name, value] of pairs) env[name] = value;
+    return env;
+  }
+
+  async function runOne(
+    candidate: string,
+    scenario: string,
+    spec: Scenario,
+  ): Promise<Record<string, unknown>> {
+    const dir = win32.join(
+      await mkdtemp(win32.join(work, "r-")),
+      ...(spec.folder === undefined ? [] : [spec.folder]),
+    );
+    await mkdir(dir, { recursive: true });
+    const batch = win32.join(dir, spec.name ?? "tmp-1-abc.bat"),
+      line = CANDIDATES[candidate]?.(spec.args.length > 0) ?? "",
+      trap = await mkdtemp(win32.join(work, "trap-")),
+      marker = win32.join(trap, "marker.txt");
+    await writeFile(batch, line, "utf8");
+    if (spec.trap !== undefined) {
+      for (const name of ["echo.cmd", "echo.bat", "echo(.bat", "cmd.bat"]) {
+        await writeFile(
+          win32.join(trap, name),
+          `@type nul > "${marker}"\r\n@exit /b 0\r\n`,
+          "utf8",
+        );
+      }
+    }
+    const env = mergedEnv([
+        ...(spec.env ?? []),
+        ...(spec.trap === "path"
+          ? [["PATH", `${trap};${process.env.PATH ?? ""}`] as const]
+          : []),
+        [
+          A,
+          spec.args
+            .map(quoteWindowsArgument)
+            .join(" ")
+            .replace(/[\^&|<>()"]/gu, "^$&"),
+        ],
+        [X, batch],
+        [P, spec.program],
+      ]),
+      child = spawn(CONHOST, [batch], {
+        cwd: spec.trap === "cwd" ? trap : undefined,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      }),
+      chunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const started = Date.now(),
+      exit = await new Promise<readonly [number | null, string | null]>(
+        (resolve) => {
+          const timer = window.setTimeout(() => {
+            child.kill();
+            resolve([null, "timeout"]);
+          }, 12_000);
+          child.once("exit", (code, signal) => {
+            window.clearTimeout(timer);
+            resolve([code, signal]);
+          });
+          child.once("error", (error) => {
+            window.clearTimeout(timer);
+            resolve([null, String(error)]);
+          });
+        },
+      ),
+      output = stripVTControlCharacters(Buffer.concat(chunks).toString("utf8")),
+      file = await readFile(batch, "utf8").then(
+        (text) => (text === line ? "<unchanged>" : text.trim()),
+        (error: unknown) => `<${String(error)}>`,
+      ),
+      ran = await access(marker).then(
+        () => true,
+        () => false,
+      ),
+      leaked = /LEAKED=(\[[^\]]*\])/u.exec(output)?.[1] ?? null;
+    return {
+      candidate,
+      conhost: exit[0],
+      file,
+      leaked,
+      ms: Date.now() - started,
+      prompt: /Terminate batch job/iu.test(output),
+      ran,
+      scenario,
+      signal: exit[1],
+      tail: output.slice(-160),
+    };
+  }
+
+  it(
+    "prints the results",
+    async () => {
+      const jobs: (() => Promise<Record<string, unknown>>)[] = [];
+      for (const candidate of Object.keys(CANDIDATES)) {
+        for (const [scenario, spec] of Object.entries(scenarios())) {
+          jobs.push(async () => runOne(candidate, scenario, spec));
+        }
+      }
+      for (const folder of ["e^x", "a&b", "(x)", "e%x", "e!x", "J\u00fcrgen"]) {
+        for (const name of ["tmp-1-abc.bat", "tmp-1-abc x.bat"]) {
+          jobs.push(async () =>
+            runOne("callEcho", `location ${folder} / ${name}`, {
+              args: ["-c", "import sys; sys.exit(3)"],
+              folder,
+              name,
+              program: python,
+            }),
+          );
+        }
+      }
+      const results: Record<string, unknown>[] = [];
+      for (const job of jobs) {
+        const result = await job();
+        results.push(result);
+        self.console.info(`PROBE_RESULT ${JSON.stringify(result)}`);
+      }
+      expect(results.length).toBe(jobs.length);
+    },
+    30 * 60_000,
+  );
 });
