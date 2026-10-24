@@ -1511,7 +1511,11 @@ describe("TerminalView focus", () => {
       context.app.workspace.setActiveLeaf(leaf);
     }
 
-    const ACTING = ["clear-terminal", "close-terminal", "find-in-terminal"];
+    const ACTING = [
+      "clear-terminal",
+      "close-terminal",
+      "find-in-terminal",
+    ] as const;
 
     function loadCommands(overrides: Partial<Settings> = {}) {
       listenForFocus();
@@ -1938,7 +1942,9 @@ describe("TerminalView focus", () => {
         return popout;
       }
 
-      it("offers them from the main window's ribbon while the pop-out terminal's tab is active", async () => {
+      // Obsidian moves the active leaf into a window when it gets the focus, so
+      // a click on the main window's ribbon does not reach this state.
+      it("follows the active tab across windows", async () => {
         const { command, context } = loadCommands();
         const terminal = await openTerminal(context, popOut());
         terminal.use();
