@@ -521,6 +521,8 @@ describe("src/terminal/view.ts", () => {
         },
       );
       const context = {
+          // A ConPTY terminal registers its quit hook here.
+          app: { workspace: { offref: vi.fn(), on: vi.fn(() => ({})) } },
           language: { value: { t: vi.fn((key: string) => key) } },
           settings: { value: Settings.DEFAULT, onMutate: vi.fn() },
         } as unknown as ConstructorParameters<typeof TerminalView>[0],

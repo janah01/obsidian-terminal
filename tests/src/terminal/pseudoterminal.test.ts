@@ -30,6 +30,11 @@ import { writePromise } from "../../../src/utils.js";
 // materialization, pool, and process behavior comes from shipped code.
 vi.mock("../../../src/main.js", () => ({
   TerminalPlugin: class {
+    // A ConPTY terminal registers its quit hook here.
+    public readonly app = {
+      workspace: { offref: vi.fn(), on: vi.fn(() => ({})) },
+    };
+
     public readonly register = vi.fn();
     public readonly language = { value: { t: vi.fn((key: string) => key) } };
     public readonly settings = {
