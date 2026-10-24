@@ -20,6 +20,7 @@ import {
 import {
   CONPTY_CONSOLE_HOST_FALLBACKS,
   CONPTY_DEPENDENCIES,
+  CONPTY_QUIT_TASK_WAIT,
   CONPTY_READY_TIMEOUT_MS,
   CONPTY_UNARMED_READY_TIMEOUT_FACTOR,
   ConPtyHostPool,
@@ -465,6 +466,8 @@ describe("ConPTY control protocol", () => {
       const error = new Error("stop before spawning"),
         // Only these context members are used before the seeded startup failure.
         context = {
+          // ConPTY registers its quit hook before anything is spawned.
+          app: { workspace: { offref: vi.fn(), on: vi.fn(() => ({})) } },
           language: { value: { t: vi.fn((key: string) => key) } },
           register: vi.fn(),
           settings: { value: { errorNoticeTimeout: 0 } },
@@ -1542,6 +1545,8 @@ function conPtyContext(
   settings: Readonly<Partial<Settings>> = {},
 ): TerminalPlugin {
   return {
+    // The quit hook registers here; `quitContext()` below observes it.
+    app: { workspace: { offref: vi.fn(), on: vi.fn(() => ({})) } },
     language: {
       onChangeLanguage: { listen: vi.fn(() => vi.fn()) },
       value: { t },
@@ -3487,6 +3492,164 @@ describe("ConPTY output hold", () => {
     } finally {
       await pty.kill();
       await pty.onExit;
+    }
+  });
+});
+
+describe("ConPTY quit hook", () => {
+  /** A plugin context whose workspace hands out the quit hook it is given. */
+  function quitContext(): {
+    readonly context: TerminalPlugin;
+    readonly offref: ReturnType<typeof vi.fn>;
+    readonly on: ReturnType<typeof vi.fn>;
+    readonly quit: () => Promise<unknown>[];
+    readonly ref: object;
+  } {
+    const ref = {},
+      listeners: ((tasks: unknown) => unknown)[] = [],
+      on = vi.fn((name: string, callback: (tasks: unknown) => unknown) => {
+        if (name === "quit") listeners.push(callback);
+        return ref;
+      }),
+      offref = vi.fn(),
+      // The spec's partial plugin stub, with a workspace that records the hook.
+      context: TerminalPlugin = Object.assign(conPtyContext(), {
+        app: { workspace: { offref, on } },
+      });
+    return {
+      context,
+      offref,
+      on,
+      quit: () => {
+        const tasks: Promise<unknown>[] = [];
+        for (const listener of listeners) {
+          listener({
+            add: (callback: () => Promise<unknown>): void => {
+              tasks.push(callback());
+            },
+          });
+        }
+        return tasks;
+      },
+      ref,
+    };
+  }
+
+  function pendingControl(host: ReturnType<typeof testHost>) {
+    return fakeControl(
+      new Promise<ConPtyReadyEvent>(() => {
+        // Never ready.
+      }),
+      () => host.kill(),
+    );
+  }
+
+  it("ends the session as an Obsidian quit task and lets go of the hook afterwards", async () => {
+    const host = testHost(),
+      hostPid = liveHostPid(host),
+      ready = Object.freeze(readyEvent(hostPid, hostPid + 1)),
+      control = fakeControl(Promise.resolve(ready), () => host.kill()),
+      { context, offref, on, quit, ref } = quitContext(),
+      pty = constructConPty(
+        conPtyDependencies(control, host),
+        undefined,
+        undefined,
+        context,
+      );
+    try {
+      expect(on).toHaveBeenCalledWith("quit", expect.any(Function));
+      await pty.shell;
+      expect(offref).not.toHaveBeenCalled();
+      const tasks = quit();
+      expect(tasks).toHaveLength(1);
+      await tasks[0];
+      expect(control.kill).toHaveBeenCalledTimes(1);
+      await pty.onExit;
+      await vi.waitFor(() => {
+        expect(offref).toHaveBeenCalledWith(ref);
+      });
+    } finally {
+      host.kill();
+    }
+  });
+
+  it("kills the host of a session that never became ready", async () => {
+    const host = testHost(),
+      { context, quit } = quitContext(),
+      dependencies = conPtyDependencies(pendingControl(host), host),
+      pty = constructConPty(dependencies, undefined, undefined, context);
+    try {
+      // The host is up, the shell is not: `kill()` has only the host to end.
+      await vi.waitFor(() => {
+        expect(dependencies.spawn).toHaveBeenCalledTimes(1);
+      });
+      const [task] = quit();
+      await task;
+      expect(host.killed).toBe(true);
+      await pty.onExit;
+    } finally {
+      host.kill();
+    }
+  });
+
+  it("spawns no host for a session that quits before its host is up", async () => {
+    const host = testHost(),
+      { context, quit } = quitContext(),
+      dependencies = conPtyDependencies(pendingControl(host), host),
+      pty = constructConPty(dependencies, undefined, undefined, context);
+    try {
+      const [task] = quit();
+      await expect(task).resolves.toBeUndefined();
+      await expect(pty.shell).rejects.toThrow();
+      expect(dependencies.spawn).not.toHaveBeenCalled();
+    } finally {
+      host.kill();
+    }
+  });
+
+  it("settles the quit task when the kill itself fails", async () => {
+    const host = testHost(),
+      { context, quit } = quitContext(),
+      dependencies = {
+        ...conPtyDependencies(pendingControl(host), host),
+        createControl: vi.fn().mockRejectedValue(new Error("control failed")),
+      },
+      pty = constructConPty(dependencies, undefined, undefined, context);
+    try {
+      await expect(pty.shell).rejects.toThrow();
+      const [task] = quit();
+      await expect(task).resolves.toBeUndefined();
+      await expect(pty.kill()).rejects.toThrow();
+    } finally {
+      host.kill();
+    }
+  });
+
+  it("gives up on a kill that never settles once the exit wait and its margin pass", async () => {
+    vi.useFakeTimers();
+    const host = testHost(),
+      { context, quit } = quitContext(),
+      dependencies = {
+        ...conPtyDependencies(pendingControl(host), host),
+        createControl: () =>
+          new Promise<ConPtyControlChannel>(() => {
+            // Never connects, so `kill()` never settles.
+          }),
+      };
+    try {
+      constructConPty(dependencies, undefined, undefined, context);
+      const [task] = quit();
+      let settled = false;
+      void task?.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(CONPTY_QUIT_TASK_WAIT * 1000 - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      host.kill();
     }
   });
 });

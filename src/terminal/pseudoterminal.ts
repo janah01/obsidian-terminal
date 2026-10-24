@@ -1458,6 +1458,10 @@ export const CONPTY_READY_TIMEOUT_MS = 10_000;
 /** Ready-timeout multiple that only bounds a channel nobody armed. */
 export const CONPTY_UNARMED_READY_TIMEOUT_FACTOR = 3;
 
+/** Seconds an Obsidian quit task waits for `kill()`: the host's exit wait plus
+ * a margin for a session still booting. Then Obsidian goes on quitting. */
+export const CONPTY_QUIT_TASK_WAIT = TERMINAL_EXIT_CLEANUP_WAIT + 1;
+
 /*
  * Types only. A static `import ... from "node:net"` is rejected on mobile
  * builds; the runtime access goes through `dynamicRequire` above.
@@ -1539,7 +1543,8 @@ export interface ConPtyReadyEvent {
   readonly createPseudoConsole: true;
   readonly event: "ready";
   readonly hostPid: number;
-  /** The shell is assigned to the kill-on-close job; descendants may break away. */
+  /** The shell is in the kill-on-close job; its descendants leave it at once
+   * and are tracked, not contained, for the end-of-session sweep. */
   readonly jobObjectAssigned: true;
 }
 export interface ConPtyExitEvent {
@@ -3074,6 +3079,22 @@ export class ConPtyPseudoterminal implements Pseudoterminal {
       .then(async (exit) => (await control).reportedExitCode() ?? exit)
       .finally(dispose);
     this.onExit.catch(noop);
+    // Obsidian awaits quit tasks before the window closes. The kill lets the
+    // host end the console programs the shell left behind, which host death
+    // through libuv's job cannot. Bounded: a task that hangs or rejects would
+    // hold the quit forever.
+    const { workspace } = context.app,
+      quitHook = workspace.on("quit", (tasks) => {
+        tasks.add(async () => {
+          await Promise.race([
+            this.kill().catch(noop),
+            sleep2(self, CONPTY_QUIT_TASK_WAIT),
+          ]);
+        });
+      });
+    this.onExit.catch(noop).finally(() => {
+      workspace.offref(quitHook);
+    });
     this.shell = (async (): Promise<PipedChildProcess> => {
       try {
         const [shell, control0] = await Promise.all([host, control]),

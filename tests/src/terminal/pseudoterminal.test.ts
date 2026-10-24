@@ -30,6 +30,11 @@ import { writePromise } from "../../../src/utils.js";
 // materialization, pool, and process behavior comes from shipped code.
 vi.mock("../../../src/main.js", () => ({
   TerminalPlugin: class {
+    // A ConPTY terminal registers its quit hook here.
+    public readonly app = {
+      workspace: { offref: vi.fn(), on: vi.fn(() => ({})) },
+    };
+
     public readonly register = vi.fn();
     public readonly language = { value: { t: vi.fn((key: string) => key) } };
     public readonly settings = {
@@ -458,6 +463,35 @@ it("runs the contract on the shipped default and with the console host off", () 
 });
 
 // Explicit off-Windows skips are intentional: mocks cannot establish this contract.
+/** A shell that leaves a ping in a hidden console, prints its PID and waits. */
+const HIDDEN_HELPER_SHELL = [
+  "import os, subprocess, time",
+  "ping = os.path.join(os.environ['SystemRoot'], 'System32', 'PING.EXE')",
+  "helper = subprocess.Popen(",
+  "    [ping, '-n', '300', '127.0.0.1'],",
+  "    stdin=subprocess.DEVNULL,",
+  "    stdout=subprocess.DEVNULL,",
+  "    stderr=subprocess.DEVNULL,",
+  "    creationflags=subprocess.CREATE_NO_WINDOW,",
+  ")",
+  "print(f'HELPER-PID {helper.pid}', flush=True)",
+  "time.sleep(60)",
+].join("\n");
+
+/** Whether process `pid` still runs; a refused probe counts as running. */
+function processRuns(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ESRCH"
+    );
+  }
+}
+
 describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
   let python = "";
   beforeAll(async () => {
@@ -598,6 +632,85 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
       ]);
       expect(wire.events().at(-1)).toEqual({ event: "exit", code: 1 });
     } finally {
+      await fixture.cleanup();
+    }
+  }, 60_000);
+
+  it("ends what the shell left in a hidden console before the quit task settles", async () => {
+    const fixture = await nativeFixture(python),
+      listeners: ((tasks: unknown) => unknown)[] = [],
+      offref = vi.fn(),
+      context = Object.assign(
+        new TerminalPlugin(new App(), {
+          id: "conpty-contract",
+          name: "ConPTY contract",
+          author: "test",
+          description: "Native protocol test",
+          version: "0.0.0",
+          minAppVersion: "1.4.11",
+        }),
+        {
+          // Records the quit hook, as Obsidian's workspace would hold it.
+          app: {
+            workspace: {
+              offref,
+              on: vi.fn(
+                (name: string, callback: (tasks: unknown) => unknown) => {
+                  if (name === "quit") listeners.push(callback);
+                  return {};
+                },
+              ),
+            },
+          },
+        },
+      ),
+      tasks: Promise<unknown>[] = [];
+    Object.assign(context.settings, { value: contractSettings("default") });
+    let helper = 0;
+    try {
+      const pty = new ConPtyPseudoterminal(
+        context,
+        {
+          executable: python,
+          args: ["-c", HIDDEN_HELPER_SHELL],
+          pythonExecutable: python,
+          columns: 80,
+          rows: 24,
+        },
+        fixture.dependencies,
+      );
+      await bounded(pty.shell, "helper session readiness");
+      const spawned = only(fixture.hosts);
+      helper = await vi.waitFor(
+        () => {
+          const match = /HELPER-PID (\d+)/u.exec(
+            stripVTControlCharacters(spawned.output()),
+          );
+          if (!match?.[1]) throw new Error("Waiting for the helper's PID");
+          return Number(match[1]);
+        },
+        { timeout: TIMEOUT_MS },
+      );
+      expect(processRuns(helper)).toBe(true);
+      expect(listeners).toHaveLength(1);
+      for (const listener of listeners) {
+        listener({
+          add: (task: () => Promise<unknown>): void => {
+            tasks.push(task());
+          },
+        });
+      }
+      expect(tasks).toHaveLength(1);
+      await bounded(Promise.all(tasks), "quit task");
+      // Obsidian closes the window once its quit tasks settle, and libuv's
+      // job then ends the host: the helper has to be gone by now.
+      expect(processRuns(helper)).toBe(false);
+      await bounded(pty.onExit, "quit exit");
+      await vi.waitFor(() => {
+        expect(offref).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      if (helper && processRuns(helper)) process.kill(helper);
       await fixture.cleanup();
     }
   }, 60_000);
