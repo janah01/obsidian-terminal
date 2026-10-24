@@ -1295,6 +1295,49 @@ describe("src/terminal/view.ts", () => {
         expect(fixed.value.cwd).toBe("/home/user");
         expect(fixed.value.userTitle).toBe("dev server");
       });
+
+      it("restores a state saved before some of its keys existed without a report", () => {
+        // An older version's tab: no title, no profile source, no scroll
+        // line, and a profile without its Windows backend.
+        const profile: Record<string, unknown> = {
+          ...Settings.Profile.DEFAULTS.integrated,
+        };
+        Reflect.deleteProperty(profile, "win32Backend");
+        const fixed = TerminalView.State.fix({
+          cwd: "/home/user",
+          focus: false,
+          profile,
+          serial: { columns: 80, data: "$ ", rows: 24 },
+        });
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value).toMatchObject({
+          cwd: "/home/user",
+          profileSourceId: null,
+          serial: { columns: 80, data: "$ ", rows: 24 },
+          userTitle: "",
+        });
+      });
+
+      it("still reports a state value it replaces or drops", () => {
+        const state = {
+          cwd: null,
+          focus: false,
+          profile: Settings.Profile.DEFAULTS.integrated,
+          profileSourceId: null,
+          serial: null,
+          userTitle: "",
+        };
+        expect(TerminalView.State.fix(state).valid).toBe(true);
+        for (const change of [
+          { focus: "x" },
+          { serial: { columns: "80", data: "", rows: 1, scrollLine: -1 } },
+          { later: true },
+        ]) {
+          expect(TerminalView.State.fix({ ...state, ...change }).valid).toBe(
+            false,
+          );
+        }
+      });
     });
   });
 
