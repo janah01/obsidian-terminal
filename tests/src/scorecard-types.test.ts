@@ -35,6 +35,11 @@ function isLibrary(specifier: string): boolean {
   return specifier === LIBRARY || specifier.startsWith(`${LIBRARY}/`);
 }
 
+/** `file` relative to the repository, with `/` on every platform. */
+function repoPath(file: string): string {
+  return relative(ROOT, file).split(sep).join("/");
+}
+
 interface Scan {
   /** Source files the program checked, relative to the repository. */
   readonly files: readonly string[];
@@ -65,23 +70,26 @@ function scan(): Scan {
       (name) => name,
       config.options,
     );
-  host.resolveModuleNameLiterals = (literals, containingFile, redirect) =>
+  // The program's own source file knows its module format, so imports resolve
+  // as `tsc` resolves them.
+  host.resolveModuleNameLiterals = (
+    literals,
+    containingFile,
+    redirect,
+    options,
+    containingSourceFile,
+  ) =>
     literals.map((literal) =>
       isLibrary(literal.text)
         ? { resolvedModule: undefined }
         : ts.resolveModuleName(
             literal.text,
             containingFile,
-            config.options,
+            options,
             host,
             cache,
             redirect,
-            ts.getModeForUsageLocation(
-              host.getSourceFile(containingFile, ts.ScriptTarget.Latest) ??
-                ts.createSourceFile(containingFile, "", ts.ScriptTarget.Latest),
-              literal,
-              config.options,
-            ),
+            ts.getModeForUsageLocation(containingSourceFile, literal, options),
           ),
     );
   const scanned = (file: string): boolean =>
@@ -111,7 +119,7 @@ function scan(): Scan {
                 member.getStart(source),
               );
             found.push(
-              `${relative(ROOT, source.fileName).split(sep).join("/")}:${String(line + 1)}:${String(character + 1)} ${member.getText(source)} (${kind})`,
+              `${repoPath(source.fileName)}:${String(line + 1)}:${String(character + 1)} ${member.getText(source)} (${kind})`,
             );
           }
         }
@@ -121,7 +129,7 @@ function scan(): Scan {
     visit(source);
   }
   return {
-    files: rootNames.map((file) => relative(ROOT, file).split(sep).join("/")),
+    files: rootNames.map(repoPath),
     found,
   };
 }
