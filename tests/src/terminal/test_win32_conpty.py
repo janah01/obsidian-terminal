@@ -3248,7 +3248,7 @@ class _ControlServer:
             return
         try:
             probe(message)
-        except (AssertionError, OSError) as error:
+        except Exception as error:  # noqa: BLE001 -- the test raises it later
             self.probe_error = error
 
     def _read(self) -> bytes:
@@ -3283,6 +3283,23 @@ class _ControlServer:
         write.restype = ctypes.c_int32
         count = ctypes.c_uint32(0)
         write(self.handle, payload, len(payload), ctypes.byref(count), None)
+
+
+def test_a_probe_error_of_any_type_is_kept_for_the_test() -> None:
+    """A probe that fails with an error other than an assertion is kept too.
+
+    An error that escaped would end the server thread before its replies,
+    and the run would end as a host timeout that does not name the cause.
+    """
+    server = _ControlServer.__new__(_ControlServer)
+    server.probe_error = None
+
+    def probe(message: Mapping[str, Any]) -> None:
+        """Parse a record that is not JSON."""
+        json.loads(message["record"])
+
+    server._probe(probe, {"record": ""})
+    assert isinstance(server.probe_error, json.JSONDecodeError)
 
 
 def _run_host(
