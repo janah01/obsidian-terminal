@@ -2001,6 +2001,75 @@ describe("TerminalView focus", () => {
         expect(command("unfocus-terminal")(true)).toBe(false);
       });
 
+      // `focus` and `unfocus` are protected, so `vi.spyOn` cannot name them.
+      function watchFocus(view: TerminalView) {
+        const focus = vi.fn(),
+          unfocus = vi.fn();
+        view["focus"] = focus;
+        view["unfocus"] = unfocus;
+        return () => ({
+          focus: focus.mock.calls.length,
+          unfocus: unfocus.mock.calls.length,
+        });
+      }
+
+      it("unfocuses a pop-out terminal that has the keyboard in the window in front", async () => {
+        const { command, context } = loadCommands();
+        const popout = document.implementation.createHTMLDocument("pop-out"),
+          terminal = await openTerminal(context, popout);
+        terminal.use();
+        // The pop-out is the window in front; the main one is behind it.
+        vi.spyOn(document, "hasFocus").mockReturnValue(false);
+        const calls = watchFocus(terminal.view);
+
+        expect(command("unfocus-terminal")(true)).toBe(true);
+        expect(command("focus-on-last-terminal")(true)).toBe(false);
+        expect(command("rename-terminal")(true)).toBe(true);
+        command("toggle-focus-on-last-terminal")(false);
+        expect(calls()).toEqual({ focus: 0, unfocus: 1 });
+      });
+
+      it("toggles the focus to a main-window terminal from a note in a pop-out window", async () => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context);
+        terminal.use();
+        // The pop-out comes to the front, and a note in it takes the keyboard.
+        const popout = document.implementation.createHTMLDocument("pop-out"),
+          editor = popout.createElement("textarea");
+        popout.body.append(editor);
+        editor.focus();
+        vi.spyOn(document, "hasFocus").mockReturnValue(false);
+        activate(context, new WorkspaceLeaf());
+        // The main window still remembers its focused element.
+        expect(terminal.view["isFocused"]).toBe(true);
+        const calls = watchFocus(terminal.view);
+
+        expect(command("focus-on-last-terminal")(true)).toBe(true);
+        expect(command("unfocus-terminal")(true)).toBe(false);
+        expect(command("rename-terminal")(true)).toBe(true);
+        command("toggle-focus-on-last-terminal")(false);
+        expect(calls()).toEqual({ focus: 1, unfocus: 0 });
+      });
+
+      it("toggles the focus to the pop-out terminal used last, not to a main-window one used before", async () => {
+        const { command, context } = loadCommands();
+        const before = await openTerminal(context),
+          last = await openTerminal(context, popOut());
+        before.use();
+        last.use();
+        clickIntoNote(context);
+        const beforeCalls = watchFocus(before.view),
+          lastCalls = watchFocus(last.view);
+
+        command("toggle-focus-on-last-terminal")(false);
+        command("focus-on-last-terminal")(false);
+
+        expect({ before: beforeCalls(), last: lastCalls() }).toEqual({
+          before: { focus: 0, unfocus: 0 },
+          last: { focus: 2, unfocus: 0 },
+        });
+      });
+
       it.each(ACTING)(
         "neither offers nor runs %s for a main-window terminal from a note in a pop-out window",
         async (id) => {
