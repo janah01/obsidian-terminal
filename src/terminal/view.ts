@@ -1,4 +1,6 @@
 import {
+  type $App,
+  type $HotkeyManager,
   DialogModal,
   FindComponent,
   type FindComponent$,
@@ -34,6 +36,7 @@ import {
   readStateCollaboratively,
   recordViewStateHistory,
   resetButton,
+  revealPrivateFilter,
   saveFileAs,
   svelteState,
   updateView,
@@ -853,11 +856,38 @@ export class TerminalView extends ItemView {
    * Call it while the plugin loads, after {@link TerminalView.load}. The
    * listener reads the allowed commands when Obsidian next rebuilds its
    * hotkey table, and nothing rebuilds it before the first key is pressed.
+   * A change after that takes effect once
+   * {@link TerminalView.reloadFocusedHotkeys} has run.
    *
    * @param command a command as Obsidian registered it
+   * @param allowed `false` takes the command off the list again, so that its
+   * hotkeys go on to the terminal
    */
-  public static allowWhileFocused(command: Pick<Command, "id">): void {
-    TerminalView.#focusedScopeIDs.add(command.id);
+  public static allowWhileFocused(
+    command: Pick<Command, "id">,
+    allowed = true,
+  ): void {
+    if (allowed) TerminalView.#focusedScopeIDs.add(command.id);
+    else TerminalView.#focusedScopeIDs.delete(command.id);
+  }
+
+  /**
+   * Has Obsidian rebuild its hotkey table at the next key, and with it the
+   * table the focused terminal's listener reads, so that a change made with
+   * {@link TerminalView.allowWhileFocused} applies from that key on.
+   *
+   * @param context the plugin
+   */
+  public static reloadFocusedHotkeys(context: TerminalPlugin): void {
+    revealPrivateFilter<[$App, $HotkeyManager]>()(
+      context,
+      [context.app],
+      (app) => {
+        const { hotkeyManager } = app;
+        hotkeyManager.baked = false;
+      },
+      noop,
+    );
   }
 
   public override async setState(

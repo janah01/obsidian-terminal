@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   SettingsManager,
   addCommand,
@@ -110,7 +111,11 @@ vi.mock("../../../src/terminal/spawn.js", () => ({
 }));
 
 vi.mock("../../../src/terminal/view.js", () => ({
-  TerminalView: { allowWhileFocused: vi.fn(), load: vi.fn() },
+  TerminalView: {
+    allowWhileFocused: vi.fn(),
+    load: vi.fn(),
+    reloadFocusedHotkeys: vi.fn(),
+  },
 }));
 vi.mock("../../../src/terminal/environment.js", async (importOriginal) => ({
   ...(await importOriginal<
@@ -531,6 +536,116 @@ describe("opening commands while a terminal has focus", () => {
     const { run } = await loadCommands(null, false);
     expect(run("open-terminal.integrated.current", false)).toBe(false);
     expect(notice2).not.toHaveBeenCalled();
+  });
+});
+
+describe("opening commands on the focused list follow Add to command", () => {
+  const OPENING_IDS = [
+      "open-terminal.developerConsole",
+      "open-terminal.default.root",
+      "open-terminal.default.current",
+      "open-terminal.external.root",
+      "open-terminal.external.current",
+      "open-terminal.integrated.root",
+      "open-terminal.integrated.current",
+      "open-terminal.select.root",
+      "open-terminal.select.current",
+    ],
+    reload = vi.mocked(TerminalView).reloadFocusedHotkeys;
+
+  afterEach(() => {
+    vi.mocked(addCommand).mockReset();
+    vi.mocked(TerminalView).allowWhileFocused.mockReset();
+  });
+
+  async function load(addToCommand: boolean) {
+    vi.mocked(addCommand).mockImplementation((_context, name, command) => ({
+      ...command,
+      name: name(),
+    }));
+    // The list as the view keeps it: `false` takes a command off.
+    const listed = new Set<string>();
+    vi.mocked(TerminalView).allowWhileFocused.mockImplementation(
+      ({ id }, allowed = true) => {
+        if (allowed) listed.add(id);
+        else listed.delete(id);
+      },
+    );
+    const context = await terminalContext({ addToCommand });
+    Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
+    loadTerminal(context);
+    // The fixture's settings only record their listeners; this runs those
+    // whose value changed, as the library's settings manager does.
+    const change = async (
+      mutator: Parameters<typeof context.settings.mutate>[0],
+    ): Promise<void> => {
+      const before = context.settings.value;
+      await context.settings.mutate(mutator);
+      const after = context.settings.value;
+      for (const [accessor, callback] of vi.mocked(context.settings).onMutate
+        .mock.calls) {
+        const previous = accessor(before),
+          current = accessor(after);
+        if (!isDeepStrictEqual(previous, current)) {
+          await callback(current, previous, after);
+        }
+      }
+    };
+    return {
+      change,
+      context,
+      listed,
+      toggle: async (value: boolean): Promise<void> =>
+        change((settings) => {
+          settings.addToCommand = value;
+        }),
+    };
+  }
+
+  it("leaves them off the list while Add to command is off", async () => {
+    const { listed } = await load(false);
+
+    expect([...listed]).toEqual([]);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("takes the command with the default Mod+Shift+H off the list as well", async () => {
+    const { listed } = await load(false),
+      integrated = vi
+        .mocked(addCommand)
+        .mock.calls.map(([, , command]) => command)
+        .find(({ id }) => id === "open-terminal.integrated.root");
+
+    // Obsidian keeps the key; only a focused terminal stops taking it.
+    expect(integrated?.hotkeys).toEqual([
+      { key: "H", modifiers: ["Mod", "Shift"] },
+    ]);
+    expect(listed.has("open-terminal.integrated.root")).toBe(false);
+  });
+
+  it("lists them while it is on and follows each change at once", async () => {
+    const { context, listed, toggle } = await load(true);
+    expect([...listed]).toEqual(OPENING_IDS);
+
+    await toggle(false);
+    expect([...listed]).toEqual([]);
+    expect(reload).toHaveBeenCalledExactlyOnceWith(context);
+
+    await toggle(true);
+    expect([...listed]).toEqual(OPENING_IDS);
+    expect(reload).toHaveBeenCalledTimes(2);
+    expect(reload).toHaveBeenLastCalledWith(context);
+  });
+
+  it("leaves the list and the hotkeys alone on a change of another setting", async () => {
+    const { change, listed } = await load(true);
+
+    await change((settings) => {
+      settings.addToContextMenu = !settings.addToContextMenu;
+    });
+
+    expect([...listed]).toEqual(OPENING_IDS);
+    expect(reload).not.toHaveBeenCalled();
   });
 });
 
