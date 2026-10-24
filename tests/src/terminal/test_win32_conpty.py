@@ -4096,16 +4096,10 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
             assert isinstance(published, dict), published
             assert "error" not in published, published
             refusals.append(published.get("grandBreakawayRefused"))
-            pids = {
-                kind: pid
-                for kind, pid in (
-                    (kind, published.get(kind)) for kind in _DESCENDANT_KINDS
-                )
-                if isinstance(pid, int)
-            }
+            by_kind = {kind: published.get(kind) for kind in _DESCENDANT_KINDS}
+            pids = {kind: pid for kind, pid in by_kind.items() if isinstance(pid, int)}
             # A refused breakaway is asserted last; the lifetimes come first.
-            assert len(pids) >= len(_DESCENDANT_KINDS) - 1, published
-            assert pids.keys() >= set(_DESCENDANT_KINDS) - {"grandBreakaway"}
+            assert pids.keys() >= set(_DESCENDANT_KINDS) - {"grandBreakaway"}, published
             for pid in pids.values():
                 watch.pin(pid)
             records.append(pids)
@@ -4313,6 +4307,21 @@ timeout, so the bound sits between the host's budget and that timeout.
 _IGNORED_CLOSE_BOUND = 4.0
 
 
+def _pin_shell_and_published_pid(
+    watch: _ProcessWatch, ready: Mapping[str, object], ready_file: Path, timeout: float
+) -> int:
+    """Pin the shell and the program whose PID ``ready_file`` names; return it."""
+    shell = ready["childPid"]
+    assert isinstance(shell, int), ready
+    watch.pin(shell)
+    record: object = json.loads(_read_when_published(ready_file, timeout))
+    assert isinstance(record, dict), record
+    pid = record.get("pid")
+    assert isinstance(pid, int), record
+    watch.pin(pid)
+    return pid
+
+
 def _write_hidden_sleeper_launcher(
     script: Path, ready_file: Path, exit_gate: Path
 ) -> None:
@@ -4418,13 +4427,7 @@ def test_session_end_ends_programs_left_behind_through_msys_bash(
 
         def pin_before_shutdown(ready: Mapping[str, object]) -> None:
             """Pin the shell and the sleeper before the shutdown starts."""
-            assert isinstance(ready["childPid"], int)
-            watch.pin(ready["childPid"])
-            record: object = json.loads(_read_when_published(ready_file, 45.0))
-            assert isinstance(record, dict), record
-            pid = record.get("pid")
-            assert isinstance(pid, int), record
-            watch.pin(pid)
+            pid = _pin_shell_and_published_pid(watch, ready, ready_file, 45.0)
             sleeper_pids.append(pid)
             if shutdown == "natural-exit":
                 exit_gate.touch()
@@ -4506,13 +4509,7 @@ def _run_closing_grandchild(
 
         def pin_before_shutdown(ready: Mapping[str, object]) -> None:
             """Pin the shell and the grandchild before the shutdown starts."""
-            assert isinstance(ready["childPid"], int)
-            watch.pin(ready["childPid"])
-            record: object = json.loads(_read_when_published(ready_file, 30.0))
-            assert isinstance(record, dict), record
-            pid = record.get("pid")
-            assert isinstance(pid, int), record
-            watch.pin(pid)
+            _pin_shell_and_published_pid(watch, ready, ready_file, 30.0)
             if shutdown == "natural-exit":
                 exit_gate.touch()
             started.append(time.monotonic())

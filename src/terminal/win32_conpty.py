@@ -695,6 +695,10 @@ _PE_SIGNATURE_OFFSET_FIELD = 0x3C
 _PE_OPTIONAL_HEADER_OFFSET = 4 + 20
 """Offset of ``Subsystem`` inside the optional header, PE32 and PE32+ alike."""
 _PE_SUBSYSTEM_OFFSET = 68
+"""Bytes of the DOS header up to and including ``e_lfanew``."""
+_PE_DOS_HEADER_BYTES = _PE_SIGNATURE_OFFSET_FIELD + 4
+"""Bytes from the PE signature through the two-byte ``Subsystem`` field."""
+_PE_SUBSYSTEM_END = _PE_OPTIONAL_HEADER_OFFSET + _PE_SUBSYSTEM_OFFSET + 2
 """Longest DOS stub accepted before the PE signature."""
 _PE_MAX_SIGNATURE_OFFSET = 1 << 20
 """Process identifiers the first read of a job's process list has room for."""
@@ -730,14 +734,13 @@ def read_image_header(
     """
     try:
         with open(native(path), "rb") as stream:
-            dos = stream.read(_PE_SIGNATURE_OFFSET_FIELD + 4)
-            if len(dos) < _PE_SIGNATURE_OFFSET_FIELD + 4:
+            dos = stream.read(_PE_DOS_HEADER_BYTES)
+            if len(dos) < _PE_DOS_HEADER_BYTES:
                 return dos
             (signature,) = struct.unpack_from("<I", dos, _PE_SIGNATURE_OFFSET_FIELD)
             if signature > _PE_MAX_SIGNATURE_OFFSET:
                 return dos
-            needed = signature + _PE_OPTIONAL_HEADER_OFFSET + _PE_SUBSYSTEM_OFFSET + 2
-            return dos + stream.read(needed - len(dos))
+            return dos + stream.read(signature + _PE_SUBSYSTEM_END - len(dos))
     except OSError:
         return b""
 
@@ -749,13 +752,13 @@ def image_subsystem(header: bytes) -> str:
     which sits at the same offset in PE32 and PE32+ images. Anything that is
     not a PE image of either kind, or is cut short, is ``unknown``.
     """
-    if len(header) < _PE_SIGNATURE_OFFSET_FIELD + 4 or header[:2] != b"MZ":
+    if len(header) < _PE_DOS_HEADER_BYTES or header[:2] != b"MZ":
         return _SUBSYSTEM_UNKNOWN
     (signature,) = struct.unpack_from("<I", header, _PE_SIGNATURE_OFFSET_FIELD)
     optional = signature + _PE_OPTIONAL_HEADER_OFFSET
     if (
         signature > _PE_MAX_SIGNATURE_OFFSET
-        or len(header) < optional + _PE_SUBSYSTEM_OFFSET + 2
+        or len(header) < signature + _PE_SUBSYSTEM_END
         or header[signature : signature + 4] != b"PE\0\0"
     ):
         return _SUBSYSTEM_UNKNOWN
@@ -1640,8 +1643,6 @@ if sys.platform == "win32":
     _ERROR_MORE_DATA = 234
     """``INVALID_HANDLE_VALUE`` as the unsigned pointer ``ctypes`` returns."""
     _INVALID_HANDLE_VALUE = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
-    """``struct`` format of one ``ULONG_PTR`` in a job's process list."""
-    _ULONG_PTR_FORMAT = "Q" if ctypes.sizeof(ctypes.c_size_t) == 8 else "I"
     """Wait result meaning the waited-on object is signalled."""
     _WAIT_OBJECT_0 = 0x00000000
     """Handle flag letting a new process inherit the handle."""
@@ -2586,11 +2587,9 @@ if sys.platform == "win32":
                 if _error_code(error) != _ERROR_MORE_DATA:
                     raise error
             assigned, listed = struct.unpack_from("<II", buffer.raw, 0)
-            listed = min(listed, capacity)
-            identifiers = struct.unpack_from(
-                f"<{listed}{_ULONG_PTR_FORMAT}", buffer.raw, header
-            )
-            return assigned, [int(identifier) for identifier in identifiers]
+            # The identifiers are ``ULONG_PTR`` values, as wide as ``_SIZE``.
+            identifiers = (_SIZE * min(listed, capacity)).from_buffer(buffer, header)
+            return assigned, list(identifiers)
 
         return job_process_ids(query)
 
@@ -2661,9 +2660,10 @@ if sys.platform == "win32":
 
     """``NtQueryInformationProcess`` class naming the console host of a process.
 
-    ``AttachConsole`` reads the same class to find the target's console host,
-    and process explorers read it to show one. A process without a console
-    reports zero. The two low bits of the value are flags and are masked off.
+    Microsoft does not document this class; process explorers read it to show
+    a process's console host. A process without a console reports zero, and a
+    failed query leaves the process alone. The two low bits of the value are
+    flags and are masked off.
     """
     _PROCESS_CONSOLE_HOST_PROCESS = 49
     """``STATUS_SUCCESS``; an ``NTSTATUS`` below it is a failure."""
@@ -2672,7 +2672,7 @@ if sys.platform == "win32":
     _NtQueryInformationProcess = _bind(
         "NtQueryInformationProcess",
         (_HANDLE, ctypes.c_int, _VOID, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)),
-        ctypes.c_long,
+        _LONG,
         _ntdll,
     )
 
