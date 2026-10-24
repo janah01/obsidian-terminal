@@ -7,6 +7,7 @@ import { LocalSettings, Settings } from "../../src/settings-data.js";
 import { PROFILE_PRESETS } from "../../src/terminal/profile-presets.js";
 import { inheritedPythonExecutable } from "../../src/terminal/win32-doctor.js";
 import released328 from "../fixtures/data-3.28.0.json" with { type: "json" };
+import released329 from "../fixtures/data-3.29.0.json" with { type: "json" };
 
 // Literal presets from 3.27.2 (a485e98b05f2dc0bc14e0a9d92c3d8cad6d0a95f),
 // src/terminal/profile-presets.ts and constants from src/magic.ts.
@@ -533,6 +534,36 @@ describe("src/settings-data.ts", () => {
         expect(fixed.profiles).toEqual(released328.profiles);
         expect(fixed.experiments).toEqual({});
         expect(released).toEqual(released328);
+      });
+
+      it("a data.json saved by 3.28.0 is not malformed: it only lacks the new keys", () => {
+        const stored: unknown = JSON.parse(JSON.stringify(released328));
+        expect(Settings.fix(stored).valid).toBe(true);
+      });
+
+      it("a data.json saved by 3.29.0 loads unchanged and is not malformed", () => {
+        const stored: unknown = JSON.parse(JSON.stringify(released329)),
+          fixed = Settings.fix(stored);
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value).toMatchObject(released329);
+      });
+
+      it("3.29.0 local settings with a recovery copy are not malformed", () => {
+        const stored = {
+            hasUsedIntegratedTerminal: true,
+            lastReadChangelogVersion: "3.29.0",
+            recovery: {
+              "settings.2026-10-14T08:32:47.171Z": JSON.stringify(
+                released328,
+                null,
+                2,
+              ),
+            },
+          },
+          fixed = LocalSettings.fix(JSON.parse(JSON.stringify(stored)));
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value).toMatchObject(stored);
+        expect(fixed.value.recovery).toEqual(stored.recovery);
       });
     });
   });
