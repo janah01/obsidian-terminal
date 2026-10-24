@@ -160,6 +160,15 @@ describe("src/settings-data.ts", () => {
     expect(LocalSettings.fix(stored).valid).toBe(true);
   });
 
+  it("LocalSettings.fix keeps the marker of local settings that could not be read", () => {
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    const { FAILED, hasFailed } = StorageSettingsManager;
+    // The changelog check at startup skips such settings, or the changelog
+    // would open on every start.
+    expect(hasFailed(LocalSettings.fix({ [FAILED]: true }).value)).toBe(true);
+    expect(hasFailed(LocalSettings.fix({}).value)).toBe(false);
+  });
+
   it("LocalSettings.fix ensures lastReadChangelogVersion exists and is a string", () => {
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
     const fixed = LocalSettings.fix({});
