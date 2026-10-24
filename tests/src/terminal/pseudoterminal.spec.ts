@@ -19,6 +19,7 @@ import {
 import {
   CONHOST_LAUNCH_VARIABLES,
   CONHOST_LINE_LIMIT,
+  type ConHostLaunch,
   CONPTY_CONSOLE_HOST_FALLBACKS,
   CONPTY_DEPENDENCIES,
   CONPTY_READY_TIMEOUT_MS,
@@ -348,14 +349,14 @@ describe("Windows ConHost path", () => {
   });
 });
 
-interface ConHostLaunch {
+interface RecordedConHostLaunch {
   readonly batch: string;
   readonly env: Readonly<Record<string, string | undefined>>;
 }
 
 interface ConHostLaunchFixture {
   readonly pty: WindowsPseudoterminal;
-  readonly launches: readonly ConHostLaunch[];
+  readonly launches: readonly RecordedConHostLaunch[];
   readonly processes: { conhost?: ChildProcess; resizer?: ChildProcess };
   readonly cleanup: () => void;
 }
@@ -370,7 +371,7 @@ function conhostLaunchFixture(
   conhostScript = "setTimeout(() => process.exit(0), 50)",
 ): ConHostLaunchFixture {
   const nativeSpawn = childProcess.spawn.bind(childProcess),
-    launches: ConHostLaunch[] = [],
+    launches: RecordedConHostLaunch[] = [],
     processes: ConHostLaunchFixture["processes"] = {};
   vi.spyOn(childProcess, "spawn").mockImplementation(
     (executable, args, spawnOptions) => {
@@ -419,7 +420,7 @@ function conhostLaunchFixture(
 /** The one conhost launch of `fixture`, with the batch text it was given. */
 async function onlyConHostLaunch(
   fixture: ConHostLaunchFixture,
-): Promise<ConHostLaunch & { readonly text: string }> {
+): Promise<RecordedConHostLaunch & { readonly text: string }> {
   await fixture.pty.shell;
   expect(fixture.launches).toHaveLength(1);
   const [launch] = fixture.launches;
@@ -435,15 +436,10 @@ async function onlyConHostLaunch(
  * quoted program, leading spaces removed.
  */
 function batchProgramCommand(
-  { env, text }: ConHostLaunch & { readonly text: string },
+  { env, text }: RecordedConHostLaunch & { readonly text: string },
   program: string,
 ): string {
-  const line = text.split("\r\n").at(-1) ?? "",
-    expanded = line.replace(
-      /%%|%([^%]+)%/gu,
-      (_match, name: string | undefined) =>
-        name === undefined ? "%" : (env[name] ?? ""),
-    ),
+  const expanded = expandedBatchLine(text, env),
     commands: string[] = [];
   let current = "",
     quoted = false;
@@ -679,22 +675,29 @@ function splitWindowsCommandLine(commandLine: string): string[] {
   return ret;
 }
 
-/** The last batch line after percent expansion with the launch variables. */
+/**
+ * The last line of the batch text `batch` after cmd's percent expansion with
+ * `env`: `%%` is `%`, and an unset name is empty.
+ */
 function expandedBatchLine(
-  launch: Extract<ReturnType<typeof conhostLaunch>, { type: "launch" }>,
+  batch: string,
+  env: Readonly<Record<string, string | undefined>>,
 ): string {
-  return (launch.batch.split("\r\n").at(-1) ?? "").replace(
+  return (batch.split("\r\n").at(-1) ?? "").replace(
     /%%|%([^%]+)%/gu,
     (_match, name: string | undefined) =>
-      name === undefined ? "%" : (launch.environment[name] ?? ""),
+      name === undefined ? "%" : (env[name] ?? ""),
   );
 }
+
+// The line-limit cases compare launches with and without this default.
+const CONHOST_EXIT_CODE_FILE = "C:\\Temp\\tmp-1-abc.bat";
 
 function acceptedLaunch(
   program: string,
   args: readonly string[],
-  exitCodeFile = "C:\\Temp\\tmp-1-abc.bat",
-): Extract<ReturnType<typeof conhostLaunch>, { type: "launch" }> {
+  exitCodeFile = CONHOST_EXIT_CODE_FILE,
+): Extract<ConHostLaunch, { type: "launch" }> {
   const launch = conhostLaunch(program, args, exitCodeFile);
   if (launch.type !== "launch")
     throw new Error(`Refused: ${launch.reason} ${JSON.stringify(args)}`);
@@ -764,7 +767,7 @@ describe("Windows argument quoting", () => {
 
 describe("ConHost launch", () => {
   const program = "C:\\Windows\\System32\\cmd.exe",
-    exitCodeFile = "C:\\Temp\\tmp-1-abc.bat";
+    exitCodeFile = CONHOST_EXIT_CODE_FILE;
 
   it("passes the profile's cmd arguments as the ConPTY host quotes them", () => {
     expect(
@@ -848,12 +851,15 @@ describe("ConHost launch", () => {
   describe("line limit", () => {
     // The expanded line holds one argument of `length` characters; find the
     // length at which it is exactly the limit.
-    const fixed = expandedBatchLine(acceptedLaunch(program, ["x"])).length - 1,
+    const short = acceptedLaunch(program, ["x"]),
+      fixed = expandedBatchLine(short.batch, short.environment).length - 1,
       fits = CONHOST_LINE_LIMIT - fixed;
 
     it("accepts a line of exactly the limit", () => {
-      const launch = acceptedLaunch(program, ["x".repeat(fits)]);
-      expect(expandedBatchLine(launch)).toHaveLength(CONHOST_LINE_LIMIT);
+      const { batch, environment: env } = acceptedLaunch(program, [
+        "x".repeat(fits),
+      ]);
+      expect(expandedBatchLine(batch, env)).toHaveLength(CONHOST_LINE_LIMIT);
     });
 
     it.each([
