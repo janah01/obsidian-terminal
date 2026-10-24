@@ -73,18 +73,13 @@ export async function migrateProfileChoice(context: Context): Promise<void> {
   if (!takeDefault && !takeOrder) {
     return;
   }
-  const { defaultProfile, profiles } = settings.value,
-    profile =
-      defaultProfile === null
-        ? null
-        : Settings.Profile.byId(profiles, defaultProfile);
+  const { defaultProfile, profiles } = settings.value;
   try {
     await localSettings.mutate((localM) => {
       if (takeDefault) {
-        localM.defaultProfile =
-          profile && Settings.Profile.isCompatible(profile, Platform.CURRENT)
-            ? defaultProfile
-            : null;
+        localM.defaultProfile = runnableProfile(profiles, defaultProfile)
+          ? defaultProfile
+          : null;
       }
       if (takeOrder) {
         localM.profileOrder = Object.keys(profiles);
