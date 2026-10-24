@@ -2224,6 +2224,28 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
     },
   );
 
+  it("opens a profile of a type it does not know in a new leaf, as 3.29.0 did", async () => {
+    const spies = bed({
+        createInstanceNearExistingOnes: false,
+        newInstanceBehavior: "newTab",
+      }),
+      setViewState = vi.spyOn(spies.next, "setViewState"),
+      // A state that did not come through the settings' fix, for example from
+      // another plugin; the leaf's own fix turns it into an invalid profile.
+      unknownType = {
+        ...external,
+        type: "externalTerminal",
+      } as unknown as Settings.Profile;
+
+    await expect(
+      TerminalView.spawn(spies.context, opening({ profile: unknownType })),
+    ).resolves.toBeUndefined();
+
+    expect(spies.allocate).toHaveBeenCalledExactlyOnceWith("tab");
+    expect(setViewState).toHaveBeenCalledOnce();
+    expect(spies.open).not.toHaveBeenCalled();
+  });
+
   it("opens two programs for two runs, also at once", async () => {
     const spies = bed();
 
@@ -2358,8 +2380,8 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
   };
 
   // A terminal that runs an integrated shell; its pane menu's Edit switches it
-  // to the external profile and confirms.
-  function editToExternal() {
+  // to the external profile, or to the profile given, and confirms.
+  function editToExternal(profile: Settings.Profile = external) {
     const { context, workspace } = makeTerminalContext(),
       { leaf, view, setViewState } = makeTerminalLeaf(context),
       type = TerminalView.type.namespaced(context),
@@ -2390,7 +2412,7 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
     vi.spyOn(EditTerminalModal.prototype, "open").mockImplementation(function (
       this: EditTerminalModal,
     ) {
-      Object.assign(this["state"], { profile: external });
+      Object.assign(this["state"], { profile });
       confirmations.push(this["confirm"](close));
     });
     return {
@@ -2400,6 +2422,7 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
       detach,
       open,
       report,
+      setViewState,
       async edit(): Promise<void> {
         terminalPaneActions(view).get("components.terminal.menus.edit")?.();
         await Promise.all(confirmations);
@@ -2448,6 +2471,20 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
     expect(edited.report).toHaveBeenCalledOnce();
     expect(edited.close).toHaveBeenCalledOnce();
     expectClosedWithShell(edited);
+  });
+
+  it("hands a profile of a type it does not know to the edited tab, as 3.29.0 did", async () => {
+    const edited = editToExternal({
+      ...external,
+      type: "externalTerminal",
+    } as unknown as Settings.Profile);
+
+    await edited.edit();
+
+    // The tab's own fix turns the state into an invalid profile.
+    expect(edited.close).toHaveBeenCalledOnce();
+    expect(edited.setViewState).toHaveBeenCalledOnce();
+    expect(edited.detach).not.toHaveBeenCalled();
   });
 });
 

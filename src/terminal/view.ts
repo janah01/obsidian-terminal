@@ -948,7 +948,7 @@ export class TerminalView extends ItemView {
               // A program that opens in its own window replaces this terminal.
               // The tab closes with this terminal's state, so Undo close tab
               // brings the terminal back and does not start the program again.
-              if (!PROFILE_PROPERTIES[state.profile.type].integratable) {
+              if (opensOutside(state.profile)) {
                 await TerminalView.spawn(context, state);
                 leaf.detach();
                 return;
@@ -1946,6 +1946,18 @@ function profileTitle(
 }
 
 /**
+ * Whether the profile's program opens in its own window, outside Obsidian. A
+ * type that the plugin does not know does not: it reaches the tab, whose fix
+ * turns it into an invalid profile, as before.
+ */
+function opensOutside(profile: Settings.Profile): boolean {
+  return (
+    Object.hasOwn(PROFILE_PROPERTIES, profile.type) &&
+    !PROFILE_PROPERTIES[profile.type].integratable
+  );
+}
+
+/**
  * Starts the program of a profile that opens in its own window, after a
  * notice that names it. A failed start is reported; the promise never
  * rejects, and it settles once the program has started.
@@ -2110,7 +2122,7 @@ export namespace TerminalView {
     type: string = TerminalView.type.namespaced(context),
   ): Promise<void> {
     const { profile } = state;
-    if (!leaf && !PROFILE_PROPERTIES[profile.type].integratable) {
+    if (!leaf && opensOutside(profile)) {
       // A program that opens in its own window needs no tab. Making one and
       // closing it again would change the shown tab and the active leaf.
       await openOutside(
