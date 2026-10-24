@@ -89,6 +89,7 @@ __all__ = (
     "spawn_exit_code",
     "sweep_descendants",
     "to_exit_status",
+    "verified_console_host",
     "wait_each",
 )
 
@@ -715,6 +716,8 @@ _CONSOLE_NONE = "none"
 _CONSOLE_ATTACHED = "attached"
 """Console check answer: the process has a console of its own."""
 _CONSOLE_OWN = "own"
+"""Image names of the console hosts that serve a pseudoconsole, in lower case."""
+_CONSOLE_HOST_IMAGES = ("conhost.exe", "openconsole.exe")
 
 
 class DescendantRecord(NamedTuple):
@@ -780,6 +783,22 @@ def image_subsystem(header: bytes) -> str:
     if subsystem == _IMAGE_SUBSYSTEM_WINDOWS_CUI:
         return _SUBSYSTEM_CONSOLE
     return _SUBSYSTEM_UNKNOWN
+
+
+def verified_console_host(pid: int, image: str | None) -> int:
+    """Return ``pid`` when ``image`` is the path of a console host, else 0.
+
+    The built-in pseudoconsole names its console host through a struct that
+    Windows does not document. Should that ever name another program, every
+    program attached to the pseudoconsole would pass for one in a console of
+    its own and end without its close event. An unknown host (0) is the safe
+    reading: the sweep then waits for the drain, as when Windows cannot name
+    the host at all. ``image`` is ``None`` when it could not be read.
+    """
+    if image is None:
+        return 0
+    name = re.split(r"[\\/]", image)[-1].lower()
+    return pid if name in _CONSOLE_HOST_IMAGES else 0
 
 
 def select_descendants_to_end(
@@ -2225,11 +2244,21 @@ if sys.platform == "win32":
         """Return the PID of the console host serving an ``HPCON``, or 0.
 
         The struct the handle points to (``_PSEUDOCONSOLE``) holds a handle to
-        that process. A handle Windows cannot name leaves the host unknown,
-        and the sweep then treats every console as a program's own.
+        that process. A handle Windows cannot name, or one that names a
+        program that is not a console host (``verified_console_host``), leaves
+        the host unknown, and the sweep then treats every console as a
+        program's own.
         """
         struct = ctypes.cast(pseudoconsole, ctypes.POINTER(_PSEUDOCONSOLE)).contents
-        return int(_GetProcessId(_as_handle(struct.hConPtyProcess)))
+        process = _as_handle(struct.hConPtyProcess)
+        pid = int(_GetProcessId(process))
+        if not pid:
+            return 0
+        image = _process_image_path(process)
+        host = verified_console_host(pid, image)
+        if not host:
+            diagnose(f"the pseudoconsole names {image or pid}, not a console host")
+        return host
 
     def _create_pseudoconsole(
         columns: int, rows: int, input_read: int, output_write: int

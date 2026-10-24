@@ -414,6 +414,33 @@ def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
     assert ended == [10, 40]
 
 
+@pytest.mark.parametrize(
+    ("image", "host"),
+    [
+        ("C:\\Windows\\System32\\conhost.exe", 70),
+        ("C:\\WINDOWS\\system32\\CONHOST.EXE", 70),
+        ("C:\\Program Files\\WindowsApps\\Terminal\\OpenConsole.exe", 70),
+        ("C:/Windows/System32/conhost.exe", 70),
+        ("C:\\Windows\\System32\\cmd.exe", 0),
+        ("C:\\Python\\python.exe", 0),
+        ("C:\\Tools\\notconhost.exe", 0),
+        ("C:\\conhost.exe\\python.exe", 0),
+        ("", 0),
+        (None, 0),
+    ],
+)
+def test_verified_console_host_takes_only_a_console_host(
+    image: str | None, host: int
+) -> None:
+    """The pseudoconsole's host counts only when its image is a console host.
+
+    Anything else, or an image that cannot be read, leaves the host unknown,
+    so that no program attached to the pseudoconsole is swept before the
+    drain.
+    """
+    assert _MODULE.verified_console_host(70, image) == host
+
+
 def _pe_header(magic: int, subsystem: int, signature_offset: int = 0x80) -> bytes:
     """Build the start of a PE image with the given optional-header fields."""
     header = bytearray(signature_offset + 24 + 70)
@@ -5025,6 +5052,27 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
         pseudoconsole.close()
         for handle in (input_read, input_write, output_write):
             _MODULE._close(handle)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_pseudoconsole_host_is_unknown_when_it_names_no_console_host() -> None:
+    """A pseudoconsole whose host handle names another program has no known host.
+
+    The struct an ``HPCON`` points to is not a documented contract. Should
+    its host slot ever name a program that is not a console host, every
+    attached program would pass for one in a console of its own and end
+    without its close event. An unknown host ends nothing early.
+    """
+    process = _MODULE._as_handle(
+        _MODULE._OpenProcess(_MODULE._PROCESS_SWEEP_ACCESS, False, os.getpid())
+    )
+    assert process, _MODULE._last_error()
+    try:
+        # The slot names this Python process instead of a console host.
+        struct = _MODULE._PSEUDOCONSOLE(0, 0, process)
+        assert _MODULE._pseudoconsole_console_host(ctypes.addressof(struct)) == 0
+    finally:
+        _MODULE._close(process)
 
 
 """Seconds after the kill that the late helper is let connect to its console.
