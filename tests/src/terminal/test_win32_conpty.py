@@ -414,6 +414,21 @@ def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
     assert ended == [10, 40]
 
 
+def test_sweep_keeps_a_program_too_new_to_judge_and_reports_it() -> None:
+    """A program that has not connected to a console yet is kept and reported.
+
+    The shell started it a moment ago; a later survey can judge it.
+    """
+    records = [_record(10, 1, "console"), _record(20, 10, "console")]
+    undecided: set[int] = set()
+    answers = {10: "attached", 20: "young"}
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, undecided=undecided
+    )
+    assert ended == []
+    assert undecided == {20}
+
+
 @pytest.mark.parametrize(
     ("image", "host"),
     [
@@ -4995,8 +5010,8 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
     console both report that host, so the check reads them as attached; a
     child with a hidden console of its own does not. Before it runs, the
     shell reports its creator's PID in place of a console host, and the
-    check told who created it leaves it out rather than read it as a program
-    in a console of its own.
+    check told who created it reads it as too new to judge rather than as a
+    program in a console of its own.
     """
     out = tmp_path / "children.json"
     markers = (tmp_path / "plain", tmp_path / "hidden")
@@ -5019,7 +5034,9 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
         # Suspended, the shell has not connected: its creator's PID stands in.
         assert _MODULE._console_host_of(process) == os.getpid()
         assert _MODULE._console_kinds({pid: process}, host) == {pid: "own"}
-        assert _MODULE._console_kinds({pid: process}, host, {pid: os.getpid()}) == {}
+        assert _MODULE._console_kinds({pid: process}, host, {pid: os.getpid()}) == {
+            pid: "young"
+        }
         assert _MODULE._ResumeThread(thread) == 1, _MODULE._last_error()
         record: object = json.loads(_read_when_published(out, 30.0))
         assert isinstance(record, dict), record

@@ -716,6 +716,8 @@ _CONSOLE_NONE = "none"
 _CONSOLE_ATTACHED = "attached"
 """Console check answer: the process has a console of its own."""
 _CONSOLE_OWN = "own"
+"""Console check answer: the process has not connected to a console yet."""
+_CONSOLE_YOUNG = "young"
 """Image names of the console hosts that serve a pseudoconsole, in lower case."""
 _CONSOLE_HOST_IMAGES = ("conhost.exe", "openconsole.exe")
 
@@ -805,6 +807,7 @@ def select_descendants_to_end(
     records: Sequence[DescendantRecord],
     consoles: Callable[[Sequence[int]], Mapping[int, str]],
     windowed: Collection[int] = (),
+    undecided: set[int] | None = None,
 ) -> list[int]:
     """Choose the tracked processes that end with the session.
 
@@ -823,8 +826,11 @@ def select_descendants_to_end(
     child, so a reused parent PID breaks the chain, and an orphan whose
     launcher has exited has no ancestor at all. GUI programs, programs whose
     image cannot be read, console programs without a console, a process
-    whose parent is not known this round (too new to judge, or gone) and
-    anything ``consoles`` leaves unanswered are kept.
+    whose parent is not known this round (too new to judge, or gone), a
+    process that has not connected to a console yet (``young``) and
+    anything ``consoles`` leaves unanswered are kept. The ``young`` ones
+    are added to ``undecided`` when it is given: a later survey can judge
+    them.
     """
     by_pid = {record.pid: record for record in records}
     asked = [record.pid for record in records if record.subsystem == _SUBSYSTEM_CONSOLE]
@@ -853,6 +859,8 @@ def select_descendants_to_end(
             seen.add(parent.pid)
             child = parent
 
+    if undecided is not None:
+        undecided.update(pid for pid in asked if kinds.get(pid) == _CONSOLE_YOUNG)
     return [
         record.pid
         for record in records
@@ -2835,7 +2843,6 @@ if sys.platform == "win32":
         handles: Mapping[int, int],
         pseudoconsole_host: int,
         creators: Mapping[int, int | None] | None = None,
-        young: set[int] | None = None,
     ) -> dict[int, str]:
         """Say what console each open process has; leave the undecidable out.
 
@@ -2844,8 +2851,7 @@ if sys.platform == "win32":
         console counts as the process's own. Until a new process has connected
         to a console, Windows reports its creator's PID in place of a console
         host, so a process whose answer is its creator's PID in ``creators``
-        is left out: it is too new to judge this round. Such processes are
-        added to ``young`` when it is given.
+        is ``young``: it is too new to judge this round.
         """
         kinds: dict[int, str] = {}
         for pid, process in handles.items():
@@ -2855,9 +2861,7 @@ if sys.platform == "win32":
             elif host == 0:
                 kinds[pid] = _CONSOLE_NONE
             elif creators is not None and host == creators.get(pid):
-                if young is not None:
-                    young.add(pid)
-                continue
+                kinds[pid] = _CONSOLE_YOUNG
             elif host == pseudoconsole_host:
                 kinds[pid] = _CONSOLE_ATTACHED
             else:
@@ -2950,7 +2954,7 @@ if sys.platform == "win32":
         cache: dict[tuple[int, int], str] = {}
         handles: dict[int, int] = {}
         skip = {os.getpid()}
-        young: set[int] = set()
+        undecided: set[int] = set()
 
         def release() -> None:
             """Close the handles of the previous round."""
@@ -2961,7 +2965,7 @@ if sys.platform == "win32":
         def survey() -> Sequence[int]:
             """Describe the tracked processes and choose the ones to end."""
             release()
-            young.clear()
+            undecided.clear()
             records, opened = _descendant_records(job, cache, skip)
             handles.update(opened)
             return select_descendants_to_end(
@@ -2970,9 +2974,9 @@ if sys.platform == "win32":
                     {pid: handles[pid] for pid in pids if pid in handles},
                     pseudoconsole_host,
                     {record.pid: record.parent_pid for record in records},
-                    young,
                 ),
                 _windowed_process_ids(),
+                undecided,
             )
 
         def end(pids: Sequence[int], until: float) -> Sequence[int]:
@@ -2997,7 +3001,7 @@ if sys.platform == "win32":
                 end,
                 time.monotonic,
                 deadline,
-                undecided=lambda: last and bool(young),
+                undecided=lambda: last and bool(undecided),
             )
         except OSError as error:
             diagnose(f"could not end the programs started from the terminal: {error}")
