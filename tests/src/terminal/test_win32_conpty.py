@@ -304,6 +304,32 @@ def test_sweep_survives_a_parent_cycle() -> None:
     assert _MODULE.select_descendants_to_end(records, _consoles(10, 20)) == [10, 20]
 
 
+def test_sweep_counts_a_parent_from_the_same_clock_tick_as_an_ancestor() -> None:
+    """A GUI parent created in the same clock tick as its console child covers it.
+
+    Creation times are only as fine as the system clock, so a GUI program and
+    a console program it starts at once can share one. Only a parent created
+    after its child is a recycled PID.
+    """
+    records = [_record(30, 1, "gui", created=7), _record(40, 30, "console", created=7)]
+    assert _MODULE.select_descendants_to_end(records, _consoles(40)) == []
+
+
+def test_sweep_ends_only_candidates_the_console_check_confirms() -> None:
+    """An answer about a process that is no candidate ends nothing.
+
+    A probe that also reports a console for a GUI program, or for a console
+    program under one, must not get either of them ended.
+    """
+    records = [
+        _record(10, 1, "console"),
+        _record(20, 1, "gui"),
+        _record(30, 20, "console"),
+    ]
+    answers = {10: True, 20: True, 30: True}
+    assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == [10]
+
+
 def _pe_header(magic: int, subsystem: int, signature_offset: int = 0x80) -> bytes:
     """Build the start of a PE image with the given optional-header fields."""
     header = bytearray(signature_offset + 24 + 70)
@@ -345,6 +371,15 @@ def test_image_subsystem_rejects_images_it_cannot_read() -> None:
     far_signature = bytearray(_pe_header(0x10B, 3))
     struct.pack_into("<I", far_signature, 0x3C, 1 << 24)
     assert _MODULE.image_subsystem(bytes(far_signature)) == "unknown"
+
+
+def test_image_subsystem_needs_the_whole_subsystem_field() -> None:
+    """A header ending right after ``Subsystem`` is read; one byte less is unknown."""
+    for magic in (0x10B, 0x20B):
+        header = _pe_header(magic, 3)
+        assert len(header) == 0x80 + 24 + 70
+        assert _MODULE.image_subsystem(header) == "console"
+        assert _MODULE.image_subsystem(header[:-1]) == "unknown"
 
 
 def test_read_image_header_reads_through_the_subsystem_field(tmp_path: Path) -> None:
@@ -4138,6 +4173,323 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
     assert refusals == [None], refusals
 
 
+def _spawn_detached_supervisor(ready_file: Path, exit_gate: Path) -> list[str]:
+    """Start a detached program that runs a worker in a hidden console; gate exit.
+
+    This is how a daemon started from the terminal looks on Windows: Node's
+    ``detached`` gives it no console, and each worker it starts with
+    ``windowsHide`` gets a hidden console of its own. The daemon publishes its
+    PID and the worker's once the worker runs. The shell waits for
+    ``exit_gate`` and exits 42.
+    """
+    worker_code = (
+        "import sys, time\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as stream:\n"
+        "    stream.write('up')\n"
+        "time.sleep(120)\n"
+    )
+    daemon_code = (
+        "import json, os, subprocess, sys, time\n"
+        "up = sys.argv[1] + '.worker'\n"
+        "worker = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {worker_code!r}, up],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        "deadline = time.monotonic() + 30\n"
+        "while not os.path.exists(up) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.05)\n"
+        "record = {'pid': os.getpid(), 'worker': worker.pid}\n"
+        "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump(record, stream)\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+        "time.sleep(120)\n"
+    )
+    code = (
+        "import os, subprocess, sys, time\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {daemon_code!r}, {str(ready_file)!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.DETACHED_PROCESS,\n"
+        ")\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_keeps_the_workers_of_a_detached_program(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A detached program keeps running together with the workers it runs itself.
+
+    Detached programs outlive the session so that daemons serving other
+    applications go on working. A daemon whose workers are ended under it is
+    running, but no longer working.
+    """
+    ready_file = tmp_path / "daemon.json"
+    exit_gate = tmp_path / "shell-exit"
+    published: list[tuple[int, int]] = []
+    consoles: list[dict[int, bool]] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell, the daemon and its worker; check their consoles."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(record, dict), record
+            daemon, worker = record.get("pid"), record.get("worker")
+            assert isinstance(daemon, int) and isinstance(worker, int), record
+            watch.pin(daemon)
+            watch.pin(worker)
+            published.append((daemon, worker))
+            handles = {
+                pid: _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
+                for pid in (daemon, worker)
+            }
+            try:
+                consoles.append(_MODULE._console_owners(handles))
+            finally:
+                for handle in handles.values():
+                    _MODULE._close(handle)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+
+        result = _run_host(
+            _spawn_detached_supervisor(ready_file, exit_gate),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        assert len(published) == 1, result
+        daemon, worker = published[0]
+        # The shape holds: the daemon has no console, its worker has one.
+        assert consoles == [{daemon: False, worker: True}], consoles
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        if shutdown == "natural-exit":
+            assert result.code == 42, result
+        survivors = [daemon, worker]
+        assert watch.survivors(15.0, expected=survivors) == survivors, result.stderr
+
+
+"""Hidden-console programs one session leaves behind in the many-program test.
+
+With their console hosts the tracking job holds more than twice as many
+processes, past the first read of its process list (64) and past the 64
+handles one ``WaitForMultipleObjects`` call takes.
+"""
+_MANY_HELPERS = 70
+
+
+def _spawn_many_hidden_helpers(ready_file: Path, exit_gate: Path) -> list[str]:
+    """Start ``_MANY_HELPERS`` pings in hidden consoles, publish them, gate exit."""
+    code = (
+        "import json, os, subprocess, sys, time\n"
+        "ping = os.path.join(os.environ['SystemRoot'], 'System32', 'PING.EXE')\n"
+        "pids = [\n"
+        "    subprocess.Popen(\n"
+        "        [ping, '-n', '300', '127.0.0.1'],\n"
+        "        stdin=subprocess.DEVNULL,\n"
+        "        stdout=subprocess.DEVNULL,\n"
+        "        stderr=subprocess.DEVNULL,\n"
+        "        creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        "    ).pid\n"
+        f"    for _ in range({_MANY_HELPERS})\n"
+        "]\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pids': pids}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_ends_more_programs_than_one_list_read_holds(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """Every hidden-console program ends, however many, within the exit budget."""
+    ready_file = tmp_path / "helpers.json"
+    exit_gate = tmp_path / "shell-exit"
+    pinned: list[int] = []
+    started: list[float] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and every helper before the shutdown starts."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 60.0))
+            assert isinstance(record, dict), record
+            pids = record.get("pids")
+            assert isinstance(pids, list), record
+            assert len(pids) == _MANY_HELPERS, record
+            for pid in pids:
+                assert isinstance(pid, int), record
+                watch.pin(pid)
+                pinned.append(pid)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+            started.append(time.monotonic())
+
+        result = _run_host(
+            _spawn_many_hidden_helpers(ready_file, exit_gate),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=90.0,
+        )
+        elapsed = time.monotonic() - started[0]
+        assert len(pinned) == _MANY_HELPERS, result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert elapsed < _IGNORED_CLOSE_BOUND, (elapsed, result.stderr)
+        assert watch.survivors(15.0) == [], result.stderr
+        assert b"did not end" not in result.stderr, result.stderr
+
+
+def _x86_interpreter() -> str | None:
+    """Return a 32-bit CPython 3.9 or newer from the runner's tool cache, if any."""
+    root = Path(os.environ.get("RUNNER_TOOL_CACHE", r"C:\hostedtoolcache\windows"))
+    found: list[tuple[tuple[int, ...], Path]] = []
+    for candidate in root.glob("Python/3.*/x86/python.exe"):
+        try:
+            version = tuple(int(part) for part in candidate.parts[-3].split(".")[:2])
+        except ValueError:
+            continue
+        if version >= (3, 9):
+            found.append((version, candidate))
+    return str(max(found)[1]) if found else None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.skipif(
+    sys.platform == "win32" and _x86_interpreter() is None,
+    reason="no 32-bit CPython 3.9 or newer in the tool cache",
+)
+def test_session_end_sweeps_from_a_32_bit_host(tmp_path: Path) -> None:
+    """A 32-bit interpreter as the host ends and keeps the same programs.
+
+    The plugin runs the host with whatever Python the profile names, and a
+    32-bit one sees the process, job and console queries through WOW64.
+    """
+    interpreter = _x86_interpreter()
+    assert interpreter is not None
+    ready_file = tmp_path / "descendants.json"
+    exit_gate = tmp_path / "shell-exit"
+    records: list[dict[str, int]] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and every descendant before the kill."""
+            assert isinstance(ready["childPid"], int)
+            watch.pin(ready["childPid"])
+            published: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(published, dict), published
+            assert "error" not in published, published
+            by_kind = {kind: published.get(kind) for kind in _DESCENDANT_KINDS}
+            pids = {kind: pid for kind, pid in by_kind.items() if isinstance(pid, int)}
+            for pid in pids.values():
+                watch.pin(pid)
+            records.append(pids)
+
+        result = _run_host(
+            _spawn_breakaway_descendants(ready_file, exit_gate),
+            close_stdin=False,
+            replies=({"op": "kill"},),
+            ready_probe=pin_before_shutdown,
+            timeout=90.0,
+            interpreter=interpreter,
+        )
+        assert len(records) == 1, (result, interpreter)
+        pids = records[0]
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        survivors = [pids[kind] for kind in _DESCENDANTS_KEPT if kind in pids]
+        assert watch.survivors(15.0, expected=survivors) == survivors, (
+            interpreter,
+            result.stderr,
+        )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_session_end_classifies_programs_at_non_ascii_paths(tmp_path: Path) -> None:
+    """A hidden-console program whose image path is not ASCII ends too.
+
+    The sweep reads each image's header from the path Windows reports. A user
+    folder named Jürgen, or a project named in Japanese, must not leave the
+    program unclassified and running.
+    """
+    base = Path(getattr(sys, "_base_executable", sys.executable))
+    folder = tmp_path / "Jürgen ünïcödé 日本語"
+    folder.mkdir()
+    copy = folder / "python.exe"
+    shutil.copy2(base, copy)
+    for library in base.parent.glob("*.dll"):
+        shutil.copy2(library, folder / library.name)
+    ready_file = tmp_path / "helper.json"
+    exit_gate = tmp_path / "shell-exit"
+    code = (
+        "import json, os, subprocess, sys, time\n"
+        "helper = subprocess.Popen(\n"
+        f"    [{str(copy)!r}, '-c', 'import time; time.sleep(120)'],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    env={**os.environ, 'PYTHONHOME': sys.base_prefix},\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': helper.pid}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    pinned: list[int] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the helper, and see that the helper runs."""
+            pid = _pin_shell_and_published_pid(watch, ready, ready_file, 45.0)
+            pinned.append(pid)
+            # Still running a second later: the copy found its libraries.
+            time.sleep(1.0)
+            assert watch.survivors(0.0) == [ready["childPid"], pid]
+            exit_gate.touch()
+
+        result = _run_host(
+            [str(base), "-c", code],
+            close_stdin=False,
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        assert len(pinned) == 1, result
+        assert result.code == 42, result
+        assert watch.survivors(15.0) == [], result.stderr
+        assert b"could not classify" not in result.stderr, result.stderr
+
+
 """Creation flag of a child with a hidden console of its own."""
 _CREATE_NO_WINDOW = 0x08000000
 """Creation flag of a child with no console at all."""
@@ -4446,6 +4798,136 @@ def test_session_end_ends_programs_left_behind_through_msys_bash(
         assert watch.survivors(15.0) == [], result.stderr
 
 
+"""Code of a program that asks to leave its job, publishes the answer, then waits.
+
+The answer carries the limit flags of the job the program runs in, so that a
+refusal names the job that refused: the session's root job has none.
+"""
+_BREAKAWAY_PROBE = (
+    "import ctypes, json, os, subprocess, sys, time\n"
+    "from ctypes import wintypes\n"
+    "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+    "class Basic(ctypes.Structure):\n"
+    "    _fields_ = (\n"
+    "        ('times', ctypes.c_int64 * 2),\n"
+    "        ('LimitFlags', wintypes.DWORD),\n"
+    "        ('working_set', ctypes.c_size_t * 2),\n"
+    "        ('ActiveProcessLimit', wintypes.DWORD),\n"
+    "        ('Affinity', ctypes.c_size_t),\n"
+    "        ('classes', wintypes.DWORD * 2),\n"
+    "    )\n"
+    "kernel32.QueryInformationJobObject.argtypes = (\n"
+    "    ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p\n"
+    ")\n"
+    "basic = Basic()\n"
+    "# JobObjectBasicLimitInformation of the job this process is in.\n"
+    "known = kernel32.QueryInformationJobObject(\n"
+    "    None, 2, ctypes.byref(basic), ctypes.sizeof(basic), None\n"
+    ")\n"
+    "record = {'pid': os.getpid(), 'jobFlags': basic.LimitFlags if known else None}\n"
+    "try:\n"
+    "    record['away'] = subprocess.Popen(\n"
+    "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+    "        stdin=subprocess.DEVNULL,\n"
+    "        stdout=subprocess.DEVNULL,\n"
+    "        stderr=subprocess.DEVNULL,\n"
+    "        creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB\n"
+    "        | subprocess.CREATE_NO_WINDOW,\n"
+    "    ).pid\n"
+    "except OSError as error:\n"
+    "    record['refused'] = str(error)\n"
+    "path = sys.argv[1]\n"
+    "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump(record, stream)\n"
+    "os.replace(path + '.tmp', path)\n"
+    "time.sleep(60)\n"
+)
+
+
+"""What the breakaway probe publishes."""
+_BREAKAWAY_RECORD_KEYS = ("pid", "jobFlags", "away", "refused")
+
+
+def _breakaway_probe_shell(shape: str, script: Path, ready_file: Path) -> list[str]:
+    """Return a shell that runs the breakaway probe one breakaway below the shell.
+
+    ``breakawayChild``: the shell starts the probe with
+    ``CREATE_BREAKAWAY_FROM_JOB``, as a launcher that means to outlive its
+    caller does. ``gitBash``: the Git Bash preset runs the probe as an
+    ordinary command, and MSYS asks for that breakaway itself.
+    """
+    python = getattr(sys, "_base_executable", sys.executable)
+    if shape == "gitBash":
+        command = (
+            f'"{Path(python).as_posix()}" "{script.as_posix()}" '
+            f'"{ready_file.as_posix()}"'
+        )
+        return [str(_GIT_BASH_LAUNCHER), "-c", command]
+    code = (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, {str(script)!r}, {str(ready_file)!r}],\n"
+        "    creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB,\n"
+        ")\n"
+        "time.sleep(120)\n"
+    )
+    return [python, "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize(
+    "shape",
+    (
+        "breakawayChild",
+        pytest.param(
+            "gitBash",
+            marks=pytest.mark.skipif(
+                not (_GIT_BASH_LAUNCHER.is_file() and _MSYS_BASH.is_file()),
+                reason="Git for Windows is not installed at its default path",
+            ),
+        ),
+    ),
+)
+def test_a_program_that_broke_away_may_break_away_again(
+    tmp_path: Path, shape: str
+) -> None:
+    """A breakaway asked for anywhere under the shell is not refused.
+
+    Every program Git Bash runs has already broken away once, because MSYS
+    asks for it, so a program that asks again must not get
+    ``ERROR_ACCESS_DENIED`` from the session's own jobs.
+    """
+    script = tmp_path / "probe.py"
+    script.write_text(_BREAKAWAY_PROBE, encoding="utf-8")
+    ready_file = tmp_path / "probe.json"
+    records: list[dict[str, object]] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_kill(ready: Mapping[str, object]) -> None:
+            """Pin the probe and what it started, and keep its answer."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(record, dict), record
+            for key in ("pid", "away"):
+                pid = record.get(key)
+                if isinstance(pid, int):
+                    watch.pin(pid)
+            records.append({key: record.get(key) for key in _BREAKAWAY_RECORD_KEYS})
+
+        result = _run_host(
+            _breakaway_probe_shell(shape, script, ready_file),
+            close_stdin=False,
+            replies=({"op": "kill"},),
+            ready_probe=pin_before_kill,
+            timeout=60.0,
+        )
+        assert len(records) == 1, result
+        assert records[0]["refused"] is None, records[0]
+        assert isinstance(records[0].get("away"), int), records[0]
+
+
 def _spawn_closing_grandchild(
     ready_file: Path, marker: Path, exit_gate: Path, handler_seconds: float
 ) -> list[str]:
@@ -4558,6 +5040,104 @@ def test_session_end_is_bounded_when_an_attached_program_ignores_the_close(
     assert elapsed < _IGNORED_CLOSE_BOUND, (elapsed, result.stderr)
 
 
+def _spawn_saving_grandchild(
+    ready_file: Path, saved: Path, exit_gate: Path, save_seconds: float
+) -> list[str]:
+    """Publish an attached grandchild that saves for a while on close; gate exit.
+
+    The grandchild shares the shell's pseudoconsole. On ``CTRL_CLOSE_EVENT``
+    its handler works for ``save_seconds``, as a program saving its state
+    does, and only then writes ``saved`` and lets the process end.
+    """
+    grandchild_code = (
+        "import ctypes, json, os, sys, time\n"
+        "from ctypes import wintypes\n"
+        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "HANDLER = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)\n"
+        f"saved = {str(saved)!r}\n"
+        "def handle(event):\n"
+        "    if event == 2:  # CTRL_CLOSE_EVENT\n"
+        f"        time.sleep({save_seconds!r})\n"
+        "        with open(saved + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "            stream.write('saved')\n"
+        "        os.replace(saved + '.tmp', saved)\n"
+        "    return True\n"
+        "routine = HANDLER(handle)\n"
+        "kernel32.SetConsoleCtrlHandler.argtypes = (HANDLER, wintypes.BOOL)\n"
+        "assert kernel32.SetConsoleCtrlHandler(routine, True), ctypes.get_last_error()\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': os.getpid()}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "time.sleep(120)\n"
+    )
+    code = (
+        "import os, subprocess, sys, time\n"
+        "grandchild = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {grandchild_code!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+"""Seconds the saving grandchild works in its close handler.
+
+Well inside the five seconds the console host gives a close handler, and
+longer than a program usually needs, but not longer than a large save does.
+"""
+_SAVE_ON_CLOSE_SECONDS = 2.5
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_attached_programs_may_finish_saving_on_close(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A program that answers the close event by saving for a while gets to finish.
+
+    On 3.29.0 such a program had the console host's five seconds. Ending it
+    after a shorter grace loses whatever it was writing.
+    """
+    ready_file = tmp_path / "grandchild.json"
+    saved = tmp_path / "saved"
+    exit_gate = tmp_path / "shell-exit"
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the grandchild before the shutdown starts."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 30.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+
+        result = _run_host(
+            _spawn_saving_grandchild(
+                ready_file, saved, exit_gate, _SAVE_ON_CLOSE_SECONDS
+            ),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert watch.survivors(15.0) == [], result.stderr
+    assert saved.is_file(), result.stderr
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 def test_stdin_end_of_file_shuts_the_session_down() -> None:
     """Closing host stdin stands in for the pane closing."""
@@ -4565,6 +5145,50 @@ def test_stdin_end_of_file_shuts_the_session_down() -> None:
         [sys.executable, "-c", "import time; time.sleep(30)"], timeout=25.0
     )
     assert result.code == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_stdin_end_of_file_ends_hidden_console_programs(tmp_path: Path) -> None:
+    """The stdin end of a session sweeps like a kill and a natural exit do.
+
+    The plugin's end of the host's stdin closes when Obsidian lets go of the
+    host without a kill; the session then ends through this path.
+    """
+    ready_file = tmp_path / "sleeper.json"
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import json, os, subprocess, sys, time\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(120)'],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': child.pid}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "print('SLEEPER-UP', flush=True)\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    pinned: list[int] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the sleeper; stdin closes once it is up."""
+            pinned.append(_pin_shell_and_published_pid(watch, ready, ready_file, 30.0))
+
+        result = _run_host(
+            [getattr(sys, "_base_executable", sys.executable), str(launcher)],
+            stdout_ready=b"SLEEPER-UP",
+            ready_probe=pin,
+            timeout=60.0,
+        )
+        assert len(pinned) == 1, result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert watch.survivors(15.0) == [], result.stderr
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
