@@ -2108,6 +2108,103 @@ describe("default profile and profile order of this device", () => {
     }
   });
 
+  it("brings back data.json with Undo after the list deletes a profile, but not this device's choice", async () => {
+    const { context, defaultOptions, defaultRow, edit, tab } =
+      await drawProfiles(synced, {
+        lastReadChangelogVersion: "0.0.0",
+        defaultProfile: "zsh",
+        profileOrder: ["bash", "zsh", "pwsh"],
+      });
+    try {
+      // Undo under All settings goes back to data.json as the tab showed it;
+      // it learns of changes from the settings store, as in the library.
+      type Listener = readonly [
+        (value: Settings) => unknown,
+        (cur: unknown, prev: unknown, value: Settings) => unknown,
+      ];
+      const listeners: Listener[] = [];
+      vi.spyOn(context.settings, "onMutate").mockImplementation(
+        (accessor, callback) => {
+          const listener: Listener = [accessor, callback];
+          listeners.push(listener);
+          return () => {
+            listeners.splice(listeners.indexOf(listener), 1);
+          };
+        },
+      );
+      vi.spyOn(context.settings, "mutate").mockImplementation(
+        async (mutate) => {
+          const prev = context.settings.value,
+            value = cloneAsWritable(prev);
+          await mutate(value);
+          Object.assign(context.settings, { value });
+          for (const [accessor, callback] of [...listeners]) {
+            const before = accessor(prev),
+              after = accessor(value);
+            if (JSON.stringify(before) !== JSON.stringify(after)) {
+              await callback(after, before, value);
+            }
+          }
+        },
+      );
+      // The mock's button, which Obsidian's typings do not describe.
+      interface MockButton {
+        readonly click?: () => void;
+        readonly getCta?: () => boolean;
+        readonly getTooltip?: () => string;
+      }
+      const undoTooltip = context.language.value.t(
+          "settings.all-settings-actions.undo",
+        ),
+        undoButtons: MockButton[] = [];
+      vi.spyOn(MainWindowRow.prototype, "addButton").mockImplementation(
+        function (this: MainWindowRow, configure) {
+          const button = new ButtonComponent(this.settingEl),
+            mock = button as MockButton;
+          configure(button);
+          if (mock.getTooltip?.() === undoTooltip) undoButtons.push(mock);
+          return this;
+        },
+      );
+      tab.display();
+      const { data, send } = edit();
+      await send({
+        defaultProfile: data.defaultProfile,
+        entries: data.entries.filter(([id]) => id !== "zsh"),
+      });
+      expect(defaultRow.dropdown?.getValue()).toBe("");
+      const undo = undoButtons.at(-1);
+      await vi.waitFor(() => {
+        expect(undo?.getCta?.()).toBe(true);
+      });
+      undo?.click?.();
+      await vi.waitFor(() => {
+        expect(Object.keys(context.settings.value.profiles)).toEqual([
+          "pwsh",
+          "zsh",
+          "bash",
+        ]);
+      });
+      expect(context.settings.value.defaultProfile).toBe("pwsh");
+      // Undo covers data.json only. This device's default and order stay as
+      // the deletion left them, so the profile comes back after the ones
+      // this device ordered, and is not its default.
+      expect(context.localSettings.value).toMatchObject({
+        defaultProfile: null,
+        profileOrder: ["bash", "pwsh"],
+      });
+      expect(defaultRow.dropdown?.getValue()).toBe("");
+      expect(defaultOptions().map(([id]) => id)).toEqual([
+        "",
+        "bash",
+        "pwsh",
+        "zsh",
+      ]);
+    } finally {
+      tab.dispose();
+    }
+  });
+
   it("keeps data.json in its order through a series of edits in one list", async () => {
     const { context, edit, tab } = await drawProfiles(synced);
     try {
