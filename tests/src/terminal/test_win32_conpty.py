@@ -6515,35 +6515,48 @@ def test_scratch_windowed_program_repeats(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("load", ("idle", "busy"))
 def test_scratch_message_box_race(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, load: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Measure whether a message box is findable before it is visible.
 
     The old program read the visibility once, at the first find, polling
-    every 50 ms. Its records over 40 runs say how often it published a box
-    as not visible; the tight loop over 30 runs says for how long a box is
-    findable and hidden.
+    every 50 ms. Its records say how often it published a box as not
+    visible; the tight loop says when a box is first findable and when it
+    is first visible, in ms after its thread starts. ``busy`` keeps one
+    spinning process per processor running meanwhile.
     """
-    old: list[bool] = []
-    for index in range(40):
-        record = _scratch_run_direct(
-            tmp_path / f"old-{index}.json", _OLD_WINDOWED_CONSOLE_PROGRAM
+    spinners = [
+        subprocess.Popen(
+            [
+                getattr(sys, "_base_executable", sys.executable),
+                "-c",
+                "while True: pass",
+            ],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        old.append(record.get("visible") is True)
-    hidden: list[object] = []
-    for index in range(30):
-        record = _scratch_run_direct(tmp_path / f"race-{index}.json", _RACE_PROGRAM)
-        found, shown = record.get("found"), record.get("shown")
-        hidden.append(
-            (round(shown - found, 2), record.get("hiddenPolls"))
-            if isinstance(found, float) and isinstance(shown, float)
-            else record
-        )
+        for _ in range((os.cpu_count() or 1) if load == "busy" else 0)
+    ]
+    try:
+        old: list[bool] = []
+        for index in range(150):
+            record = _scratch_run_direct(
+                tmp_path / f"old-{index}.json", _OLD_WINDOWED_CONSOLE_PROGRAM
+            )
+            old.append(record.get("visible") is True)
+        times: list[object] = []
+        for index in range(30):
+            record = _scratch_run_direct(tmp_path / f"race-{index}.json", _RACE_PROGRAM)
+            times.append((record.get("found"), record.get("shown")))
+    finally:
+        for spinner in spinners:
+            spinner.kill()
+            spinner.wait(10.0)
     _scratch_report(
         capsys,
-        f"old program not visible in {old.count(False)} of {len(old)} runs; "
-        f"(ms findable and hidden, hidden polls) per run: {hidden}",
+        f"{load}: old program not visible in {old.count(False)} of {len(old)} "
+        f"runs; (ms first findable, ms first visible) per run: {times}",
     )
 
 
