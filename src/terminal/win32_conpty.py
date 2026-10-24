@@ -829,8 +829,8 @@ def select_descendants_to_end(
     whose parent is not known this round (too new to judge, or gone), a
     process that has not connected to a console yet (``young``) and
     anything ``consoles`` leaves unanswered are kept. The ``young`` ones
-    are added to ``undecided`` when it is given: a later survey can judge
-    them.
+    that would end once judged are added to ``undecided`` when it is given:
+    a later survey can judge them.
     """
     by_pid = {record.pid: record for record in records}
     asked = [record.pid for record in records if record.subsystem == _SUBSYSTEM_CONSOLE]
@@ -859,17 +859,21 @@ def select_descendants_to_end(
             seen.add(parent.pid)
             child = parent
 
+    def ends_as(kind: str, record: DescendantRecord) -> bool:
+        """Report whether ``record`` has the console ``kind`` and would end."""
+        return (
+            record.subsystem == _SUBSYSTEM_CONSOLE
+            and record.parent_pid is not None
+            and kinds.get(record.pid) == kind
+            and record.pid not in windowed
+            and not sheltered(record)
+        )
+
     if undecided is not None:
-        undecided.update(pid for pid in asked if kinds.get(pid) == _CONSOLE_YOUNG)
-    return [
-        record.pid
-        for record in records
-        if record.subsystem == _SUBSYSTEM_CONSOLE
-        and record.parent_pid is not None
-        and kinds.get(record.pid) == _CONSOLE_OWN
-        and record.pid not in windowed
-        and not sheltered(record)
-    ]
+        undecided.update(
+            record.pid for record in records if ends_as(_CONSOLE_YOUNG, record)
+        )
+    return [record.pid for record in records if ends_as(_CONSOLE_OWN, record)]
 
 
 def job_process_ids(

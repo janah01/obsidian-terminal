@@ -429,6 +429,42 @@ def test_sweep_keeps_a_program_too_new_to_judge_and_reports_it() -> None:
     assert undecided == {20}
 
 
+def test_sweep_waits_only_for_a_new_program_it_could_end() -> None:
+    """A new program that would be kept once judged is not reported.
+
+    An editor started from the shell may start short console helpers all the
+    time. The last sweep must not wait for one: it runs under a program that
+    keeps running, so it is kept whatever its console turns out to be.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole, and a helper it started.
+        _record(10, 1, "console"),
+        _record(20, 10, "console"),
+        # An editor started from the shell, and a helper it started.
+        _record(30, 10, "gui"),
+        _record(40, 30, "console"),
+        # A daemon started detached, and a worker it started.
+        _record(50, 10, "console"),
+        _record(60, 50, "console"),
+        # A console program that shows a window of its own.
+        _record(70, 10, "console"),
+    ]
+    undecided: set[int] = set()
+    answers = {
+        10: "attached",
+        20: "young",
+        40: "young",
+        50: "none",
+        60: "young",
+        70: "young",
+    }
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, windowed={70}, undecided=undecided
+    )
+    assert ended == []
+    assert undecided == {20}
+
+
 @pytest.mark.parametrize(
     ("image", "host"),
     [
