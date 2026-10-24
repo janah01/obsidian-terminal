@@ -647,6 +647,177 @@ describe("opening commands on the focused list follow Add to command", () => {
     expect([...listed]).toEqual(OPENING_IDS);
     expect(reload).not.toHaveBeenCalled();
   });
+
+  // The list as the view keeps it, beside the library's settings manager
+  // loaded from `data` as at a start.
+  async function loadManaged(data: unknown) {
+    vi.mocked(addCommand).mockImplementation((_context, name, command) => ({
+      ...command,
+      name: name(),
+    }));
+    const listed = new Set<string>();
+    vi.mocked(TerminalView).allowWhileFocused.mockImplementation(
+      ({ id }, allowed = true) => {
+        if (allowed) listed.add(id);
+        else listed.delete(id);
+      },
+    );
+    const context = await terminalContext(),
+      settings = new SettingsManager(context, Settings.fix),
+      local: unknown = Reflect.get(context, "localSettings");
+    Object.assign(context, {
+      loadData: vi.fn().mockResolvedValue(data),
+      // Where the manager keeps a copy of data it fixed; what the fixture
+      // already gives this device stays.
+      localSettings: {
+        mutate: vi.fn().mockResolvedValue(void 0),
+        onLoaded: Promise.resolve(),
+        write: vi.fn().mockResolvedValue(void 0),
+        ...(typeof local === "object" && local !== null ? local : {}),
+      },
+      settings,
+    });
+    Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
+    const write = vi.spyOn(settings, "write").mockResolvedValue(),
+      mutate = vi.spyOn(settings, "mutate");
+    // Older data can be reported as fixed; that is not this test's concern.
+    vi.spyOn(console, "warn").mockImplementation(vi.fn());
+    settings.load();
+    await settings.onLoaded;
+    // The manager writes once after it loads.
+    await new Promise((resolve) => {
+      self.setTimeout(resolve, 0);
+    });
+    const writes = write.mock.calls.length;
+    loadTerminal(context);
+    return { context, listed, mutate, settings, write, writes };
+  }
+
+  it.each([
+    [
+      "3.28.0",
+      async (): Promise<unknown> => {
+        // Imported here so that the import block shared with other changes
+        // stays as it is.
+        const { default: released } = await import(
+          "../../fixtures/data-3.28.0.json",
+          { with: { type: "json" } }
+        );
+        return { ...released, addToCommand: false };
+      },
+    ],
+    [
+      "3.29.0",
+      async (): Promise<unknown> =>
+        // 3.29.0 writes its fixed settings back on every start.
+        Promise.resolve(
+          JSON.parse(
+            JSON.stringify(Settings.fix({ addToCommand: false }).value),
+          ),
+        ),
+    ],
+  ])(
+    "follows the setting loaded from a %s data.json until the plugin unloads",
+    async (_version, data) => {
+      const { context, listed, mutate, settings, write, writes } =
+        await loadManaged(await data());
+      expect([...listed]).toEqual([]);
+
+      await settings.mutate((value) => {
+        value.addToCommand = true;
+      });
+      expect([...listed]).toEqual(OPENING_IDS);
+      expect(reload).toHaveBeenCalledExactlyOnceWith(context);
+      // The list follows the setting and stores nothing of its own.
+      expect(mutate).toHaveBeenCalledOnce();
+      expect(write).toHaveBeenCalledTimes(writes);
+
+      for (const [dispose] of vi.mocked(context).register.mock.calls) dispose();
+      await settings.mutate((value) => {
+        value.addToCommand = false;
+      });
+      expect([...listed]).toEqual(OPENING_IDS);
+      expect(reload).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([true, false])(
+    "ends with the list of the last of quick changes to %s",
+    async (last) => {
+      const { listed, settings } = await loadManaged(
+          Settings.fix({ addToCommand: !last }).value,
+        ),
+        set = async (value: boolean): Promise<void> =>
+          settings.mutate((settings0) => {
+            settings0.addToCommand = value;
+          });
+
+      // Not awaited one by one, as clicks on the toggle can be.
+      await Promise.all([
+        set(last),
+        set(!last),
+        set(last),
+        set(!last),
+        set(last),
+      ]);
+
+      expect(settings.value.addToCommand).toBe(last);
+      expect([...listed]).toEqual(last ? OPENING_IDS : []);
+    },
+  );
+
+  async function listFrom(initial: unknown): Promise<ReadonlySet<string>> {
+    vi.mocked(addCommand).mockImplementation((_context, name, command) => ({
+      ...command,
+      name: name(),
+    }));
+    const listed = new Set<string>();
+    vi.mocked(TerminalView).allowWhileFocused.mockImplementation(
+      ({ id }, allowed = true) => {
+        if (allowed) listed.add(id);
+        else listed.delete(id);
+      },
+    );
+    const context = await terminalContext(initial);
+    Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
+    loadTerminal(context);
+    return listed;
+  }
+
+  it.each([
+    ["missing", {}],
+    ["a string", { addToCommand: "false" }],
+    ["null", { addToCommand: null }],
+    ["a number", { addToCommand: 0 }],
+  ])(
+    "lists them while the stored setting is %s, as it is on by default",
+    async (_kind, initial) => {
+      expect([...(await listFrom(initial))]).toEqual(OPENING_IDS);
+    },
+  );
+
+  it.each([
+    ["no profiles", { defaultProfile: null, profiles: {} }],
+    [
+      "only a profile of another platform",
+      {
+        defaultProfile: "elsewhere",
+        profiles: {
+          elsewhere: {
+            ...Settings.Profile.DEFAULTS.integrated,
+            platforms: { darwin: true },
+          },
+        },
+      },
+    ],
+  ])("lists them by Add to command alone with %s", async (_name, profiles) => {
+    expect([...(await listFrom({ ...profiles, addToCommand: true }))]).toEqual(
+      OPENING_IDS,
+    );
+    expect([...(await listFrom({ ...profiles, addToCommand: false }))]).toEqual(
+      [],
+    );
+  });
 });
 
 describe("layout-ready automatic Python work", () => {
