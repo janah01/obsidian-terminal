@@ -25,8 +25,12 @@ Its stdin and stdout carry raw terminal bytes.  A local named pipe, created by
 the plugin before the spawn and connected to by this host, carries NDJSON
 control messages: the host announces itself with ``hello``, the plugin sends
 an authenticated response, and the host reports ``ready`` only after Job
-Object assignment of the shell and primary-thread resume. Descendants may
-break away; ``jobObjectAssigned`` does not attest to their containment.
+Object assignment of the shell and primary-thread resume. The kill-on-close
+job holds the shell alone; two more jobs track what it starts, so that the end
+of a session can end the console programs left running in a console of their
+own while GUI programs, what runs under them, and detached programs survive.
+``jobObjectAssigned`` attests to the shell's assignment only, and a host that
+is killed sweeps nothing.
 The plugin then sends ``resize`` and ``kill`` operations, and the host reports
 ``exit`` before leaving. The token authenticating that pipe arrives in the
 ``OBSIDIAN_TERMINAL_CONPTY_TOKEN`` environment variable, never on the command
@@ -47,10 +51,11 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any, BinaryIO, Callable, NamedTuple
 
 """Public API of this module."""
@@ -60,6 +65,7 @@ __all__ = (
     "ChildStartError",
     "ControlMessageReader",
     "DeferredArguments",
+    "DescendantRecord",
     "HostArguments",
     "NdjsonDecoder",
     "WindowsTerminal",
@@ -69,16 +75,22 @@ __all__ = (
     "diagnose",
     "encode_message",
     "environment_path",
+    "image_subsystem",
+    "job_process_ids",
     "main",
     "parse_arguments",
     "parse_resize",
     "pick_windows_terminal",
     "pump_output",
     "quote_argument",
+    "read_image_header",
     "resolve_executable",
     "resume_assigned_child",
+    "select_descendants_to_end",
     "spawn_exit_code",
+    "sweep_descendants",
     "to_exit_status",
+    "wait_each",
 )
 
 """Environment variable carrying the control-channel authentication token."""
@@ -87,7 +99,8 @@ TOKEN_ENVIRONMENT_VARIABLE = "OBSIDIAN_TERMINAL_CONPTY_TOKEN"
 """Attestation required by the TypeScript backend-ready contract.
 
 Job assignment covers the shell in the kill-on-close job, not every descendant.
-Descendants may break away; console attachment determines console-close behavior.
+Descendants leave that job at once and two more jobs track them for the
+end-of-session sweep; console attachment and that sweep decide their lifetime.
 """
 READY_ATTESTATION = (
     "create-pseudoconsole+authenticated-control-channel+job-object-assigned"
@@ -659,6 +672,214 @@ def _native_system_path(path: str) -> str:
         # CreateProcessW would redirect a System32 path again.
         return os.path.join(native, absolute[len(system) :])
     return path
+
+
+# Session-end sweep: platform-free pieces. The Windows section below supplies
+# the job, process and console primitives; these functions hold the decisions
+# so that every platform can test them.
+
+"""PE subsystem of an image that owns a window instead of a console."""
+_SUBSYSTEM_GUI = "gui"
+"""PE subsystem of an image that attaches to a console."""
+_SUBSYSTEM_CONSOLE = "console"
+"""The subsystem of an image that cannot be read, or is neither of the two."""
+_SUBSYSTEM_UNKNOWN = "unknown"
+"""``IMAGE_SUBSYSTEM_WINDOWS_GUI``."""
+_IMAGE_SUBSYSTEM_WINDOWS_GUI = 2
+"""``IMAGE_SUBSYSTEM_WINDOWS_CUI``."""
+_IMAGE_SUBSYSTEM_WINDOWS_CUI = 3
+"""Optional-header magic numbers of PE32 and PE32+ images."""
+_PE_OPTIONAL_HEADER_MAGICS = (0x10B, 0x20B)
+"""Offset of ``e_lfanew``, the PE signature's offset, in the DOS header."""
+_PE_SIGNATURE_OFFSET_FIELD = 0x3C
+"""Bytes from the PE signature to the optional header: signature and COFF header."""
+_PE_OPTIONAL_HEADER_OFFSET = 4 + 20
+"""Offset of ``Subsystem`` inside the optional header, PE32 and PE32+ alike."""
+_PE_SUBSYSTEM_OFFSET = 68
+"""Longest DOS stub accepted before the PE signature."""
+_PE_MAX_SIGNATURE_OFFSET = 1 << 20
+"""Process identifiers the first read of a job's process list has room for."""
+_PID_LIST_CAPACITY = 64
+"""Reads of a job's process list before a list that keeps growing is accepted."""
+_PID_LIST_ATTEMPTS = 8
+"""Rounds of the sweep: a kept program may start another console program."""
+_SWEEP_ROUNDS = 3
+
+
+class DescendantRecord(NamedTuple):
+    """One process the session's tracking job holds, as seen in a sweep round.
+
+    ``created`` orders processes in time, so a parent PID that Windows reused
+    after the real parent exited is not mistaken for an ancestor.
+    """
+
+    pid: int
+    parent_pid: int
+    created: int
+    subsystem: str
+
+
+def read_image_header(
+    path: str, native: Callable[[str], str] = _native_system_path
+) -> bytes:
+    """Read the start of a PE image, through its optional header's ``Subsystem``.
+
+    ``native`` maps a ``System32`` path to ``Sysnative`` on a 32-bit host, so
+    the file read is the one the 64-bit process runs. A file that cannot be
+    read, or is shorter than that, gives what could be read, and
+    ``image_subsystem`` then reports ``unknown``.
+    """
+    try:
+        with open(native(path), "rb") as stream:
+            dos = stream.read(_PE_SIGNATURE_OFFSET_FIELD + 4)
+            if len(dos) < _PE_SIGNATURE_OFFSET_FIELD + 4:
+                return dos
+            (signature,) = struct.unpack_from("<I", dos, _PE_SIGNATURE_OFFSET_FIELD)
+            if signature > _PE_MAX_SIGNATURE_OFFSET:
+                return dos
+            needed = signature + _PE_OPTIONAL_HEADER_OFFSET + _PE_SUBSYSTEM_OFFSET + 2
+            return dos + stream.read(needed - len(dos))
+    except OSError:
+        return b""
+
+
+def image_subsystem(header: bytes) -> str:
+    """Classify a PE image by the ``Subsystem`` field of its optional header.
+
+    ``header`` is the start of the file, long enough to reach that field,
+    which sits at the same offset in PE32 and PE32+ images. Anything that is
+    not a PE image of either kind, or is cut short, is ``unknown``.
+    """
+    if len(header) < _PE_SIGNATURE_OFFSET_FIELD + 4 or header[:2] != b"MZ":
+        return _SUBSYSTEM_UNKNOWN
+    (signature,) = struct.unpack_from("<I", header, _PE_SIGNATURE_OFFSET_FIELD)
+    optional = signature + _PE_OPTIONAL_HEADER_OFFSET
+    if (
+        signature > _PE_MAX_SIGNATURE_OFFSET
+        or len(header) < optional + _PE_SUBSYSTEM_OFFSET + 2
+        or header[signature : signature + 4] != b"PE\0\0"
+    ):
+        return _SUBSYSTEM_UNKNOWN
+    (magic,) = struct.unpack_from("<H", header, optional)
+    if magic not in _PE_OPTIONAL_HEADER_MAGICS:
+        return _SUBSYSTEM_UNKNOWN
+    (subsystem,) = struct.unpack_from("<H", header, optional + _PE_SUBSYSTEM_OFFSET)
+    if subsystem == _IMAGE_SUBSYSTEM_WINDOWS_GUI:
+        return _SUBSYSTEM_GUI
+    if subsystem == _IMAGE_SUBSYSTEM_WINDOWS_CUI:
+        return _SUBSYSTEM_CONSOLE
+    return _SUBSYSTEM_UNKNOWN
+
+
+def select_descendants_to_end(
+    records: Sequence[DescendantRecord],
+    has_console: Callable[[Sequence[int]], Mapping[int, bool]],
+) -> list[int]:
+    """Choose the tracked processes that end with the session.
+
+    A process ends when its image is a console program, no GUI program above
+    it still runs, and ``has_console`` says it has a console: a hidden one, a
+    window of its own, or the pseudoconsole. Parent links are followed only
+    through records created no later than the child, so a reused parent PID
+    breaks the chain, and an orphan whose launcher has exited has no ancestor
+    at all. GUI programs, programs whose image cannot be read, console
+    programs without a console (detached ones) and anything ``has_console``
+    leaves unanswered are kept.
+    """
+    by_pid = {record.pid: record for record in records}
+
+    def under_gui(record: DescendantRecord) -> bool:
+        """Report whether a running GUI program is an ancestor of ``record``."""
+        seen = {record.pid}
+        child = record
+        while True:
+            parent = by_pid.get(child.parent_pid)
+            if parent is None or parent.pid in seen or parent.created > child.created:
+                return False
+            if parent.subsystem == _SUBSYSTEM_GUI:
+                return True
+            seen.add(parent.pid)
+            child = parent
+
+    candidates = [
+        record.pid
+        for record in records
+        if record.subsystem == _SUBSYSTEM_CONSOLE and not under_gui(record)
+    ]
+    if not candidates:
+        return []
+    consoles = has_console(candidates)
+    return [pid for pid in candidates if consoles.get(pid) is True]
+
+
+def job_process_ids(
+    query: Callable[[int], tuple[int, Sequence[int]]],
+    capacity: int = _PID_LIST_CAPACITY,
+    attempts: int = _PID_LIST_ATTEMPTS,
+) -> list[int]:
+    """List a job's processes, growing the buffer until the list is complete.
+
+    ``query`` takes a capacity and returns how many processes the job holds
+    and the identifiers that fit. Processes can keep arriving while the list
+    is read, so after ``attempts`` reads the last list is accepted as it is.
+    """
+    listed: Sequence[int] = ()
+    for _ in range(attempts):
+        assigned, listed = query(capacity)
+        if len(listed) >= assigned:
+            break
+        capacity = max(assigned, capacity * 2)
+    return list(listed)
+
+
+def wait_each(
+    handles: Sequence[int],
+    deadline: float,
+    exited: Callable[[int, int], bool],
+    clock: Callable[[], float] = time.monotonic,
+) -> list[int]:
+    """Wait for each handle in turn until ``deadline``; return those still running.
+
+    ``exited`` waits on one handle for at most the given milliseconds and
+    reports whether it is signalled. One wait per handle puts no limit on
+    their number, unlike ``WaitForMultipleObjects``, and a handle reached
+    after the deadline still gets a zero-length wait, so a process that has
+    exited is never reported as running.
+    """
+    running: list[int] = []
+    for handle in handles:
+        remaining = max(0.0, deadline - clock())
+        if not exited(handle, round(remaining * 1000)):
+            running.append(handle)
+    return running
+
+
+def sweep_descendants(
+    survey: Callable[[], Sequence[int]],
+    end: Callable[[Sequence[int], float], Sequence[int]],
+    clock: Callable[[], float],
+    deadline: float,
+    rounds: int = _SWEEP_ROUNDS,
+) -> list[int]:
+    """End what ``survey`` selects, in rounds, until nothing is left or time is up.
+
+    A kept program may start another console program while a round runs, so
+    the survey is repeated after a round that ended something, at most
+    ``rounds`` times and never past ``deadline``. ``end`` terminates the
+    selected processes and returns those still running at the deadline; they
+    end the sweep and are returned for a diagnostic.
+    """
+    left: list[int] = []
+    for _ in range(rounds):
+        if clock() >= deadline:
+            break
+        selected = survey()
+        if not selected:
+            break
+        left = list(end(selected, deadline))
+        if left:
+            break
+    return left
 
 
 def _system_search_directories() -> tuple[str, ...]:
@@ -1408,6 +1629,24 @@ if sys.platform == "win32":
     _JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
     """Job limit keeping descendants outside the job without a spawn flag."""
     _JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x00001000
+    """Job information class selecting ``JOBOBJECT_BASIC_PROCESS_ID_LIST``."""
+    _JOBOBJECT_BASIC_PROCESS_ID_LIST_CLASS = 3
+    """Process access to query, wait on and terminate a tracked process."""
+    _PROCESS_SWEEP_ACCESS = 0x00001000 | 0x00000001 | 0x00100000
+    """Snapshot flag listing every process with its parent."""
+    _TH32CS_SNAPPROCESS = 0x00000002
+    """``QueryFullProcessImageNameW`` flag selecting a Win32 path."""
+    _IMAGE_NAME_WIN32 = 0
+    """Creation flag giving a child no console at all."""
+    _DETACHED_PROCESS = 0x00000008
+    """Win32 error of ``AttachConsole`` when the probed process has no console."""
+    _ERROR_INVALID_HANDLE = 6
+    """Win32 error meaning a job's process list did not fit the buffer."""
+    _ERROR_MORE_DATA = 234
+    """``INVALID_HANDLE_VALUE`` as the unsigned pointer ``ctypes`` returns."""
+    _INVALID_HANDLE_VALUE = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
+    """``struct`` format of one ``ULONG_PTR`` in a job's process list."""
+    _ULONG_PTR_FORMAT = "Q" if ctypes.sizeof(ctypes.c_size_t) == 8 else "I"
     """Wait result meaning the waited-on object is signalled."""
     _WAIT_OBJECT_0 = 0x00000000
     """Handle flag letting a new process inherit the handle."""
@@ -1431,6 +1670,24 @@ if sys.platform == "win32":
     _POLL_MILLISECONDS = 100
     """Milliseconds a contained child may take to exit before it is terminated."""
     _TERMINATE_GRACE_MILLISECONDS = 2000
+    """Seconds the end-of-session sweep gives the pseudoconsole to drain first.
+
+    Programs still attached to the pseudoconsole get ``CTRL_CLOSE_EVENT`` when
+    it closes and normally end within milliseconds, which ends the drain; the
+    sweep starts when the drain ends or when this grace is up, whichever comes
+    first, so a program that ignores the event does not hold the session open
+    for the console host's own five-second timeout.
+    """
+    _SWEEP_GRACE = 1.5
+    """Seconds from the start of ``_finish`` within which the sweep must be done.
+
+    The grace, the sweep and the control-reader stop have to fit inside the
+    five seconds the plugin waits for ``exit`` after a kill before it kills
+    the host itself.
+    """
+    _SWEEP_DEADLINE = 3.0
+    """Seconds ``_finish`` waits for the sweep past its deadline before going on."""
+    _SWEEP_JOIN_MARGIN = 1.0
 
     """Seconds allowed for the output pump to observe end of file."""
     _OUTPUT_JOIN = 5.0
@@ -1537,6 +1794,27 @@ if sys.platform == "win32":
             ("memory", _SIZE * 4),
         )
 
+    class _PROCESSENTRY32W(ctypes.Structure):
+        """Win32 ``PROCESSENTRY32W``: one process of a Toolhelp snapshot."""
+
+        _fields_ = (
+            ("dwSize", _DWORD),
+            ("cntUsage", _DWORD),
+            ("th32ProcessID", _DWORD),
+            ("th32DefaultHeapID", _SIZE),
+            ("th32ModuleID", _DWORD),
+            ("cntThreads", _DWORD),
+            ("th32ParentProcessID", _DWORD),
+            ("pcPriClassBase", _LONG),
+            ("dwFlags", _DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        )
+
+    class _FILETIME(ctypes.Structure):
+        """Win32 ``FILETIME``: 100 ns intervals since 1601, in two halves."""
+
+        _fields_ = (("dwLowDateTime", _DWORD), ("dwHighDateTime", _DWORD))
+
     class _UNICODE_STRING(ctypes.Structure):
         """NT ``UNICODE_STRING``: lengths in bytes, then the UTF-16 buffer."""
 
@@ -1640,6 +1918,10 @@ if sys.platform == "win32":
         ),
         _BOOL,
     )
+    """Take a snapshot of the running processes."""
+    _CreateToolhelp32Snapshot = _bind(
+        "CreateToolhelp32Snapshot", (_DWORD, _DWORD), _HANDLE
+    )
     """Release a process-thread attribute list."""
     _DeleteAttributeList = _bind("DeleteProcThreadAttributeList", (_VOID,), None)
     """Duplicate a control-pipe handle for independent write ownership."""
@@ -1650,6 +1932,18 @@ if sys.platform == "win32":
     )
     """Read the exit code of a process."""
     _GetExitCodeProcess = _bind("GetExitCodeProcess", (_HANDLE, _PDWORD), _BOOL)
+    """Read the creation time, among others, of a process."""
+    _GetProcessTimes = _bind(
+        "GetProcessTimes",
+        (
+            _HANDLE,
+            ctypes.POINTER(_FILETIME),
+            ctypes.POINTER(_FILETIME),
+            ctypes.POINTER(_FILETIME),
+            ctypes.POINTER(_FILETIME),
+        ),
+        _BOOL,
+    )
     """Return a pseudo-handle for the current process."""
     _GetCurrentProcess = _bind("GetCurrentProcess", (), _HANDLE)
     """Locate the host executable used by the default Windows search."""
@@ -1666,10 +1960,34 @@ if sys.platform == "win32":
         (_VOID, _DWORD, _DWORD, ctypes.POINTER(_SIZE)),
         _BOOL,
     )
+    """Tell whether a process is in a job or in one of its child jobs."""
+    _IsProcessInJob = _bind(
+        "IsProcessInJob", (_HANDLE, _HANDLE, ctypes.POINTER(_BOOL)), _BOOL
+    )
     """Read bytes from a handle, blocking until some arrive."""
     _ReadFile = _bind("ReadFile", (_HANDLE, _VOID, _DWORD, _PDWORD, _VOID), _BOOL)
+    """Open a process by identifier with the given access."""
+    _OpenProcess = _bind("OpenProcess", (_DWORD, _BOOL, _DWORD), _HANDLE)
     """Open a thread so its pending synchronous read can be cancelled."""
     _OpenThread = _bind("OpenThread", (_DWORD, _BOOL, _DWORD), _HANDLE)
+    """Read the first process of a snapshot."""
+    _Process32FirstW = _bind(
+        "Process32FirstW", (_HANDLE, ctypes.POINTER(_PROCESSENTRY32W)), _BOOL
+    )
+    """Read the next process of a snapshot."""
+    _Process32NextW = _bind(
+        "Process32NextW", (_HANDLE, ctypes.POINTER(_PROCESSENTRY32W)), _BOOL
+    )
+    """Read the image path of a process."""
+    _QueryFullProcessImageNameW = _bind(
+        "QueryFullProcessImageNameW", (_HANDLE, _DWORD, _LPWSTR, _PDWORD), _BOOL
+    )
+    """Read a job object's process list and other information."""
+    _QueryInformationJobObject = _bind(
+        "QueryInformationJobObject",
+        (_HANDLE, ctypes.c_int, _VOID, _DWORD, _PDWORD),
+        _BOOL,
+    )
     """Resume a suspended primary process thread."""
     _ResumeThread = _bind("ResumeThread", (_HANDLE,), _DWORD)
     """Ask Windows whether a program permits implicit current-directory lookup."""
@@ -2189,23 +2507,13 @@ if sys.platform == "win32":
             return None
         return _existing_console_host_copy(source, name, root)
 
-    def _create_job() -> int:
-        """Own only the shell in a kill-on-close job; descendants break away.
-
-        ``jobObjectAssigned`` attests to shell assignment, not descendant
-        containment. Console attachment, not this job, determines descendant
-        lifetime; an ancestor job that forbids breakaway can still hold and
-        end them.
-        """
+    def _create_job_with_limits(limit_flags: int) -> int:
+        """Create a job object with the given extended limit flags."""
         job = _as_handle(_CreateJobObjectW(None, None))
         if not job:
             raise _last_error()
         limits = _JOB_LIMITS()
-        limits.LimitFlags = (
-            _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | _JOB_OBJECT_LIMIT_BREAKAWAY_OK
-            | _JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
-        )
+        limits.LimitFlags = limit_flags
         if not _SetInformationJobObject(
             job,
             _JOBOBJECT_EXTENDED_LIMIT_CLASS,
@@ -2216,6 +2524,38 @@ if sys.platform == "win32":
             _close(job)
             raise error
         return job
+
+    def _create_job() -> int:
+        """Own only the shell in a kill-on-close job; descendants break away.
+
+        Closing or terminating this job ends the shell alone. What the shell
+        starts leaves it at once (silent breakaway) and lands in the jobs of
+        ``_create_tracking_jobs``, which hold it for the end-of-session sweep.
+        ``jobObjectAssigned`` attests to shell assignment, not containment.
+        """
+        return _create_job_with_limits(
+            _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | _JOB_OBJECT_LIMIT_BREAKAWAY_OK
+            | _JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+        )
+
+    def _create_tracking_jobs() -> tuple[int, int]:
+        """Create the two jobs that track the shell's descendants, root first.
+
+        Neither kills on close, so a host that dies ends nothing it tracked.
+        The root permits no breakaway: a descendant that leaves the jobs below,
+        silently or by asking, stops here and stays tracked (MSYS programs ask
+        for one whenever their job permits it). The job below permits an
+        explicit breakaway, so a program under the shell that asks for one is
+        not refused, as it was not before; it only moves up into the root.
+        """
+        tracking = _create_job_with_limits(0)
+        try:
+            breakaway = _create_job_with_limits(_JOB_OBJECT_LIMIT_BREAKAWAY_OK)
+        except OSError:
+            _close(tracking)
+            raise
+        return tracking, breakaway
 
     def _terminate_process(process: int) -> None:
         """Terminate an uncontained suspended child and wait for cleanup."""
@@ -2235,6 +2575,261 @@ if sys.platform == "win32":
         """Terminate every contained process; Job close remains the fallback."""
         if not _TerminateJobObject(job, _EXIT_TERMINATED):
             raise _last_error()
+
+    """Code of the helper that asks which processes own a console.
+
+    ``AttachConsole`` succeeds only for a process that has a console and fails
+    with ``ERROR_INVALID_HANDLE`` for one that has none. Its caller must have
+    no console of its own, which this host, started with a hidden one, has, so
+    a detached helper asks instead. It prints one JSON object from PID to the
+    error code (0 for a console) after detaching from the last console it
+    looked at, so that nothing it writes goes through a standard handle that
+    ``AttachConsole`` replaced.
+    """
+    _CONSOLE_PROBE = (
+        "import ctypes, json, sys\n"
+        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "kernel32.AttachConsole.argtypes = (ctypes.c_uint32,)\n"
+        "kernel32.AttachConsole.restype = ctypes.c_int\n"
+        "kernel32.FreeConsole.restype = ctypes.c_int\n"
+        "results = {}\n"
+        "for argument in sys.argv[1:]:\n"
+        "    if kernel32.AttachConsole(int(argument)):\n"
+        "        kernel32.FreeConsole()\n"
+        "        results[argument] = 0\n"
+        "    else:\n"
+        "        results[argument] = ctypes.get_last_error()\n"
+        "sys.stdout.write(json.dumps(results))\n"
+        "sys.stdout.flush()\n"
+    )
+
+    def _tracked_process_ids(job: int) -> list[int]:
+        """List every process in ``job`` and in its child jobs."""
+        header = 2 * ctypes.sizeof(_DWORD)
+
+        def query(capacity: int) -> tuple[int, Sequence[int]]:
+            """Read the list into a buffer with room for ``capacity`` identifiers."""
+            size = header + ctypes.sizeof(_SIZE) * capacity
+            buffer = ctypes.create_string_buffer(size)
+            if not _QueryInformationJobObject(
+                job, _JOBOBJECT_BASIC_PROCESS_ID_LIST_CLASS, buffer, size, None
+            ):
+                error = _last_error()
+                if _error_code(error) != _ERROR_MORE_DATA:
+                    raise error
+            assigned, listed = struct.unpack_from("<II", buffer.raw, 0)
+            listed = min(listed, capacity)
+            identifiers = struct.unpack_from(
+                f"<{listed}{_ULONG_PTR_FORMAT}", buffer.raw, header
+            )
+            return assigned, [int(identifier) for identifier in identifiers]
+
+        return job_process_ids(query)
+
+    def _parent_process_ids() -> dict[int, int]:
+        """Map every running process to its parent PID from one snapshot."""
+        snapshot = _as_handle(_CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0))
+        if snapshot in (0, _INVALID_HANDLE_VALUE):
+            raise _last_error()
+        parents: dict[int, int] = {}
+        try:
+            entry = _PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            more = _Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                more = _Process32NextW(snapshot, ctypes.byref(entry))
+        finally:
+            _close(snapshot)
+        return parents
+
+    def _open_tracked_process(pid: int, job: int) -> int:
+        """Open a running process of ``job``; return 0 when it is not one.
+
+        The job check closes the window in which Windows reuses a PID from the
+        job's list for a process that is not the session's, and a process that
+        has exited since the list was read is skipped as well.
+        """
+        process = _as_handle(_OpenProcess(_PROCESS_SWEEP_ACCESS, False, pid))
+        if not process:
+            return 0
+        in_job = _BOOL(False)
+        if (
+            not _IsProcessInJob(process, job, ctypes.byref(in_job))
+            or not in_job.value
+            or _WaitForSingleObject(process, 0) == _WAIT_OBJECT_0
+        ):
+            _close(process)
+            return 0
+        return process
+
+    def _process_creation_time(process: int) -> int | None:
+        """Return the creation time of a process as one ``FILETIME`` integer."""
+        creation, exit_time, kernel, user = (
+            _FILETIME(),
+            _FILETIME(),
+            _FILETIME(),
+            _FILETIME(),
+        )
+        if not _GetProcessTimes(
+            process,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        return (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+
+    def _process_image_path(process: int) -> str | None:
+        """Return the Win32 path of a process's image, or ``None``."""
+        buffer = ctypes.create_unicode_buffer(_PATH_BUFFER_CHARACTERS)
+        length = _DWORD(len(buffer))
+        if not _QueryFullProcessImageNameW(
+            process, _IMAGE_NAME_WIN32, buffer, ctypes.byref(length)
+        ):
+            return None
+        return buffer.value
+
+    def _probe_consoles(pids: Sequence[int], deadline: float) -> dict[int, int]:
+        """Ask a console-less helper which of ``pids`` have a console.
+
+        The result maps each PID to the ``AttachConsole`` error code, 0 for a
+        process that has a console. A helper that fails, or runs past the
+        deadline, answers for none of them, and a diagnostic says why.
+        """
+        try:
+            done = subprocess.run(
+                [sys.executable, "-I", "-S", "-c", _CONSOLE_PROBE, *map(str, pids)],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=max(0.05, deadline - time.monotonic()),
+                creationflags=_DETACHED_PROCESS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            diagnose(f"the console probe did not answer: {error}")
+            return {}
+        if done.returncode != 0:
+            detail = done.stderr.decode("utf-8", "replace").strip().splitlines()
+            diagnose(f"the console probe failed: {detail[-1] if detail else ''}")
+            return {}
+        try:
+            answers: object = json.loads(done.stdout.decode("utf-8", "replace"))
+        except ValueError:
+            diagnose("the console probe answered with something other than JSON")
+            return {}
+        if not isinstance(answers, dict):
+            return {}
+        return {
+            int(pid): code
+            for pid, code in answers.items()
+            if isinstance(pid, str) and pid.isdigit() and isinstance(code, int)
+        }
+
+    def _console_owners(pids: Sequence[int], deadline: float) -> dict[int, bool]:
+        """Report which of ``pids`` have a console; leave the undecidable out."""
+        owners: dict[int, bool] = {}
+        for pid, code in _probe_consoles(pids, deadline).items():
+            if code == 0:
+                owners[pid] = True
+            elif code == _ERROR_INVALID_HANDLE:
+                owners[pid] = False
+            else:
+                diagnose(f"could not tell whether {pid} has a console: error {code}")
+        return owners
+
+    def _descendant_records(
+        job: int, cache: dict[tuple[int, int], str], skip: Collection[int]
+    ) -> tuple[list[DescendantRecord], dict[int, int]]:
+        """Describe every process ``job`` holds; return the records and handles.
+
+        ``cache`` keeps each image's subsystem by PID and creation time across
+        rounds, so a round reads only the images of new processes. The handles
+        stay open until the caller closes them: terminating and waiting go
+        through them, so a PID reused meanwhile cannot be hit.
+        """
+        parents = _parent_process_ids()
+        records: list[DescendantRecord] = []
+        handles: dict[int, int] = {}
+        for pid in _tracked_process_ids(job):
+            if pid in skip:
+                continue
+            process = _open_tracked_process(pid, job)
+            if not process:
+                continue
+            created = _process_creation_time(process)
+            if created is None:
+                _close(process)
+                continue
+            subsystem = cache.get((pid, created))
+            if subsystem is None:
+                path = _process_image_path(process)
+                subsystem = (
+                    _SUBSYSTEM_UNKNOWN
+                    if path is None
+                    else image_subsystem(read_image_header(path))
+                )
+                if subsystem == _SUBSYSTEM_UNKNOWN:
+                    diagnose(f"could not classify {path or pid}; it is left running")
+                cache[(pid, created)] = subsystem
+            records.append(
+                DescendantRecord(pid, parents.get(pid, 0), created, subsystem)
+            )
+            handles[pid] = process
+        return records, handles
+
+    def _sweep_descendants(job: int, deadline: float) -> None:
+        """End the session's tracked console programs within ``deadline``.
+
+        ``select_descendants_to_end`` makes the choice; this function supplies
+        the processes, the console probe and the terminations. What is left at
+        the deadline is diagnosed, and no error leaves this function.
+        """
+        cache: dict[tuple[int, int], str] = {}
+        handles: dict[int, int] = {}
+        skip = {os.getpid()}
+
+        def release() -> None:
+            """Close the handles of the previous round."""
+            for handle in handles.values():
+                _close(handle)
+            handles.clear()
+
+        def survey() -> Sequence[int]:
+            """Describe the tracked processes and choose the ones to end."""
+            release()
+            records, opened = _descendant_records(job, cache, skip)
+            handles.update(opened)
+            return select_descendants_to_end(
+                records, lambda pids: _console_owners(pids, deadline)
+            )
+
+        def end(pids: Sequence[int], until: float) -> Sequence[int]:
+            """Terminate the chosen processes; return those running at ``until``."""
+            targets = [(pid, handles[pid]) for pid in pids if pid in handles]
+            for _pid, handle in targets:
+                # A failure means the process is already on its way out; the
+                # wait below tells.
+                _TerminateProcess(handle, _EXIT_TERMINATED)
+            running = wait_each(
+                [handle for _pid, handle in targets],
+                until,
+                lambda handle, milliseconds: (
+                    _WaitForSingleObject(handle, milliseconds) == _WAIT_OBJECT_0
+                ),
+            )
+            return [pid for pid, handle in targets if handle in running]
+
+        try:
+            left = sweep_descendants(survey, end, time.monotonic, deadline)
+        except OSError as error:
+            diagnose(f"could not end the programs started from the terminal: {error}")
+        else:
+            if left:
+                diagnose(f"programs started from the terminal did not end: {left}")
+        finally:
+            release()
 
     def _create_child(
         command_line: str,
@@ -2416,6 +3011,10 @@ if sys.platform == "win32":
             self._input_write = 0
             self._output_read = 0
             self._job = 0
+            # The two jobs that track the shell's descendants for the sweep.
+            self._tracking_job = 0
+            self._breakaway_job = 0
+            self._sweep_thread: threading.Thread | None = None
             self._process = 0
             self._thread = 0
             self._process_id = 0
@@ -2594,6 +3193,7 @@ if sys.platform == "win32":
                 )
                 self._pseudoconsole = pseudoconsole
                 self._job = _create_job()
+                self._tracking_job, self._breakaway_job = _create_tracking_jobs()
                 environment = self._child_environment
                 path = environment_path(environment)
                 if path is not None:
@@ -2684,12 +3284,18 @@ if sys.platform == "win32":
             self._control_thread.start()
 
         def _adopt_child(self, child: tuple[int, int, int]) -> None:
-            """Own a suspended child and assign it to the job before it runs."""
+            """Own a suspended child; put it in the three jobs before it runs.
+
+            Root first: nesting needs a child job's processes to be a subset
+            of its parent's. A failed assignment terminates the never-run
+            child and raises, as before.
+            """
             self._process, self._thread, self._process_id = child
-            assign_suspended_child(
-                lambda: bool(_AssignProcessToJobObject(self._job, self._process)),
-                lambda: _terminate_process(self._process),
-            )
+            for job in (self._tracking_job, self._breakaway_job, self._job):
+                assign_suspended_child(
+                    lambda job=job: bool(_AssignProcessToJobObject(job, self._process)),
+                    lambda: _terminate_process(self._process),
+                )
 
         def _discard_suspended_child(self, child: tuple[int, int, int]) -> None:
             """Terminate the session's unrun child; ``_release`` then skips it.
@@ -2721,15 +3327,30 @@ if sys.platform == "win32":
             return _exit_code(self._process)
 
         def _finish(self) -> None:
-            """Drain the pseudoconsole and release every session handle."""
-            # The console host flushes the last child output through the pipe
-            # before it exits. The built-in ``ClosePseudoConsole`` only returns
-            # once a reader drains it; closing an OpenConsole returns at once,
-            # and OpenConsole drains and exits by itself, which ends the pump.
-            # Either way the output pump must still run and its read handle
-            # must still be open; the joins below bound a host that never
-            # finishes.  Stopping the blocked stdin reader needs no drained
-            # output, so it runs concurrently to shorten the close path.
+            """Drain the pseudoconsole, end what the shell left behind, release.
+
+            The console host flushes the last child output through the pipe
+            before it exits. The built-in ``ClosePseudoConsole`` only returns
+            once a reader drains it; closing an OpenConsole returns at once,
+            and OpenConsole drains and exits by itself, which ends the pump.
+            Either way the output pump must still run and its read handle
+            must still be open; the joins below bound a host that never
+            finishes.  Stopping the blocked stdin reader needs no drained
+            output, so it runs concurrently to shorten the close path, and so
+            does the sweep of the tracked console programs: it waits for the
+            drain, which attached programs end by answering the close event,
+            but not longer than its grace.
+            """
+            started = time.monotonic()
+            drained = threading.Event()
+            sweep = threading.Thread(
+                target=self._sweep_after_drain,
+                args=(drained, started + _SWEEP_DEADLINE),
+                name="conpty-sweep",
+                daemon=True,
+            )
+            self._sweep_thread = sweep
+            sweep.start()
             input_stop = threading.Thread(
                 target=self._stop_input_thread,
                 name="conpty-input-stop",
@@ -2744,8 +3365,29 @@ if sys.platform == "win32":
                     diagnose("output drain timed out")
                     _CancelIoEx(self._output_read, None)
                     thread.join(_OUTPUT_JOIN)
+            drained.set()
             input_stop.join(_INPUT_STOP)
+            sweep.join(
+                max(
+                    0.0,
+                    started + _SWEEP_DEADLINE + _SWEEP_JOIN_MARGIN - time.monotonic(),
+                )
+            )
             self._release()
+
+        def _sweep_after_drain(self, drained: threading.Event, deadline: float) -> None:
+            """Run the sweep once the output drain ends or the grace is up.
+
+            Programs attached to the pseudoconsole get its close event first
+            and normally exit within milliseconds, which ends the drain. One
+            that ignores the event is swept after the grace instead of holding
+            the session open for the console host's own five-second timeout.
+            """
+            drained.wait(_SWEEP_GRACE)
+            with self._handles:
+                job = self._tracking_job
+            if job:
+                _sweep_descendants(job, deadline)
 
         def _release(self) -> None:
             """Close every handle the session still owns, exactly once."""
@@ -2757,11 +3399,13 @@ if sys.platform == "win32":
                 output_read, self._output_read = self._output_read, 0
                 _close(output_read)
             self._close_pseudoconsole()
-            # The job swaps out under ``_handles`` because the control
-            # thread's kill path reads it under the same lock.
+            # The jobs swap out under ``_handles`` because the control thread's
+            # kill path and the sweep thread read them under the same lock.
             with self._handles:
                 input_write, self._input_write = self._input_write, 0
                 job, self._job = self._job, 0
+                tracking_job, self._tracking_job = self._tracking_job, 0
+                breakaway_job, self._breakaway_job = self._breakaway_job, 0
             input_thread = self._input_thread
             if input_thread is not None and input_thread.is_alive():
                 # The pump may hold a snapshot of this handle for a write in
@@ -2775,6 +3419,13 @@ if sys.platform == "win32":
             _close(self._thread)
             self._thread = 0
             _close(job)
+            sweep = self._sweep_thread
+            if sweep is not None and sweep.is_alive():
+                # The sweep may still use the handle; see the input pump above.
+                diagnose("sweep still running; its job handle closes with the host")
+            else:
+                _close(tracking_job)
+            _close(breakaway_job)
             _close(self._process)
             self._process = 0
 
