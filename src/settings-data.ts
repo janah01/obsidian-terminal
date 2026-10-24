@@ -471,7 +471,8 @@ export namespace Settings {
         case null:
           return value === null;
         case "number":
-          return typeof value === "number" && isFinite(value);
+          // xterm's scroll methods throw on a number that is not whole.
+          return Number.isInteger(value);
         case "string":
           return typeof value === "string";
       }

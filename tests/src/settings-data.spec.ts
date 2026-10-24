@@ -2,6 +2,7 @@
  * Unit tests for `src/settings-data.ts` — validate defaults and normalization helpers.
  */
 import { cloneAsWritable } from "@polyipseity/obsidian-plugin-library";
+import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
 import { LocalSettings, Settings } from "../../src/settings-data.js";
 import { PROFILE_PRESETS } from "../../src/terminal/profile-presets.js";
@@ -140,6 +141,40 @@ describe("src/settings-data.ts", () => {
       expect.stringContaining("Invalid Version: undefined"),
     );
   });
+
+  // xterm throws on a scroll amount that is not a whole number, at each press
+  // of the key. Only a data.json edited by hand holds one.
+  it.each(["scrollLines", "scrollPages"] as const)(
+    "Keymapping.fix keeps only scroll amounts that %s takes",
+    (action) => {
+      const terminal = new Terminal({ allowProposedApi: true });
+      try {
+        for (const [actionArg, kept] of [
+          [1.5, 1],
+          [-0.5, 1],
+          [1e-7, 1],
+          [-3, -3],
+          [0, 0],
+          [2 ** 60, 2 ** 60],
+        ] as const) {
+          const fixed = Settings.Keymapping.fix({
+            ...Settings.Keymapping.DEFAULT,
+            action,
+            actionArg,
+          });
+          expect(fixed, String(actionArg)).toMatchObject({
+            valid: actionArg === kept,
+            value: { action, actionArg: kept },
+          });
+          expect(() => {
+            terminal[action](kept);
+          }).not.toThrow();
+        }
+      } finally {
+        terminal.dispose();
+      }
+    },
+  );
 
   it("Profile.DEFAULTS exposes an empty environment for shell profiles", () => {
     expect(Settings.Profile.DEFAULTS.external.environment).toEqual([]);
