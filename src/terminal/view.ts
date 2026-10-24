@@ -226,6 +226,7 @@ export class EditTerminalModal extends DialogModal {
   protected readonly state;
   #profile: string | null = null;
   readonly #confirm;
+  #confirming = false;
 
   public constructor(
     protected override readonly context: TerminalPlugin,
@@ -407,8 +408,18 @@ export class EditTerminalModal extends DialogModal {
   }
 
   protected override async confirm(close: () => void): Promise<void> {
-    await this.#confirm(cloneAsWritable(this.state));
-    await super.confirm(close);
+    // A second click or Enter while the first one is still at work, as while
+    // an external program starts, confirms nothing more.
+    if (this.#confirming) {
+      return;
+    }
+    this.#confirming = true;
+    try {
+      await this.#confirm(cloneAsWritable(this.state));
+      await super.confirm(close);
+    } finally {
+      this.#confirming = false;
+    }
   }
 
   protected postMutate(): void {

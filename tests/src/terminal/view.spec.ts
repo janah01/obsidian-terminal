@@ -2380,8 +2380,9 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
   };
 
   // A terminal that runs an integrated shell; its pane menu's Edit switches it
-  // to the external profile, or to the profile given, and confirms.
-  function editToExternal(profile: Settings.Profile = external) {
+  // to the external profile, or to the profile given, and confirms, as many
+  // times as given before the first confirmation is done.
+  function editToExternal(profile: Settings.Profile = external, confirms = 1) {
     const { context, workspace } = makeTerminalContext(),
       { leaf, view, setViewState } = makeTerminalLeaf(context),
       type = TerminalView.type.namespaced(context),
@@ -2413,7 +2414,9 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
       this: EditTerminalModal,
     ) {
       Object.assign(this["state"], { profile });
-      confirmations.push(this["confirm"](close));
+      for (let count = 0; count < confirms; ++count) {
+        confirmations.push(this["confirm"](close));
+      }
     });
     return {
       close,
@@ -2462,6 +2465,19 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
     expectClosedWithShell(edited);
   });
 
+  it("starts the program once when the dialog is confirmed again while it starts", async () => {
+    // A double click on the confirm button, or Enter pressed twice.
+    const edited = editToExternal(external, 2);
+
+    await edited.edit();
+
+    expect({
+      close: edited.close.mock.calls.length,
+      open: edited.open.mock.calls.length,
+    }).toEqual({ close: 1, open: 1 });
+    expectClosedWithShell(edited);
+  });
+
   it("closes the edited terminal with its own state when the program fails to start", async () => {
     const edited = editToExternal();
     edited.open.mockRejectedValue(new Error("spawn /bin/sh ENOENT"));
@@ -2485,6 +2501,29 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
     expect(edited.close).toHaveBeenCalledOnce();
     expect(edited.setViewState).toHaveBeenCalledOnce();
     expect(edited.detach).not.toHaveBeenCalled();
+  });
+});
+
+describe("EditTerminalModal", () => {
+  it("can be confirmed again after a confirmation that failed", async () => {
+    const { context } = makeTerminalContext(),
+      close = vi.fn(),
+      callback = vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValueOnce(new Error("failed"))
+        .mockResolvedValue(),
+      modal = new EditTerminalModal(
+        context,
+        TerminalView.State.DEFAULT,
+        callback,
+      );
+
+    await expect(modal["confirm"](close)).rejects.toThrow("failed");
+    expect(close).not.toHaveBeenCalled();
+    await modal["confirm"](close);
+
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledOnce();
   });
 });
 
