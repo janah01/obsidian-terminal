@@ -1076,6 +1076,26 @@ describe("built-in keymappings at the start of the plugin", () => {
     expect(logged).toHaveBeenCalledWith(error);
     expect(write).not.toHaveBeenCalled();
   });
+
+  it("logs a failed save of the update and loads on", async () => {
+    const error = new Error("write failed"),
+      logged = vi.spyOn(console, "error").mockImplementation(() => {}),
+      context = await terminalContext({ keymappingDefaultsVersion: 0 });
+    Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
+    const mutate = vi.spyOn(context.settings, "mutate"),
+      write = vi.spyOn(context.settings, "write");
+    mutate.mockClear();
+    write.mockClear().mockRejectedValueOnce(error);
+
+    expect(() => {
+      loadTerminal(context);
+    }).not.toThrow();
+    await tick();
+
+    expect(mutate).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(error);
+  });
 });
 
 describe("ConPTY host settings invalidation", () => {
