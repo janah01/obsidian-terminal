@@ -589,7 +589,7 @@ export namespace Settings {
      * Two entries with the same key combination but different, non-overlapping
      * platforms (e.g., one `"darwin"` and one `"linux"`) will never both fire
      * for the same event, so they do **not** conflict. An entry with
-     * `platform: undefined` (all platforms) overlaps with every other entry.
+     * `platform: null` (all platforms) overlaps with every other entry.
      *
      * Use this instead of a plain key-equality check to avoid false positives
      * when detecting duplicates in the keymappings list.

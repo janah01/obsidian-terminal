@@ -1720,7 +1720,7 @@ export namespace RightClickActionAddon {
  *    - `"sendEscapeSequence"` / `"sendHexCode"` / `"sendText"` — fire the
  *      configured output and suppress the event.
  *    Each mapping can be restricted to a specific platform via its `platform`
- *    field; `undefined` means all platforms.
+ *    field; `null` means all platforms.
  *
  * 3. **macOS Option key passthrough** (enabled by `isPassthroughEnabled`):
  *    xterm.js issue #2831 — when `macOptionIsMeta` is `false`, xterm still
