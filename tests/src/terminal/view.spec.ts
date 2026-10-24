@@ -2478,6 +2478,22 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
     expectClosedWithShell(edited);
   });
 
+  it("switches the tab to an integrated profile once when the dialog is confirmed again", async () => {
+    const edited = editToExternal(
+      { ...Settings.Profile.DEFAULTS.integrated, name: "Second shell" },
+      2,
+    );
+
+    await edited.edit();
+
+    expect({
+      close: edited.close.mock.calls.length,
+      setViewState: edited.setViewState.mock.calls.length,
+    }).toEqual({ close: 1, setViewState: 1 });
+    expect(edited.open).not.toHaveBeenCalled();
+    expect(edited.detach).not.toHaveBeenCalled();
+  });
+
   it("closes the edited terminal with its own state when the program fails to start", async () => {
     const edited = editToExternal();
     edited.open.mockRejectedValue(new Error("spawn /bin/sh ENOENT"));
@@ -2524,6 +2540,79 @@ describe("EditTerminalModal", () => {
 
     expect(callback).toHaveBeenCalledTimes(2);
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  /*
+   * The dialog with the close that the library hands to `confirm` from its
+   * button and its Enter handler. That close is private; `cancel` gets the
+   * same one, so a first Escape caught here gives it.
+   */
+  async function openDialog(callback: () => Promise<void>) {
+    const { Modal } = await import("obsidian"),
+      { context } = makeTerminalContext(),
+      modal = new EditTerminalModal(
+        context,
+        TerminalView.State.DEFAULT,
+        callback,
+      );
+    let close = (): void => {
+      throw new Error("No close");
+    };
+    vi.spyOn(
+      modal as unknown as { cancel: (close_: () => void) => unknown },
+      "cancel",
+    ).mockImplementationOnce((close_) => {
+      close = close_;
+    });
+    modal.close();
+    const closed = vi.spyOn(Modal.prototype, "close");
+    return {
+      closed,
+      async press(): Promise<void> {
+        await modal["confirm"](close);
+      },
+    };
+  }
+
+  it("closes once and runs its callback once for more presses while the first is at work", async () => {
+    let finish = (): void => {};
+    const callback = vi.fn(
+        async () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+      dialog = await openDialog(callback);
+
+    const first = dialog.press();
+    await dialog.press();
+    await dialog.press();
+    // The later presses return at once and leave the dialog open.
+    expect(dialog.closed).not.toHaveBeenCalled();
+    finish();
+    await first;
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(dialog.closed).toHaveBeenCalledOnce();
+  });
+
+  it("guards each dialog on its own", async () => {
+    const finishers: (() => void)[] = [];
+    const callback = vi.fn(
+        async () =>
+          new Promise<void>((resolve) => {
+            finishers.push(resolve);
+          }),
+      ),
+      one = await openDialog(callback),
+      two = await openDialog(callback);
+
+    const pressed = [one.press(), two.press()];
+    await tick();
+    for (const finish of finishers) finish();
+    await Promise.all(pressed);
+
+    expect(callback).toHaveBeenCalledTimes(2);
   });
 });
 
