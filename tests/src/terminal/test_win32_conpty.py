@@ -4746,6 +4746,50 @@ def test_stdin_end_of_file_shuts_the_session_down() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_stdin_end_of_file_ends_hidden_console_programs(tmp_path: Path) -> None:
+    """The stdin end of a session sweeps like a kill and a natural exit do.
+
+    The plugin's end of the host's stdin closes when Obsidian lets go of the
+    host without a kill; the session then ends through this path.
+    """
+    ready_file = tmp_path / "sleeper.json"
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import json, os, subprocess, sys, time\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(120)'],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': child.pid}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "print('SLEEPER-UP', flush=True)\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    pinned: list[int] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the sleeper; stdin closes once it is up."""
+            pinned.append(_pin_shell_and_published_pid(watch, ready, ready_file, 30.0))
+
+        result = _run_host(
+            [getattr(sys, "_base_executable", sys.executable), str(launcher)],
+            stdout_ready=b"SLEEPER-UP",
+            ready_probe=pin,
+            timeout=60.0,
+        )
+        assert len(pinned) == 1, result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert watch.survivors(15.0) == [], result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 def test_control_token_is_not_inherited_by_the_child() -> None:
     """The child shell must never see the control token in its environment."""
     result = _run_host(
