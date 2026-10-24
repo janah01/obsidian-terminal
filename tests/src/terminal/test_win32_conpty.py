@@ -5027,6 +5027,27 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
             _MODULE._close(handle)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_pseudoconsole_host_is_unknown_when_it_names_no_console_host() -> None:
+    """A pseudoconsole whose host handle names another program has no known host.
+
+    The struct an ``HPCON`` points to is not a documented contract. Should
+    its host slot ever name a program that is not a console host, every
+    attached program would pass for one in a console of its own and end
+    without its close event. An unknown host ends nothing early.
+    """
+    process = _MODULE._as_handle(
+        _MODULE._OpenProcess(_MODULE._PROCESS_SWEEP_ACCESS, False, os.getpid())
+    )
+    assert process, _MODULE._last_error()
+    try:
+        # The slot names this Python process instead of a console host.
+        struct = _MODULE._PSEUDOCONSOLE(0, 0, process)
+        assert _MODULE._pseudoconsole_console_host(ctypes.addressof(struct)) == 0
+    finally:
+        _MODULE._close(process)
+
+
 """Seconds after the kill that the late helper is let connect to its console.
 
 Past both sweeps of the session end, which run within milliseconds of the
