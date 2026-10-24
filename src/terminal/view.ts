@@ -719,6 +719,22 @@ export class TerminalView extends ItemView {
         }
         return callback(checking, lastFocus);
       };
+    /*
+     * The terminal used last, while the user works in it: it has the keyboard
+     * or its tab is the active one. A ribbon click or the command palette
+     * takes the keyboard but leaves the active tab as it was. A note is
+     * neither.
+     */
+    const withTerminalInUse = (
+      callback: (checking: boolean, view: TerminalView) => boolean,
+    ): ((checking: boolean) => boolean) =>
+      withLastFocusedView(
+        (checking, view) =>
+          (view.isFocused ||
+            workspace.getActiveViewOfType(TerminalView) === view) &&
+          callback(checking, view),
+        [false, true],
+      );
     addCommand(context, () => i18n.t("commands.focus-on-last-terminal"), {
       checkCallback: withLastFocusedView(
         (checking, view) => {
@@ -774,7 +790,7 @@ export class TerminalView extends ItemView {
           id: "unfocus-terminal",
         }).id,
         addCommand(context, () => i18n.t("commands.clear-terminal"), {
-          checkCallback: withLastFocusedView((checking, view) => {
+          checkCallback: withTerminalInUse((checking, view) => {
             if (!checking) {
               view.emulator?.terminal.clear();
             }
@@ -790,7 +806,7 @@ export class TerminalView extends ItemView {
           id: "clear-terminal",
         }).id,
         addCommand(context, () => i18n.t("commands.close-terminal"), {
-          checkCallback: withLastFocusedView((checking, view) => {
+          checkCallback: withTerminalInUse((checking, view) => {
             if (!checking) {
               view.leaf.detach();
             }
@@ -806,7 +822,7 @@ export class TerminalView extends ItemView {
           id: "close-terminal",
         }).id,
         addCommand(context, () => i18n.t("commands.find-in-terminal"), {
-          checkCallback: withLastFocusedView((checking, view) => {
+          checkCallback: withTerminalInUse((checking, view) => {
             if (!checking) {
               view.startFind();
             }
