@@ -408,6 +408,25 @@ describe("this device's store as the plugin saves it", () => {
     ]);
     expect(setItem).not.toHaveBeenCalled();
   });
+
+  it("keeps the failed marker of a store that has no name", async () => {
+    // The changelog check after this start skips a store that was not read,
+    // or the changelog opens on every start.
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const context = await start(() => {
+      throw new Error("appId");
+    });
+    expect(StorageSettingsManager.hasFailed(context.localSettings.value)).toBe(
+      true,
+    );
+    await migrateProfileChoice(context);
+    expect(deviceDefaultProfile(context)?.[0]).toBe("zsh");
+    expect(StorageSettingsManager.hasFailed(context.localSettings.value)).toBe(
+      true,
+    );
+  });
 });
 
 describe("this device's default profile and order", () => {
