@@ -916,15 +916,12 @@ describe.skipIf(process.platform !== "win32")(
       CONHOST_TIMEOUT_MS * 2,
     );
 
-    // conhost quotes the batch file's path only when it holds a space, and
-    // cmd then takes a caret in the unquoted path as an escape: the program
-    // never starts and the terminal reports exit code 0. That start step is
-    // older than the argument passing and outside it; this case shows the
-    // defect until the start step is fixed.
-    it.fails(
-      "starts the program from a temporary folder e^x",
-      async () => {
-        const temp = win32.join(work, "temp", "e^x");
+    // Windows starts the batch file through cmd, which takes `^`, `&` and
+    // parentheses in an unquoted path as syntax. A user name may hold them.
+    it.each(["e^x", "a&b", "(x)", "a^b&c(d)"])(
+      "starts the program from a temporary folder %s",
+      async (folder) => {
+        const temp = win32.join(work, "temp", folder);
         await mkdir(temp, { recursive: true });
         const run = await withTemporaryFolder(temp, async () => probe(["x"]));
         expect({ argv: run.probe?.argv, code: run.code }).toEqual({
