@@ -390,11 +390,12 @@ export function loadTerminal(context: TerminalPlugin): void {
   /* Always register command for interop with other plugins */
 
   /*
-   * Their hotkeys pass a focused terminal only while they are commands. With
-   * Add to command off their checks decline, but Obsidian still reports the
-   * key as handled, so on the list the key would reach neither a command nor
-   * the shell. Off the list it goes to the shell.
+   * Their hotkeys pass a focused terminal only while Add to command is on.
+   * With it off their checks decline, but Obsidian still reports the key as
+   * handled, so on the list the key would reach neither a command nor the
+   * shell. Off the list it goes to the shell.
    */
+  // Filled while the commands are registered below, and only read after.
   const openers: ReturnType<typeof addCommand>[] = [],
     allowWhileCommand = (opener: ReturnType<typeof addCommand>): void => {
       openers.push(opener);
