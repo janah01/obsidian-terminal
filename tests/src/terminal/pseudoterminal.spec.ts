@@ -37,6 +37,7 @@ import {
   pipeShellToTerminal,
   Pseudoterminal,
   RefPsuedoterminal,
+  type ShellPseudoterminalArguments,
   WindowsNamedPipeControlChannel,
   WindowsPseudoterminal,
   conPtyConsoleHostSpec,
@@ -341,6 +342,282 @@ describe("Windows ConHost path", () => {
       vi.useRealTimers();
     }
   });
+});
+
+interface ConHostLaunch {
+  readonly batch: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+}
+
+interface ConHostLaunchFixture {
+  readonly pty: WindowsPseudoterminal;
+  readonly launches: readonly ConHostLaunch[];
+  readonly processes: { conhost?: ChildProcess; resizer?: ChildProcess };
+  readonly cleanup: () => void;
+}
+
+/**
+ * A ConHost pseudoterminal for `options`. Its conhost spawn records the batch
+ * path and environment it was given, then runs `conhostScript` with the batch
+ * path as its argument. A `test-python` resizer keeps alive until killed.
+ */
+function conhostLaunchFixture(
+  options: ShellPseudoterminalArguments,
+  conhostScript = "setTimeout(() => process.exit(0), 50)",
+): ConHostLaunchFixture {
+  const nativeSpawn = childProcess.spawn.bind(childProcess),
+    launches: ConHostLaunch[] = [],
+    processes: ConHostLaunchFixture["processes"] = {};
+  vi.spyOn(childProcess, "spawn").mockImplementation(
+    (executable, args, spawnOptions) => {
+      if (executable === "test-python") {
+        processes.resizer = nativeSpawn(
+          process.execPath,
+          ["-e", KEEPALIVE_SCRIPT],
+          spawnOptions,
+        );
+        return processes.resizer;
+      }
+      if (executable === WINDOWS_CONHOST_PATH) {
+        const [batch = ""] = args;
+        launches.push({ batch, env: { ...spawnOptions.env } });
+        processes.conhost = nativeSpawn(
+          process.execPath,
+          ["-e", conhostScript, batch],
+          spawnOptions,
+        );
+        return processes.conhost;
+      }
+      return nativeSpawn(executable, args, spawnOptions);
+    },
+  );
+  const context = {
+    language: {
+      onChangeLanguage: { listen: vi.fn(() => vi.fn()) },
+      value: { t: vi.fn((key: string) => key) },
+    },
+    resourceSampler: {
+      trackResource: vi.fn(() => ({ close: vi.fn() })),
+    },
+    settings: { value: { errorNoticeTimeout: 0 } },
+  } as unknown as TerminalPlugin;
+  return {
+    cleanup: (): void => {
+      for (const child of [processes.conhost, processes.resizer])
+        if (child?.exitCode === null && child.signalCode === null) child.kill();
+    },
+    launches,
+    processes,
+    pty: new WindowsPseudoterminal(context, options),
+  };
+}
+
+/** The one conhost launch of `fixture`, with the batch text it was given. */
+async function onlyConHostLaunch(
+  fixture: ConHostLaunchFixture,
+): Promise<ConHostLaunch & { readonly text: string }> {
+  await fixture.pty.shell;
+  expect(fixture.launches).toHaveLength(1);
+  const [launch] = fixture.launches;
+  if (launch === undefined) throw new Error("conhost was not spawned");
+  return { ...launch, text: await readFile(launch.batch, "utf8") };
+}
+
+/**
+ * What cmd makes of the last line of the batch file, as far as the program is
+ * concerned: percent expansion with conhost's environment (`%%` is `%`, an
+ * unset name is empty), then the split at each `&` outside quotes, with the
+ * carets outside quotes removed. Returns the command that starts with the
+ * quoted program, leading spaces removed.
+ */
+function batchProgramCommand(
+  { env, text }: ConHostLaunch & { readonly text: string },
+  program: string,
+): string {
+  const line = text.split("\r\n").at(-1) ?? "",
+    expanded = line.replace(
+      /%%|%([^%]+)%/gu,
+      (_match, name: string | undefined) =>
+        name === undefined ? "%" : (env[name] ?? ""),
+    ),
+    commands: string[] = [];
+  let current = "",
+    quoted = false;
+  for (let index = 0; index < expanded.length; ++index) {
+    const character = expanded[index] ?? "";
+    if (!quoted && character === "^") {
+      current += expanded[++index] ?? "";
+      continue;
+    }
+    if (!quoted && character === "&") {
+      commands.push(current);
+      current = "";
+      continue;
+    }
+    if (character === '"') quoted = !quoted;
+    current += character;
+  }
+  commands.push(current);
+  const command = commands
+    .map((text0) => text0.trimStart())
+    .find((text0) => text0.startsWith(`"${program}"`));
+  if (command === undefined)
+    throw new Error(`No command starts the program: ${expanded}`);
+  return command;
+}
+
+/**
+ * What `cmd /c` or `cmd /k` runs, by the rules `cmd /?` documents. When the
+ * text after the switch starts with a quote, cmd keeps the quotes only if the
+ * quoted text names an executable file; `prompt CMD$G$S` does not, so cmd
+ * removes the first quote and the last quote and keeps the rest.
+ */
+function commandAfterSwitch(commandLine: string): string {
+  const at = /\/[ck]/iu.exec(commandLine);
+  if (at === null) throw new Error(`No /c or /k in ${commandLine}`);
+  let rest = commandLine.slice(at.index + 2);
+  if (rest.trimStart().startsWith('"')) {
+    rest = rest.trimStart();
+    const last = rest.lastIndexOf('"');
+    rest = `${rest.slice(1, last)}${rest.slice(last + 1)}`;
+  }
+  return rest.trimStart();
+}
+
+describe("ConHost command line", () => {
+  it("leaves cmd the command after /k that ConPTY gives it", async () => {
+    const fixture = conhostLaunchFixture({
+      args: ["/d", "/k", "prompt CMD$G$S"],
+      executable: "cmd.exe",
+    });
+    try {
+      const command = batchProgramCommand(
+        await onlyConHostLaunch(fixture),
+        "cmd.exe",
+      );
+      expect(commandAfterSwitch(command)).toBe("prompt CMD$G$S");
+      // The argument text of the ConPTY command line, with no trailing space.
+      expect(command).toBe('"cmd.exe" /d /k "prompt CMD$G$S"');
+    } finally {
+      fixture.cleanup();
+      await fixture.pty.onExit;
+    }
+  });
+
+  it("hands conhost the program, arguments and exit-code file in its environment, not in the batch text", async () => {
+    const executable = "C:\\Windows\\System32\\cmd.exe",
+      fixture = conhostLaunchFixture({
+        args: ["/d", "/k", "prompt CMD$G$S"],
+        executable,
+      });
+    try {
+      const launch = await onlyConHostLaunch(fixture);
+      expect(launch.env).toMatchObject({
+        OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS: '/d /k ^"prompt CMD$G$S^"',
+        OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE: launch.batch,
+        OBSIDIAN_TERMINAL_CONHOST_PROGRAM: executable,
+      });
+      for (const text of ["cmd.exe", "prompt", "CMD$G$S", launch.batch])
+        expect(launch.text).not.toContain(text);
+    } finally {
+      fixture.cleanup();
+      await fixture.pty.onExit;
+    }
+  });
+
+  it("keeps its launch variables when the profile environment sets the same names", async () => {
+    const executable = "C:\\Windows\\System32\\cmd.exe",
+      fixture = conhostLaunchFixture({
+        args: ["/d", "/c", "exit"],
+        environment: [
+          ["OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS", "& calc"],
+          ["OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE", "C:\\elsewhere.txt"],
+          ["OBSIDIAN_TERMINAL_CONHOST_PROGRAM", "calc.exe"],
+        ],
+        executable,
+      });
+    try {
+      const launch = await onlyConHostLaunch(fixture);
+      expect(launch.env).toMatchObject({
+        OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS: "/d /c exit",
+        OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE: launch.batch,
+        OBSIDIAN_TERMINAL_CONHOST_PROGRAM: executable,
+      });
+    } finally {
+      fixture.cleanup();
+      await fixture.pty.onExit;
+    }
+  });
+
+  it.each<readonly [string, string, readonly string[], string]>([
+    [
+      "a line feed in an argument",
+      "cmd.exe",
+      ["/d", "/c", "echo a\nexit 9"],
+      "errors.conhost-cannot-pass",
+    ],
+    [
+      "a carriage return in an argument",
+      "cmd.exe",
+      ["/d", "/c", "echo a\rexit 9"],
+      "errors.conhost-cannot-pass",
+    ],
+    [
+      "a line feed in the program",
+      "cmd\n.exe",
+      [],
+      "errors.conhost-cannot-pass",
+    ],
+    [
+      "a quote in the program",
+      '"C:\\Program Files\\PowerShell\\7\\pwsh.exe"',
+      [],
+      "errors.conhost-cannot-pass",
+    ],
+    [
+      "a command in quotes in the program",
+      'C:\\x.exe" & calc & "',
+      [],
+      "errors.conhost-cannot-pass",
+    ],
+    [
+      "a NUL in an argument",
+      "cmd.exe",
+      ["/d", "/c", "echo a\0b"],
+      "errors.profile-launch-nul",
+    ],
+  ])(
+    "refuses %s before conhost starts",
+    async (_label, executable, args, message) => {
+      const unhandled = vi.fn(),
+        fixture = conhostLaunchFixture({
+          args,
+          executable,
+          pythonExecutable: "test-python",
+        });
+      process.on("unhandledRejection", unhandled);
+      try {
+        const onExit = fixture.pty.onExit.catch((error: unknown) => error);
+        await expect(fixture.pty.shell).rejects.toThrow(message);
+        await expect(onExit).resolves.toBeInstanceOf(Error);
+        expect(fixture.launches).toEqual([]);
+        // The resizer started first; the refusal must not leave it running.
+        await vi.waitFor(() => {
+          const { resizer } = fixture.processes;
+          expect(resizer?.exitCode ?? resizer?.signalCode ?? null).not.toBe(
+            null,
+          );
+        });
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 10);
+        });
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off("unhandledRejection", unhandled);
+        fixture.cleanup();
+      }
+    },
+  );
 });
 
 function readyEvent(
