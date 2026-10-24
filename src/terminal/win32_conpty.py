@@ -2793,13 +2793,18 @@ if sys.platform == "win32":
         return int(host.value) & ~3
 
     def _console_kinds(
-        handles: Mapping[int, int], pseudoconsole_host: int
+        handles: Mapping[int, int],
+        pseudoconsole_host: int,
+        creators: Mapping[int, int | None] | None = None,
     ) -> dict[int, str]:
         """Say what console each open process has; leave the undecidable out.
 
         A process whose console host is ``pseudoconsole_host`` is attached to
         the session's pseudoconsole. While that host is unknown (zero), every
-        console counts as the process's own.
+        console counts as the process's own. Until a new process has connected
+        to a console, Windows reports its creator's PID in place of a console
+        host, so a process whose answer is its creator's PID in ``creators``
+        is left out: it is too new to judge this round.
         """
         kinds: dict[int, str] = {}
         for pid, process in handles.items():
@@ -2808,6 +2813,8 @@ if sys.platform == "win32":
                 diagnose(f"could not tell whether {pid} has a console")
             elif host == 0:
                 kinds[pid] = _CONSOLE_NONE
+            elif creators is not None and host == creators.get(pid):
+                continue
             elif host == pseudoconsole_host:
                 kinds[pid] = _CONSOLE_ATTACHED
             else:
@@ -2912,6 +2919,7 @@ if sys.platform == "win32":
                 lambda pids: _console_kinds(
                     {pid: handles[pid] for pid in pids if pid in handles},
                     pseudoconsole_host,
+                    {record.pid: record.parent_pid for record in records},
                 ),
                 _windowed_process_ids(),
             )

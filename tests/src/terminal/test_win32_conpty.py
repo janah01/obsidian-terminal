@@ -4817,7 +4817,10 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
 
     The shell started on the pseudoconsole and a child that inherits its
     console both report that host, so the check reads them as attached; a
-    child with a hidden console of its own does not.
+    child with a hidden console of its own does not. Before it runs, the
+    shell reports its creator's PID in place of a console host, and the
+    check told who created it leaves it out rather than read it as a program
+    in a console of its own.
     """
     out = tmp_path / "children.json"
     markers = (tmp_path / "plain", tmp_path / "hidden")
@@ -4837,6 +4840,10 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
             pseudoconsole.handle,
         )
         handles[pid] = process
+        # Suspended, the shell has not connected: its creator's PID stands in.
+        assert _MODULE._console_host_of(process) == os.getpid()
+        assert _MODULE._console_kinds({pid: process}, host) == {pid: "own"}
+        assert _MODULE._console_kinds({pid: process}, host, {pid: os.getpid()}) == {}
         assert _MODULE._ResumeThread(thread) == 1, _MODULE._last_error()
         record: object = json.loads(_read_when_published(out, 30.0))
         assert isinstance(record, dict), record
@@ -4849,7 +4856,8 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
                 _MODULE._OpenProcess(_MODULE._PROCESS_SWEEP_ACCESS, False, child)
             )
         assert all(handles.values()), (handles, _MODULE._last_error())
-        kinds = _MODULE._console_kinds(handles, host)
+        creators = {pid: os.getpid(), plain: pid, hidden: pid}
+        kinds = _MODULE._console_kinds(handles, host, creators)
         assert kinds == {pid: "attached", plain: "attached", hidden: "own"}, (
             kinds,
             host,
