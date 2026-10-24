@@ -609,7 +609,7 @@ describe("opening commands on the focused list follow Add to command", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it("takes the command with the default Mod+Shift+H off the list as well", async () => {
+  it("keeps the default Mod+Shift+H registered while taking its command off the list", async () => {
     const { listed } = await load(false),
       integrated = vi
         .mocked(addCommand)
