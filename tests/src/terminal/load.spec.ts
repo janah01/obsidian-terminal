@@ -14,6 +14,7 @@ import {
 } from "../../fixtures/python-settings-ui.js";
 import { bezelIconId, tileIconId } from "../../../src/icons.js";
 import { LocalSettings, Settings } from "../../../src/settings-data.js";
+import { TerminalSettingsManager } from "../../../src/settings-manager.js";
 import { loadTerminal } from "../../../src/terminal/load.js";
 import { CONPTY_HOST_POOL } from "../../../src/terminal/pseudoterminal.js";
 import {
@@ -966,7 +967,7 @@ describe("built-in keymappings at the start of the plugin", () => {
     // The local settings below log their missing changelog version.
     vi.spyOn(console, "debug").mockImplementation(() => {});
     const context = await terminalContext(),
-      settings = new SettingsManager(context, Settings.fix),
+      settings = new TerminalSettingsManager(context, Settings.fix),
       // Takes the copy of data.json the manager keeps when it is malformed.
       recovery = vi.fn();
     Object.assign(context, {
@@ -1024,6 +1025,26 @@ describe("built-in keymappings at the start of the plugin", () => {
       macOS,
     ]);
     expect(settings.value.keymappingDefaultsVersion).toBe(1);
+  });
+
+  it("puts back the palette keys a device on 3.29.0 made Ignore after a reload of its data.json", async () => {
+    // This device updated and offered the keys; a device still on 3.29.0
+    // then saved data.json with them as Ignore and without the version.
+    const { settings } = await start(released329()),
+      rewritten = released329([
+        ...list329,
+        { ...windows, action: "ignore" },
+        { ...macOS, action: "ignore" },
+      ]);
+    // Settings → All settings → Reload.
+    await settings.read(() => rewritten);
+    const saved: unknown = JSON.parse(JSON.stringify(settings.value)),
+      next = await start(saved);
+    expect(next.settings.value.keymappings).toStrictEqual([
+      ...list329,
+      windows,
+      macOS,
+    ]);
   });
 
   it("adds no palette key twice to a list that has them, at this start or the next", async () => {
