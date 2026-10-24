@@ -36,20 +36,28 @@ export function deviceDefaultProfileId(
     : null;
 }
 
+/** The profile stored under `id` while it runs on this platform, else `null`. */
+export function runnableProfile(
+  profiles: Settings.Profiles,
+  id: string | null,
+): readonly [string, Settings.Profile] | null {
+  if (id === null) {
+    return null;
+  }
+  const profile = Settings.Profile.byId(profiles, id);
+  return profile && Settings.Profile.isCompatible(profile, Platform.CURRENT)
+    ? [id, profile]
+    : null;
+}
+
 /** This device's default profile while it exists and runs on this platform. */
 export function deviceDefaultProfile(
   context: Context,
 ): readonly [string, Settings.Profile] | null {
-  const id = deviceDefaultProfileId(context),
-    profile =
-      id === null
-        ? null
-        : Settings.Profile.byId(context.settings.value.profiles, id);
-  return id !== null &&
-    profile &&
-    Settings.Profile.isCompatible(profile, Platform.CURRENT)
-    ? [id, profile]
-    : null;
+  return runnableProfile(
+    context.settings.value.profiles,
+    context.localSettings.value.defaultProfile ?? null,
+  );
 }
 
 /**

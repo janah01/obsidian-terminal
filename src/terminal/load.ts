@@ -21,6 +21,7 @@ import type { TerminalPlugin } from "../main.js";
 import {
   deviceDefaultProfile,
   deviceProfileEntries,
+  runnableProfile,
 } from "../profile-choice.js";
 import { TERMINAL_CONPTY_PREWARM_DELAY } from "../magic.js";
 import { warmSystemPath } from "./environment.js";
@@ -342,10 +343,39 @@ export function loadTerminal(context: TerminalPlugin): void {
     ),
   );
 
+  // The ribbon names this device's default. Redraw when that name changes in
+  // either store, as when data.json loses or renames the profile.
+  const ribbonName = (
+    profiles: Settings.Profiles,
+    id: Settings.DefaultProfile | undefined,
+  ): string | null => {
+    const entry = runnableProfile(profiles, id ?? null);
+    return entry ? Settings.Profile.info(entry).nameOrID : null;
+  };
+  let shownName = ribbonName(
+    settings.value.profiles,
+    context.localSettings.value.defaultProfile,
+  );
+  const redrawRibbon = (name: string | null): void => {
+    if (name !== shownName) {
+      shownName = name;
+      openTerminal.reload();
+    }
+  };
+  context.register(
+    settings.onMutate(
+      (settings0) =>
+        ribbonName(
+          settings0.profiles,
+          context.localSettings.value.defaultProfile,
+        ),
+      redrawRibbon,
+    ),
+  );
   context.register(
     context.localSettings.onMutate(
-      (local) => local.defaultProfile,
-      openTerminal.reload,
+      (local) => ribbonName(settings.value.profiles, local.defaultProfile),
+      redrawRibbon,
     ),
   );
 

@@ -811,6 +811,65 @@ describe("profiles as this device chose them", () => {
     expect(icon.reload).toHaveBeenCalledTimes(1);
   });
 
+  it("redraws the ribbon button when data.json loses the profile of this device's default", async () => {
+    const { context, icon, title } = await load({ defaultProfile: "second" });
+    expect(title()).toBe("Open terminal: Second");
+    // Import settings, or Reload or Edit under All settings, with data.json
+    // from a device that deleted the profile.
+    await mutate(
+      context.settings,
+      Settings.fix({
+        ...context.settings.value,
+        profiles: Object.fromEntries(
+          Object.entries(context.settings.value.profiles).filter(
+            ([id]) => id !== "second",
+          ),
+        ),
+      }).value,
+    );
+    expect(title()).toBe("Open terminal");
+    expect(icon.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("redraws the ribbon button when the profile of this device's default is renamed", async () => {
+    const { context, icon, title } = await load({ defaultProfile: "second" });
+    await mutate(
+      context.settings,
+      Settings.fix({
+        ...context.settings.value,
+        profiles: {
+          ...context.settings.value.profiles,
+          second: { ...synced.profiles.second, name: "Renamed" },
+        },
+      }).value,
+    );
+    expect(title()).toBe("Open terminal: Renamed");
+    expect(icon.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("redraws the ribbon button once when both stores report the same new default", async () => {
+    const { context, icon } = await load({ defaultProfile: "second" });
+    await mutate(
+      context.localSettings,
+      LocalSettings.fix({
+        ...context.localSettings.value,
+        defaultProfile: "first",
+      }).value,
+    );
+    // Each store's listener compares with what it saw last, so the other one
+    // reports the same change at its next save.
+    const ribbonListeners = vi
+      .mocked(context.settings)
+      .onMutate.mock.calls.filter(
+        ([accessor]) => accessor(context.settings.value) === "First",
+      );
+    expect(ribbonListeners).toHaveLength(1);
+    for (const [, callback] of ribbonListeners) {
+      await callback("First", "Second", context.settings.value);
+    }
+    expect(icon.reload).toHaveBeenCalledTimes(1);
+  });
+
   it("opens this device's default from the default command, not the one in data.json", async () => {
     const { context, run } = await load({ defaultProfile: "second" });
     expect(run("open-terminal.default.root")).toBe(true);
