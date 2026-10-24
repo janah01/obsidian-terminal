@@ -72,10 +72,23 @@ type RequiredWithUndefined<T> = {
 export interface LocalSettings extends PluginContext.LocalSettings {
   readonly hasUsedIntegratedTerminal: boolean;
   readonly lastReadChangelogVersion: SemVerString;
+  /**
+   * This device's default profile. Absent in a store that 3.29.0 wrote, until
+   * the first start of this version takes it over (`migrateProfileChoice`).
+   */
+  readonly defaultProfile?: Settings.DefaultProfile;
+  /**
+   * This device's order of the profiles, as ids. Absent like `defaultProfile`.
+   * Profiles it does not name follow in the order of `Settings.profiles`.
+   */
+  readonly profileOrder?: readonly string[];
 }
 export namespace LocalSettings {
   export function fix(self0: unknown): Fixed<LocalSettings> {
-    const unc = launderUnchecked<LocalSettings>(self0);
+    const unc = launderUnchecked<LocalSettings>(self0),
+      // A new store gets both keys. One that 3.29.0 wrote keeps them absent,
+      // so it stays valid and its first start can be told apart.
+      fresh = typeof self0 !== "object" || self0 === null;
     return markFixed(self0, {
       ...PluginContext.LocalSettings.fix(self0).value,
       hasUsedIntegratedTerminal: unc.hasUsedIntegratedTerminal === true,
@@ -84,6 +97,27 @@ export namespace LocalSettings {
         String(unc.lastReadChangelogVersion),
         NULL_SEM_VER_STRING,
       ),
+      ...(fresh || Object.hasOwn(unc, "defaultProfile")
+        ? {
+            defaultProfile:
+              typeof unc.defaultProfile === "string" && unc.defaultProfile
+                ? (unc.defaultProfile as Settings.DefaultProfile)
+                : null,
+          }
+        : {}),
+      ...(fresh || Object.hasOwn(unc, "profileOrder")
+        ? {
+            profileOrder: Array.isArray(unc.profileOrder)
+              ? [
+                  ...new Set(
+                    unc.profileOrder.filter(
+                      (id: unknown): id is string => typeof id === "string",
+                    ),
+                  ),
+                ]
+              : [],
+          }
+        : {}),
     });
   }
 }
@@ -578,15 +612,17 @@ export namespace Settings {
       type: T,
       profiles: Profiles,
       platform?: Platform.All,
+      order: readonly string[] = [],
     ): Typed<T> | null {
-      return defaultEntryOfType(type, profiles, platform)?.[1] ?? null;
+      return defaultEntryOfType(type, profiles, platform, order)?.[1] ?? null;
     }
     export function defaultEntryOfType<T extends Type>(
       type: T,
       profiles: Profiles,
       platform?: Platform.All,
+      order: readonly string[] = [],
     ): readonly [string, Typed<T>] | null {
-      for (const [key, profile] of Object.entries(profiles)) {
+      for (const [key, profile] of orderedEntries(profiles, order)) {
         if (
           isType(type, profile) &&
           (platform === void 0 || isCompatible(profile, platform))
@@ -595,6 +631,41 @@ export namespace Settings {
         }
       }
       return null;
+    }
+    /**
+     * @param profiles the profiles
+     * @param id an id
+     * @returns the profile stored under `id`, never a property every object
+     *   inherits (`constructor`, `__proto__`, …)
+     */
+    export function byId(profiles: Profiles, id: string): Profile | null {
+      return Object.hasOwn(profiles, id) ? (profiles[id] ?? null) : null;
+    }
+    /**
+     * @param profiles the profiles, in their stored order
+     * @param order ids in a device's order
+     * @returns the profiles that `order` names, in its order, then the others
+     *   in their stored order. Ids of missing profiles and repeats are skipped.
+     */
+    export function orderedEntries(
+      profiles: Profiles,
+      order: readonly string[],
+    ): Entry[] {
+      const ret: Entry[] = [],
+        seen = new Set<string>();
+      for (const id of order) {
+        const profile = seen.has(id) ? null : byId(profiles, id);
+        if (profile) {
+          seen.add(id);
+          ret.push([id, profile]);
+        }
+      }
+      for (const entry of Object.entries(profiles)) {
+        if (!seen.has(entry[0])) {
+          ret.push(entry);
+        }
+      }
+      return ret;
     }
     export function isCompatible(
       profile: Profile,
