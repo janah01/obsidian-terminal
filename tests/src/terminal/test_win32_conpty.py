@@ -5099,6 +5099,104 @@ def test_session_end_is_bounded_when_an_attached_program_ignores_the_close(
     assert elapsed < _IGNORED_CLOSE_BOUND, (elapsed, result.stderr)
 
 
+def _spawn_saving_grandchild(
+    ready_file: Path, saved: Path, exit_gate: Path, save_seconds: float
+) -> list[str]:
+    """Publish an attached grandchild that saves for a while on close; gate exit.
+
+    The grandchild shares the shell's pseudoconsole. On ``CTRL_CLOSE_EVENT``
+    its handler works for ``save_seconds``, as a program saving its state
+    does, and only then writes ``saved`` and lets the process end.
+    """
+    grandchild_code = (
+        "import ctypes, json, os, sys, time\n"
+        "from ctypes import wintypes\n"
+        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "HANDLER = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)\n"
+        f"saved = {str(saved)!r}\n"
+        "def handle(event):\n"
+        "    if event == 2:  # CTRL_CLOSE_EVENT\n"
+        f"        time.sleep({save_seconds!r})\n"
+        "        with open(saved + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "            stream.write('saved')\n"
+        "        os.replace(saved + '.tmp', saved)\n"
+        "    return True\n"
+        "routine = HANDLER(handle)\n"
+        "kernel32.SetConsoleCtrlHandler.argtypes = (HANDLER, wintypes.BOOL)\n"
+        "assert kernel32.SetConsoleCtrlHandler(routine, True), ctypes.get_last_error()\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': os.getpid()}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "time.sleep(120)\n"
+    )
+    code = (
+        "import os, subprocess, sys, time\n"
+        "grandchild = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {grandchild_code!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+"""Seconds the saving grandchild works in its close handler.
+
+Well inside the five seconds the console host gives a close handler, and
+longer than a program usually needs, but not longer than a large save does.
+"""
+_SAVE_ON_CLOSE_SECONDS = 2.5
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_attached_programs_may_finish_saving_on_close(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A program that answers the close event by saving for a while gets to finish.
+
+    On 3.29.0 such a program had the console host's five seconds. Ending it
+    after a shorter grace loses whatever it was writing.
+    """
+    ready_file = tmp_path / "grandchild.json"
+    saved = tmp_path / "saved"
+    exit_gate = tmp_path / "shell-exit"
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the grandchild before the shutdown starts."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 30.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+
+        result = _run_host(
+            _spawn_saving_grandchild(
+                ready_file, saved, exit_gate, _SAVE_ON_CLOSE_SECONDS
+            ),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert watch.survivors(15.0) == [], result.stderr
+    assert saved.is_file(), result.stderr
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 def test_stdin_end_of_file_shuts_the_session_down() -> None:
     """Closing host stdin stands in for the pane closing."""
