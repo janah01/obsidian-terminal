@@ -31,6 +31,12 @@ import {
   ProfileListModal,
   TerminalOptionsModal,
 } from "./modals.js";
+import {
+  deviceDefaultProfileId,
+  deviceProfileEntries,
+  resetProfiles,
+  saveProfileList,
+} from "./profile-choice.js";
 import { Settings } from "./settings-data.js";
 import { RightClickActionAddon } from "./terminal/emulator-addons.js";
 import { CONPTY_HOST_POOL } from "./terminal/pseudoterminal.js";
@@ -216,22 +222,13 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
                 new ProfileListModal(
                   context,
                   {
-                    defaultProfile: settings.value.defaultProfile,
-                    entries: Object.entries(settings.value.profiles),
+                    defaultProfile: deviceDefaultProfileId(context),
+                    entries: deviceProfileEntries(context),
                   },
                   {
                     callback: async (data): Promise<void> => {
-                      await settings.mutate((settingsM) => {
-                        settingsM.profiles = Object.fromEntries(data.entries);
-                        // The list sends the default it was opened with, even
-                        // after deleting that profile.
-                        settingsM.defaultProfile = data.entries.some(
-                          ([id]) => id === data.defaultProfile,
-                        )
-                          ? data.defaultProfile
-                          : null;
-                      });
-                      this.postMutate();
+                      await saveProfileList(context, data);
+                      this.postMutate(true);
                     },
                     description: (): string =>
                       i18n.t("settings.profile-list.description"),
@@ -243,21 +240,9 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
             resetButton(
               i18n.t("asset:settings.profiles-icon"),
               i18n.t("settings.reset"),
-              async () =>
-                settings.mutate((settingsM) => {
-                  settingsM.profiles = cloneAsWritable(
-                    Settings.DEFAULT.profiles,
-                  );
-                  const { defaultProfile } = settingsM;
-                  if (
-                    defaultProfile !== null &&
-                    !Object.hasOwn(settingsM.profiles, defaultProfile)
-                  ) {
-                    settingsM.defaultProfile = null;
-                  }
-                }),
+              async () => resetProfiles(context),
               () => {
-                this.postMutate();
+                this.postMutate(true);
               },
             ),
           );
@@ -268,43 +253,49 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
           .setDesc(i18n.t("settings.default-profile-description"))
           .addDropdown(
             linkSetting(
-              (): string => settings.value.defaultProfile ?? "",
-              async (value) =>
-                settings.mutate((settingsM) => {
+              (): string => deviceDefaultProfileId(context) ?? "",
+              async (value) => {
+                if (
+                  value !== "" &&
+                  !Settings.Profile.byId(settings.value.profiles, value)
+                ) {
+                  return false;
+                }
+                return localSettings.mutate((localM) => {
                   // Unfortunately we have to use the empty string as a sentinel value for "no default profile" because the dropdown component doesn't allow null/undefined values. So we have to coerce it back to null here.
-                  settingsM.defaultProfile =
+                  localM.defaultProfile =
                     value === "" ? null : (value as Settings.DefaultProfile);
-                }),
+                });
+              },
               () => {
-                this.postMutate();
+                this.postMutate(true);
               },
               {
                 pre: (dropdown) => {
-                  dropdown
-                    .addOption("", i18n.t("components.dropdown.placeholder"))
-                    .addOptions(
-                      Object.fromEntries(
-                        Object.entries(settings.value.profiles).map(
-                          ([id, profile]) => [
-                            id,
-                            i18n.t(
-                              `settings.default-profile-name-${
-                                Settings.Profile.isCompatible(
-                                  profile,
-                                  Platform.CURRENT,
-                                )
-                                  ? ""
-                                  : "incompatible"
-                              }`,
-                              {
-                                info: Settings.Profile.info([id, profile]),
-                                interpolation: { escapeValue: false },
-                              },
-                            ),
-                          ],
-                        ),
+                  dropdown.addOption(
+                    "",
+                    i18n.t("components.dropdown.placeholder"),
+                  );
+                  // One by one: an object would put ids such as "2" first.
+                  for (const [id, profile] of deviceProfileEntries(context)) {
+                    dropdown.addOption(
+                      id,
+                      i18n.t(
+                        `settings.default-profile-name-${
+                          Settings.Profile.isCompatible(
+                            profile,
+                            Platform.CURRENT,
+                          )
+                            ? ""
+                            : "incompatible"
+                        }`,
+                        {
+                          info: Settings.Profile.info([id, profile]),
+                          interpolation: { escapeValue: false },
+                        },
                       ),
                     );
+                  }
                 },
               },
             ),
@@ -314,11 +305,11 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
               i18n.t("asset:settings.default-profile-icon"),
               i18n.t("settings.reset"),
               async () =>
-                settings.mutate((settingsM) => {
-                  settingsM.defaultProfile = Settings.DEFAULT.defaultProfile;
+                localSettings.mutate((localM) => {
+                  localM.defaultProfile = Settings.DEFAULT.defaultProfile;
                 }),
               () => {
-                this.postMutate();
+                this.postMutate(true);
               },
             ),
           );

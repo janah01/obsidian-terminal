@@ -18,6 +18,11 @@ import {
 } from "obsidian";
 import { tileIconId } from "../icons.js";
 import type { TerminalPlugin } from "../main.js";
+import {
+  deviceDefaultProfile,
+  deviceProfileEntries,
+  runnableProfile,
+} from "../profile-choice.js";
 import { TERMINAL_CONPTY_PREWARM_DELAY } from "../magic.js";
 import { warmSystemPath } from "./environment.js";
 import { Settings } from "../settings-data.js";
@@ -53,19 +58,8 @@ export function loadTerminal(context: TerminalPlugin): void {
       language: { value: i18n },
       settings,
     } = context,
-    getDefaultProfile = (): readonly [string, Settings.Profile] | null => {
-      const { defaultProfile, profiles } = settings.value;
-      if (defaultProfile) {
-        const profile = profiles[defaultProfile];
-        if (
-          profile &&
-          Settings.Profile.isCompatible(profile, Platform.CURRENT)
-        ) {
-          return [defaultProfile, profile];
-        }
-      }
-      return null;
-    },
+    getDefaultProfile = (): readonly [string, Settings.Profile] | null =>
+      deviceDefaultProfile(context),
     getPrewarmProfile = (): Settings.Profile | null => {
       const isCandidate = (profile: Settings.Profile): boolean =>
         profile.type === "integrated" &&
@@ -76,7 +70,11 @@ export function loadTerminal(context: TerminalPlugin): void {
       if (fromDefault && isCandidate(fromDefault)) {
         return fromDefault;
       }
-      return Object.values(settings.value.profiles).find(isCandidate) ?? null;
+      return (
+        deviceProfileEntries(context).find(([, profile]) =>
+          isCandidate(profile),
+        )?.[1] ?? null
+      );
     },
     // The default profile when it has this type, else the first one that has.
     getDefaultProfileOfType = (
@@ -90,6 +88,7 @@ export function loadTerminal(context: TerminalPlugin): void {
         type,
         settings.value.profiles,
         Platform.CURRENT,
+        context.localSettings.value.profileOrder ?? [],
       );
     },
     adapter = vault.adapter instanceof FileSystemAdapter ? vault.adapter : null,
@@ -270,7 +269,7 @@ export function loadTerminal(context: TerminalPlugin): void {
       const menu = new Menu(),
         cwd = adapter?.getBasePath();
       let hasProfileItems = false;
-      for (const [id, profile] of Object.entries(settings.value.profiles)) {
+      for (const [id, profile] of deviceProfileEntries(context)) {
         if (!Settings.Profile.isCompatible(profile, Platform.CURRENT)) {
           continue;
         }
@@ -344,10 +343,43 @@ export function loadTerminal(context: TerminalPlugin): void {
     ),
   );
 
+  // The ribbon names this device's default. Redraw when that name changes in
+  // either store, as when data.json loses or renames the profile. Each
+  // listener watches a part of its own store only: a manager compares with
+  // what the listener saw last, which goes stale for the other store.
+  const ribbonName = (
+    profiles: Settings.Profiles,
+    id: Settings.DefaultProfile | undefined,
+  ): string | null => {
+    const entry = runnableProfile(profiles, id ?? null);
+    return entry ? Settings.Profile.info(entry).nameOrID : null;
+  };
+  let shownName = ribbonName(
+    settings.value.profiles,
+    context.localSettings.value.defaultProfile,
+  );
+  const redrawRibbon = (name: string | null): void => {
+    if (name !== shownName) {
+      shownName = name;
+      openTerminal.reload();
+    }
+  };
   context.register(
     settings.onMutate(
-      (settings) => settings.defaultProfile,
-      openTerminal.reload,
+      (settings0) => settings0.profiles,
+      (profiles) => {
+        redrawRibbon(
+          ribbonName(profiles, context.localSettings.value.defaultProfile),
+        );
+      },
+    ),
+  );
+  context.register(
+    context.localSettings.onMutate(
+      (local) => local.defaultProfile ?? null,
+      (id) => {
+        redrawRibbon(ribbonName(settings.value.profiles, id));
+      },
     ),
   );
 

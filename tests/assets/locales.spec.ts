@@ -1,3 +1,4 @@
+import { createI18n } from "@polyipseity/obsidian-plugin-library";
 import { createInstance } from "i18next";
 import { describe, it, expect } from "vitest";
 import { PluginLocales } from "../../assets/locales.js";
@@ -115,6 +116,42 @@ describe("PluginLocales", () => {
     it("names the default profile first in English", async () => {
       expect(await profileListDescription("en")).toBe(
         "A command for one terminal type opens the default profile when it has that type, otherwise the first compatible profile of that type in the list.",
+      );
+    });
+  });
+
+  // The Default profile row says the choice belongs to this device.
+  describe("says in every declared locale that the default profile is this device's", () => {
+    async function defaultProfileDescription(
+      language: (typeof PluginLocales.LANGUAGES)[number],
+    ): Promise<string> {
+      const translation = await PluginLocales.RESOURCES[language].translation(),
+        i18n = createInstance();
+      await i18n.init({
+        lng: language,
+        fallbackLng: false,
+        resources: { [language]: { translation } },
+      });
+      return i18n.t("settings.default-profile-description");
+    }
+
+    it.each(Array.from(PluginLocales.LANGUAGES))("%s", async (language) => {
+      const text = await defaultProfileDescription(language);
+      expect(text).toMatch(/\S/u);
+      // A reference that does not resolve shows its key.
+      expect(text).not.toContain("$t(");
+      expect(text).not.toContain("generic.");
+    });
+
+    it("names this device in English", async () => {
+      // As the plugin shows it, with its formatters.
+      const i18n = await createI18n(
+        PluginLocales.RESOURCES,
+        PluginLocales.FORMATTERS,
+        { lng: "en", fallbackLng: "en" },
+      );
+      expect(i18n.t("settings.default-profile-description")).toBe(
+        "Profile to open when clicking the ribbon icon on this device. Leave empty to show profile selector. Commands for its terminal type open it too. Right-click the ribbon icon to list all profiles.",
       );
     });
   });
