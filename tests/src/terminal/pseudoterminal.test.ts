@@ -957,6 +957,275 @@ describe.skipIf(process.platform !== "win32")(
       },
       CONHOST_TIMEOUT_MS * 6,
     );
+
+    /** Asserts that the probe got `args` as the ConPTY host passes them. */
+    function expectConPtyParity(
+      run: ConHostRun & { readonly probe: ConHostProbe | null },
+      args: readonly string[],
+    ): void {
+      const program = `"${python}"`;
+      expect(run.code).toBe(0);
+      expect(run.probe?.argv).toEqual(args);
+      expect(run.probe?.line.startsWith(program)).toBe(true);
+      expect(run.probe?.line.slice(program.length).trimStart()).toBe(
+        run.probe?.expected,
+      );
+      expect(run.probe?.leaked).toEqual([]);
+    }
+
+    /**
+     * Runs `body` with a value of cmd's own registry key set for the user,
+     * then puts the key back as it was.
+     */
+    async function withCommandProcessorValue(
+      name: string,
+      type: string,
+      data: string,
+      body: () => Promise<void>,
+    ): Promise<void> {
+      const key = "HKCU\\Software\\Microsoft\\Command Processor",
+        reg = async (args: readonly string[]): Promise<string> =>
+          (await promisify(execFile)("reg", args, { timeout: TIMEOUT_MS }))
+            .stdout,
+        before = await reg(["query", key, "/v", name]).then(
+          (stdout) =>
+            new RegExp(`^\\s*${name}\\s+(REG_\\w+)\\s+(.*?)\\s*$`, "imu").exec(
+              stdout,
+            ),
+          () => null,
+        );
+      await reg(["add", key, "/v", name, "/t", type, "/d", data, "/f"]);
+      try {
+        await body();
+      } finally {
+        await (before === null
+          ? reg(["delete", key, "/v", name, "/f"])
+          : reg([
+              "add",
+              key,
+              "/v",
+              name,
+              "/t",
+              before[1] ?? type,
+              "/d",
+              before[2] ?? "",
+              "/f",
+            ]));
+      }
+    }
+
+    it.each<readonly [string, readonly string[]]>([
+      ["a leading comma", [",x"]],
+      ["a leading semicolon", [";x"]],
+      ["a leading equals sign", ["=x", "="]],
+      ["a form feed", ["\f", "a\fb"]],
+      ["a y with diaeresis", ["\u00ffx"]],
+      ["a no-break space", ["\u00a0x"]],
+      ["an at sign", ["@x"]],
+      ["label lookalikes", ["::x", ":x"]],
+      ["a help switch", ["/?"]],
+      ["redirection lookalikes", ["2>nul", ">x", "<y", "1>&2", "|"]],
+      ["single specials", ["^", "%", "!", "(", ")", "&"]],
+    ])(
+      "passes %s at the start of the arguments as ConPTY does",
+      async (_label, args) => {
+        expectConPtyParity(await probe(args), args);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "passes a lone surrogate as ConPTY does",
+      async () => {
+        expectConPtyParity(await probe(["a\ud800b"]), ["a\ud800b"]);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "reports the program's exit code when the profile sets ERRORLEVEL",
+      async () => {
+        const run = await probe([], {
+          code: 3,
+          environment: [["ERRORLEVEL", "42"]],
+        });
+        expect(run.probe?.argv).toEqual([]);
+        expect(run.code).toBe(3);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each([
+      ["echo.cmd", "the working folder"],
+      ["echo.bat", "the working folder"],
+      ["echo.cmd", "PATH"],
+    ])(
+      "records the exit code with the built-in echo when %s is in %s",
+      async (name, where) => {
+        const trap = await mkdtemp(win32.join(work, "echo-")),
+          marker = win32.join(trap, "marker.txt");
+        await writeFile(
+          win32.join(trap, name),
+          `@type nul > "${marker}"\r\n@exit /b 0\r\n`,
+          "utf8",
+        );
+        const run = await probe(
+            [],
+            where === "PATH"
+              ? {
+                  code: 12,
+                  environment: [["PATH", `${trap};${process.env.PATH ?? ""}`]],
+                }
+              : { code: 12, cwd: trap },
+          ),
+          ran = await access(marker).then(
+            () => true,
+            () => false,
+          );
+        expect({ code: run.code, ran }).toEqual({ code: 12, ran: false });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each(["e^x y", "e^x"])(
+      "starts the program from a temporary folder %s",
+      async (folder) => {
+        const temp = win32.join(work, "temp2", folder),
+          { TEMP, TMP } = process.env;
+        await mkdir(temp, { recursive: true });
+        process.env.TEMP = temp;
+        process.env.TMP = temp;
+        try {
+          const run = await probe(["x"]);
+          expect({ argv: run.probe?.argv, code: run.code }).toEqual({
+            argv: ["x"],
+            code: 0,
+          });
+        } finally {
+          process.env.TEMP = TEMP;
+          process.env.TMP = TMP;
+        }
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "passes carets and bangs when the registry turns delayed expansion on",
+      async () => {
+        await withCommandProcessorValue(
+          "DelayedExpansion",
+          "REG_DWORD",
+          "1",
+          async () => {
+            const args = ["a^b!", "!PATH!", "wow!", "%PATH%"];
+            expectConPtyParity(await probe(args), args);
+          },
+        );
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts the program without running cmd's AutoRun first",
+      async () => {
+        await withCommandProcessorValue(
+          "AutoRun",
+          "REG_SZ",
+          "echo AUTORUN_MARKER",
+          async () => {
+            const args = ["x"],
+              run = await probe(args);
+            expectConPtyParity(run, args);
+            expect(run.output).not.toContain("AUTORUN_MARKER");
+          },
+        );
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each<readonly [string, string, readonly string[], number]>([
+      ["cmd.exe", "cmd.exe", ["/d", "/c", "exit 3"], 3],
+      [
+        "powershell",
+        "powershell",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 4"],
+        4,
+      ],
+      [
+        "PowerShell with a dollar sign and a backtick",
+        CONHOST_POWERSHELL,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "exit ('a$b`c'.Length)",
+        ],
+        5,
+      ],
+    ])(
+      "starts %s by the name a preset uses",
+      async (_label, executable, args, expected) => {
+        await expect(runConHost(executable, args)).resolves.toMatchObject({
+          code: expected,
+        });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts the PowerShell preset without arguments",
+      async () => {
+        await expect(
+          runConHost("powershell", [], { input: "exit 22\r" }),
+        ).resolves.toMatchObject({ code: 22 });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each<readonly [string, readonly string[], number]>([
+      ["the Git Bash preset", ["--login", "-c", "exit 14"], 14],
+      [
+        "arguments through Git Bash",
+        ["-c", "exit $(( $# * 10 + ${#1} ))", "_", "a b^c"],
+        15,
+      ],
+    ])(
+      "starts %s",
+      async (_label, args, expected) => {
+        const bash = "C:\\Program Files\\Git\\bin\\bash.exe";
+        try {
+          await access(bash);
+        } catch {
+          // Git for Windows is optional on the runner image.
+          return;
+        }
+        await expect(runConHost(bash, args)).resolves.toMatchObject({
+          code: expected,
+        });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts in a working folder with cmd specials",
+      async () => {
+        const cwd = win32.join(work, "c&d^e%f!g (h) J\u00fcrgen");
+        await mkdir(cwd, { recursive: true });
+        await expect(
+          runConHost(
+            python,
+            [
+              "-c",
+              "import os, sys; sys.exit(15 if os.getcwd() == sys.argv[1] else 16)",
+              cwd,
+            ],
+            { cwd },
+          ),
+        ).resolves.toMatchObject({ code: 15 });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
   },
 );
 
