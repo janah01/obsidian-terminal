@@ -623,6 +623,63 @@ describe("src/settings-data.ts", () => {
         expect(settings.keymappingDefaultsVersion).toBe(version);
       },
     );
+
+    it("stay one of each, in place, while a device on 3.29.0 and this one take turns", () => {
+      // What a device on 3.29.0 saves after loading this version's list.
+      const on329 = (settings: Settings): unknown =>
+        JSON.parse(
+          JSON.stringify(
+            released329(
+              settings.keymappings.map((mapping) =>
+                mapping.action === "sendToObsidian"
+                  ? { ...mapping, action: "ignore" as const }
+                  : mapping,
+              ),
+            ),
+          ),
+        );
+      let { settings } = upgrade(released329());
+      const offered = settings.keymappings;
+      for (let turn = 0; turn < 3; ++turn) {
+        ({ settings } = upgrade(on329(settings)));
+        expect(settings.keymappings).toStrictEqual(offered);
+        expect(settings.keymappingDefaultsVersion).toBe(1);
+      }
+    });
+
+    it("leave an entry that a device on 3.29.0 made Ignore and the user then changed", () => {
+      const changedThere = {
+          ...windows,
+          action: "sendText",
+          actionArg: "x",
+        } as const,
+        { settings } = upgrade(
+          released329([
+            ...list329,
+            changedThere,
+            { ...macOS, action: "ignore" },
+          ]),
+        );
+      expect(settings.keymappings).toStrictEqual([
+        ...list329,
+        changedThere,
+        macOS,
+      ]);
+    });
+
+    it.each([null, {}, "list"])(
+      "count as offered when the stored list is %j, which loads as the default one",
+      (keymappings) => {
+        const fixed = Settings.fix(released329(list329, { keymappings }));
+        expect(fixed.value.keymappings).toStrictEqual(
+          Settings.DEFAULT.keymappings,
+        );
+        expect(fixed.value.keymappingDefaultsVersion).toBe(1);
+        expect(
+          Settings.addKeymappingDefaults(cloneAsWritable(fixed.value)),
+        ).toBe(false);
+      },
+    );
   });
 
   describe("fixer convergence across persistence", () => {
