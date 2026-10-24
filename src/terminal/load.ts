@@ -78,9 +78,14 @@ export function loadTerminal(context: TerminalPlugin): void {
       }
       return Object.values(settings.value.profiles).find(isCandidate) ?? null;
     },
+    // The default profile when it has this type, else the first one that has.
     getDefaultProfileOfType = (
       type: Settings.Profile.Type,
     ): readonly [string, Settings.Profile] | null => {
+      const preferred = getDefaultProfile();
+      if (preferred && Settings.Profile.isType(type, preferred[1])) {
+        return preferred;
+      }
       return Settings.Profile.defaultEntryOfType(
         type,
         settings.value.profiles,

@@ -445,7 +445,7 @@
     "profile-defaults": "$t(generic.profile, capitalize) defaults",
     "profile-defaults-description": "Default options for $t(generic.profile_other). Acts as a fallback for every $t(generic.profile) unless a $t(generic.profile) explicitly overrides them.",
     "profile-list": {
-      "description": "목록에서 첫 번째 $t(generic.compatible) $t(generic.profile)이 해당 $t(generic.terminal) $t(generic.type)의 $t(generic.default)로 설정됩니다."
+      "description": "$t(generic.terminal) $t(generic.type)별 명령은 $t(generic.default) $t(generic.profile)이 해당 $t(generic.type)이면 그것을 열고, 아니면 목록에서 해당 $t(generic.type)의 첫 번째 $t(generic.compatible) $t(generic.profile)을 엽니다."
     },
     "profiles": "$t(generic.profile_other)",
     "profiles-description": "$t(generic.list-description)",

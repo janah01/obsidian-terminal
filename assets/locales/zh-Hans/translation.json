@@ -429,7 +429,7 @@
     "profile-defaults": "$t(generic.profile)默认值",
     "profile-defaults-description": "$t(generic.profile)的后备默认选项。特定$t(generic.profile)可以覆盖这些选项以满足特定需求。",
     "profile-list": {
-      "description": "$t(generic.list)中第一个$t(generic.compatible)的$t(generic.profile)是其$t(generic.terminal)$t(generic.type)的$t(generic.default)。"
+      "description": "针对某一$t(generic.terminal)$t(generic.type)的$t(generic.command)：若$t(generic.default)$t(generic.profile)属于该$t(generic.type)，则打开它；否则打开$t(generic.list)中该$t(generic.type)的第一个$t(generic.compatible)的$t(generic.profile)。"
     },
     "profiles": "$t(generic.profile)",
     "profiles-description": "$t(generic.list-description)",
