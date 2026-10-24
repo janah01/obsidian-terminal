@@ -384,6 +384,37 @@ describe("PluginLocales", () => {
     }
   });
 
+  it("names every cause of a refused ConHost command, with its limit, in all 49 locales", async () => {
+    const { errors } = await PluginLocales.RESOURCES.en.translation();
+    expect(errors["conhost-cannot-pass"]).toBe(
+      "ConHost cannot start this command: it contains a line break, its $t(generic.executable) path contains a quote, or it is too long for cmd, which runs lines of at most {{limit}} characters, including the text that starts the command. Change the $t(generic.profile).",
+    );
+    for (const language of PluginLocales.LANGUAGES) {
+      const translation = await PluginLocales.RESOURCES[language].translation();
+      expect(translation.errors["conhost-cannot-pass"], language).toContain(
+        "{{limit}}",
+      );
+    }
+  });
+
+  it("renders a refused ConHost command's message with its limit and its nested words in every locale", async () => {
+    for (const language of PluginLocales.LANGUAGES) {
+      const translation = await PluginLocales.RESOURCES[language].translation(),
+        i18n = createInstance();
+      await i18n.init({
+        lng: language,
+        fallbackLng: false,
+        resources: { [language]: { translation } },
+      });
+      const message = i18n.t("errors.conhost-cannot-pass", {
+        interpolation: { escapeValue: false },
+        limit: 8191,
+      });
+      expect(message, language).toContain("8191");
+      expect(message, language).not.toMatch(/\{\{|\$t\(|generic\./u);
+    }
+  });
+
   it("provides the Windows backend selector and ConPTY failure messages", async () => {
     const translations = await Promise.all(
       Array.from(PluginLocales.LANGUAGES, async (language) => {
