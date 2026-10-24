@@ -4138,10 +4138,132 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
             kept = _DESCENDANTS_KEPT
         # Assert through pinned handles before closing the watch kills survivors.
         survivors = [pids[kind] for kind in kept if kind in pids]
-        assert watch.survivors(15.0, expected=survivors) == survivors
+        assert watch.survivors(15.0, expected=survivors) == survivors, result.stderr
     # Only now the guard: a refusal here is the regression the breakaway job
     # must prevent, and the lifetimes above must not hide behind it.
     assert refusals == [None], refusals
+
+
+"""Creation flag of a child with a hidden console of its own."""
+_CREATE_NO_WINDOW = 0x08000000
+"""Creation flag of a child with no console at all."""
+_DETACHED_PROCESS = 0x00000008
+"""Creation flag asking to leave the creator's job."""
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+"""Process access to assign a running child to jobs and to wait on it."""
+_ASSIGN_ACCESS = 0x0100 | 0x0001 | 0x0400 | 0x1000 | 0x00100000
+"""Code of a child that starts a plain and a breakaway grandchild once gated.
+
+It publishes both PIDs, or the error text of a refused breakaway, then sleeps.
+"""
+_CHILD_IN_JOBS = (
+    "import json, os, subprocess, sys, time\n"
+    "gate, out = sys.argv[1], sys.argv[2]\n"
+    "while not os.path.exists(gate):\n"
+    "    time.sleep(0.05)\n"
+    "sleeper = [sys.executable, '-c', 'import time; time.sleep(60)']\n"
+    f"plain = subprocess.Popen(sleeper, creationflags={_CREATE_NO_WINDOW}).pid\n"
+    "try:\n"
+    "    away = subprocess.Popen(\n"
+    f"        sleeper, creationflags={_CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB}\n"
+    "    ).pid\n"
+    "except OSError as error:\n"
+    "    away = str(error)\n"
+    "with open(out + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump({'plain': plain, 'away': away}, stream)\n"
+    "os.replace(out + '.tmp', out)\n"
+    "time.sleep(60)\n"
+)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_console_probe_tells_consoles_apart() -> None:
+    """The probe reports a console for a program with one and none for one without."""
+    sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+    own = subprocess.Popen(sleeper, creationflags=_CREATE_NO_WINDOW)
+    detached = subprocess.Popen(sleeper, creationflags=_DETACHED_PROCESS)
+    try:
+        codes = _MODULE._probe_consoles(
+            [own.pid, detached.pid, os.getpid()], time.monotonic() + 15.0
+        )
+        assert codes.get(own.pid) == 0, codes
+        assert codes.get(detached.pid) == _MODULE._ERROR_INVALID_HANDLE, codes
+        # Whether this process has a console depends on the runner; either way
+        # the answer is one the sweep understands.
+        assert codes.get(os.getpid()) in (0, _MODULE._ERROR_INVALID_HANDLE), codes
+    finally:
+        own.kill()
+        detached.kill()
+        own.wait(timeout=15.0)
+        detached.wait(timeout=15.0)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_console_probe_sees_a_pseudoconsole_client() -> None:
+    """A shell attached to the pseudoconsole has a console in the probe's eyes."""
+    answers: list[dict[int, int]] = []
+
+    def probe(ready: Mapping[str, object]) -> None:
+        """Ask about the shell while the session is live."""
+        assert isinstance(ready["childPid"], int)
+        answers.append(
+            _MODULE._probe_consoles([ready["childPid"]], time.monotonic() + 15.0)
+        )
+
+    result = _run_host(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        close_stdin=False,
+        replies=({"op": "kill"},),
+        ready_probe=probe,
+        timeout=60.0,
+    )
+    assert result.messages[-1] == {"event": "exit", "code": result.code}
+    assert len(answers) == 1, result
+    assert list(answers[0].values()) == [0], (answers, result.stderr)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_tracking_jobs_hold_what_leaves_the_kill_on_close_job(tmp_path: Path) -> None:
+    """The root job lists a child's plain and breakaway descendants; the inner job only the child.
+
+    A plain grandchild leaves the kill-on-close job silently and stops in the
+    middle job, which permits no silent breakaway; one that asks to break away
+    leaves the middle job too and stops in the root, which permits none.
+    """
+    gate = tmp_path / "gate"
+    out = tmp_path / "pids.json"
+    tracking, breakaway = _MODULE._create_tracking_jobs()
+    inner = _MODULE._create_job()
+    child = subprocess.Popen(
+        [sys.executable, "-c", _CHILD_IN_JOBS, str(gate), str(out)],
+        creationflags=_CREATE_NO_WINDOW,
+    )
+    handle = _MODULE._as_handle(_MODULE._OpenProcess(_ASSIGN_ACCESS, False, child.pid))
+    assert handle, _MODULE._last_error()
+    try:
+        for job in (tracking, breakaway, inner):
+            assert _MODULE._AssignProcessToJobObject(job, handle), _MODULE._last_error()
+        gate.touch()
+        published: object = json.loads(_read_when_published(out, 30.0))
+        assert isinstance(published, dict), published
+        plain, away = published.get("plain"), published.get("away")
+        assert isinstance(plain, int), published
+        assert isinstance(away, int), published
+        tracked = _MODULE._tracked_process_ids(tracking)
+        assert {child.pid, plain, away} <= set(tracked), tracked
+        assert set(_MODULE._tracked_process_ids(breakaway)) == {child.pid, plain}
+        assert _MODULE._tracked_process_ids(inner) == [child.pid]
+        for pid in (child.pid, plain, away):
+            opened = _MODULE._open_tracked_process(pid, tracking)
+            assert opened, (pid, _MODULE._last_error())
+            _MODULE._close(opened)
+        assert _MODULE._open_tracked_process(os.getpid(), tracking) == 0
+    finally:
+        _MODULE._TerminateJobObject(tracking, 1)
+        child.wait(timeout=15.0)
+        for job in (inner, breakaway, tracking):
+            _MODULE._close(job)
+        _MODULE._close(handle)
 
 
 """Git for Windows' native bash launcher, where its installer puts it."""
@@ -4284,7 +4406,7 @@ def test_session_end_ends_programs_left_behind_through_msys_bash(
         assert result.messages[-1] == {"event": "exit", "code": result.code}
         if shutdown == "natural-exit":
             assert result.code == 42, result
-        assert watch.survivors(15.0) == []
+        assert watch.survivors(15.0) == [], result.stderr
 
 
 def _spawn_closing_grandchild(
@@ -4370,7 +4492,7 @@ def _run_closing_grandchild(
         )
         elapsed = time.monotonic() - started[0]
         assert result.messages[-1] == {"event": "exit", "code": result.code}
-        assert watch.survivors(15.0) == []
+        assert watch.survivors(15.0) == [], result.stderr
     return result, marker, elapsed
 
 
