@@ -19,6 +19,7 @@ import ntpath
 import os
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import threading
@@ -218,6 +219,258 @@ def test_main_is_not_implemented_off_windows() -> None:
     """The fallback ``main`` should refuse to run on other platforms."""
     with pytest.raises(NotImplementedError):
         _MODULE.main()
+
+
+# ---------------------------------------------------------------------------
+# Session-end sweep: the platform-free decisions
+# ---------------------------------------------------------------------------
+
+
+def _record(
+    pid: int, parent_pid: int, subsystem: str, created: int | None = None
+) -> Any:
+    """Build one descendant record; ``created`` defaults to the PID's order."""
+    return _MODULE.DescendantRecord(
+        pid, parent_pid, pid if created is None else created, subsystem
+    )
+
+
+def _consoles(*pids: int) -> Callable[[Sequence[int]], Mapping[int, bool]]:
+    """Return a console probe that reports exactly ``pids`` as having a console."""
+    return lambda candidates: {pid: pid in pids for pid in candidates}
+
+
+def test_sweep_ends_console_programs_without_a_live_gui_ancestor() -> None:
+    """A console program ends unless a running GUI program is above it."""
+    records = [
+        # The shell: its parent is not a record.
+        _record(10, 1, "console"),
+        # A hidden-console helper the shell started.
+        _record(20, 10, "console"),
+        # An editor started from the shell, with a console child and a grandchild.
+        _record(30, 10, "gui"),
+        _record(40, 30, "console"),
+        _record(50, 40, "console"),
+        # An orphan: its launcher has exited.
+        _record(60, 999, "console"),
+    ]
+    ended = _MODULE.select_descendants_to_end(records, _consoles(10, 20, 40, 50, 60))
+    assert ended == [10, 20, 60]
+
+
+def test_sweep_does_not_follow_a_reused_parent_pid() -> None:
+    """A parent created after its child is a recycled PID, not an ancestor."""
+    records = [_record(30, 1, "gui", created=5), _record(20, 30, "console", created=2)]
+    assert _MODULE.select_descendants_to_end(records, _consoles(20)) == [20]
+
+
+def test_sweep_keeps_gui_unknown_and_console_less_programs() -> None:
+    """GUI images, unreadable images, detached programs and unanswered PIDs stay."""
+    records = [
+        _record(10, 1, "unknown"),
+        _record(20, 1, "gui"),
+        _record(30, 1, "console"),
+        _record(40, 1, "console"),
+    ]
+    # 30 has no console; the probe says nothing about 40.
+    assert _MODULE.select_descendants_to_end(records, lambda _pids: {30: False}) == []
+
+
+def test_sweep_probes_only_the_console_candidates() -> None:
+    """The console probe is asked about console images without a GUI ancestor."""
+    asked: list[list[int]] = []
+
+    def probe(candidates: Sequence[int]) -> Mapping[int, bool]:
+        """Record the question and answer yes for every candidate."""
+        asked.append(list(candidates))
+        return {pid: True for pid in candidates}
+
+    records = [
+        _record(10, 1, "console"),
+        _record(20, 1, "gui"),
+        _record(30, 20, "console"),
+        _record(40, 1, "unknown"),
+    ]
+    assert _MODULE.select_descendants_to_end(records, probe) == [10]
+    assert asked == [[10]]
+    probe_mock = Mock()
+    assert _MODULE.select_descendants_to_end([_record(20, 1, "gui")], probe_mock) == []
+    probe_mock.assert_not_called()
+
+
+def test_sweep_survives_a_parent_cycle() -> None:
+    """Two records naming each other as parent are both ended, once."""
+    records = [_record(10, 20, "console"), _record(20, 10, "console")]
+    assert _MODULE.select_descendants_to_end(records, _consoles(10, 20)) == [10, 20]
+
+
+def _pe_header(magic: int, subsystem: int, signature_offset: int = 0x80) -> bytes:
+    """Build the start of a PE image with the given optional-header fields."""
+    header = bytearray(signature_offset + 24 + 70)
+    header[:2] = b"MZ"
+    struct.pack_into("<I", header, 0x3C, signature_offset)
+    header[signature_offset : signature_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", header, signature_offset + 24, magic)
+    struct.pack_into("<H", header, signature_offset + 24 + 68, subsystem)
+    return bytes(header)
+
+
+@pytest.mark.parametrize(
+    ("magic", "subsystem", "expected"),
+    (
+        (0x10B, 2, "gui"),
+        (0x10B, 3, "console"),
+        (0x20B, 2, "gui"),
+        (0x20B, 3, "console"),
+        (0x20B, 9, "unknown"),
+        (0x107, 2, "unknown"),
+    ),
+)
+def test_image_subsystem_reads_pe32_and_pe32_plus_headers(
+    magic: int, subsystem: int, expected: str
+) -> None:
+    """``Subsystem`` is read at the same offset for both optional-header kinds."""
+    assert _MODULE.image_subsystem(_pe_header(magic, subsystem)) == expected
+    assert _MODULE.image_subsystem(_pe_header(magic, subsystem, 0x100)) == expected
+
+
+def test_image_subsystem_rejects_images_it_cannot_read() -> None:
+    """Anything that is not a whole PE header is unknown, never a console image."""
+    assert _MODULE.image_subsystem(b"") == "unknown"
+    assert _MODULE.image_subsystem(b"#!/bin/sh\n" + bytes(0x100)) == "unknown"
+    assert _MODULE.image_subsystem(_pe_header(0x10B, 3)[:0x90]) == "unknown"
+    wrong_signature = bytearray(_pe_header(0x10B, 3))
+    wrong_signature[0x80:0x84] = b"PX\0\0"
+    assert _MODULE.image_subsystem(bytes(wrong_signature)) == "unknown"
+    far_signature = bytearray(_pe_header(0x10B, 3))
+    struct.pack_into("<I", far_signature, 0x3C, 1 << 24)
+    assert _MODULE.image_subsystem(bytes(far_signature)) == "unknown"
+
+
+def test_read_image_header_reads_through_the_subsystem_field(tmp_path: Path) -> None:
+    """The reader stops after ``Subsystem`` and goes through the native path."""
+    image = tmp_path / "program.exe"
+    image.write_bytes(_pe_header(0x20B, 3, 0x100) + bytes(4096))
+    native_calls: list[str] = []
+
+    def native(path: str) -> str:
+        """Record the path asked for and answer with the image file."""
+        native_calls.append(path)
+        return str(image)
+
+    header = _MODULE.read_image_header(r"C:\Windows\System32\program.exe", native)
+    assert native_calls == [r"C:\Windows\System32\program.exe"]
+    assert len(header) == 0x100 + 24 + 70
+    assert _MODULE.image_subsystem(header) == "console"
+    assert _MODULE.read_image_header(str(tmp_path / "missing.exe"), native=str) == b""
+    short = tmp_path / "short.exe"
+    short.write_bytes(b"MZ")
+    assert _MODULE.image_subsystem(_MODULE.read_image_header(str(short), str)) == (
+        "unknown"
+    )
+
+
+def test_job_process_ids_grows_the_buffer_until_the_list_is_complete() -> None:
+    """A list cut short by the buffer is read again with room for every PID."""
+    capacities: list[int] = []
+    pids = [11, 12, 13, 14, 15]
+
+    def query(capacity: int) -> tuple[int, Sequence[int]]:
+        """Report five processes and list as many as fit."""
+        capacities.append(capacity)
+        return len(pids), pids[:capacity]
+
+    assert _MODULE.job_process_ids(query, capacity=2) == pids
+    assert capacities[0] == 2
+    assert len(capacities) == 2
+    assert capacities[1] >= len(pids)
+
+
+def test_job_process_ids_accepts_a_list_that_keeps_growing() -> None:
+    """Processes arriving faster than the list is read end the retries."""
+
+    def query(capacity: int) -> tuple[int, Sequence[int]]:
+        """Always report one process more than the buffer holds."""
+        return capacity + 1, list(range(capacity))
+
+    listed = _MODULE.job_process_ids(query, capacity=1, attempts=4)
+    assert listed == list(range(8))
+
+
+def test_wait_each_waits_on_every_handle_within_one_deadline() -> None:
+    """More handles than ``WaitForMultipleObjects`` takes share one deadline."""
+    waited: list[tuple[int, int]] = []
+    now = [0.0]
+
+    def exited(handle: int, milliseconds: int) -> bool:
+        """Record the wait; even handles exit, odd ones run on."""
+        waited.append((handle, milliseconds))
+        now[0] += 0.4
+        return handle % 2 == 0
+
+    handles = list(range(1, 66))
+    running = _MODULE.wait_each(handles, 1.0, exited, clock=lambda: now[0])
+    assert [handle for handle, _ in waited] == handles
+    assert running == [handle for handle in handles if handle % 2 == 1]
+    assert [milliseconds for _, milliseconds in waited[:4]] == [1000, 600, 200, 0]
+    assert all(milliseconds == 0 for _, milliseconds in waited[3:])
+
+
+def test_sweep_descendants_repeats_while_a_round_ended_something() -> None:
+    """A program respawned during the first round is caught by the next."""
+    rounds = [[20], [21], []]
+    ended: list[list[int]] = []
+
+    def end(pids: Sequence[int], _deadline: float) -> Sequence[int]:
+        """Record the round and report that everything ended."""
+        ended.append(list(pids))
+        return []
+
+    left = _MODULE.sweep_descendants(
+        lambda: rounds.pop(0), end, clock=lambda: 0.0, deadline=10.0, rounds=3
+    )
+    assert left == []
+    assert ended == [[20], [21]]
+    assert rounds == []
+
+
+def test_sweep_descendants_stops_at_the_deadline_and_the_round_limit() -> None:
+    """A supervisor that respawns forever is cut off by time or by rounds."""
+    now = [0.0]
+    surveys = [0]
+
+    def survey() -> Sequence[int]:
+        """Always find the respawned program."""
+        surveys[0] += 1
+        return [7]
+
+    def end(_pids: Sequence[int], _deadline: float) -> Sequence[int]:
+        """Take 0.6 s to end it."""
+        now[0] += 0.6
+        return []
+
+    assert _MODULE.sweep_descendants(survey, end, lambda: now[0], 1.5, rounds=10) == []
+    assert surveys[0] == 3
+    surveys[0] = 0
+    now[0] = 0.0
+    assert _MODULE.sweep_descendants(survey, end, lambda: now[0], 10.0, rounds=2) == []
+    assert surveys[0] == 2
+
+
+def test_sweep_descendants_reports_what_refused_to_end() -> None:
+    """A process still running at the deadline ends the sweep and is reported."""
+    surveys = [0]
+
+    def survey() -> Sequence[int]:
+        """Find two programs."""
+        surveys[0] += 1
+        return [7, 8]
+
+    left = _MODULE.sweep_descendants(
+        survey, lambda _pids, _deadline: [8], lambda: 0.0, 10.0, rounds=3
+    )
+    assert left == [8]
+    assert surveys[0] == 1
 
 
 # ---------------------------------------------------------------------------
