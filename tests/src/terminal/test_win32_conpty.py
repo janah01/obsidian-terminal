@@ -3417,6 +3417,10 @@ def _run_host(
         server.close()
         stderr = b"".join(errors)
         if timeout_error is not None:
+            if server.probe_error is not None:
+                # A probe that failed before it released the shell is the
+                # cause of the timeout; report the cause.
+                raise server.probe_error from timeout_error
             raise AssertionError(
                 f"ConPTY host timed out after {timeout:.2f}s; "
                 f"command={list(command)!r}; "
