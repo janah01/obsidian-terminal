@@ -1397,6 +1397,8 @@ export class WindowsPseudoterminal implements Pseudoterminal {
             throw error;
           }
         } catch (error) {
+          // An ended stdin tells the exit handler that the stop was asked for.
+          resizer?.stdin.end();
           resizer?.kill();
           throw error;
         }

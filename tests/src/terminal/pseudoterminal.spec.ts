@@ -818,6 +818,50 @@ describe("ConHost command line", () => {
         resizer.kill();
     }
   });
+
+  it("refuses a command with one error, not also a resizer that exited", async () => {
+    const nativeSpawn = childProcess.spawn.bind(childProcess),
+      processes: { resizer?: ChildProcess } = {},
+      { context, t } = recordingContext();
+    vi.spyOn(childProcess, "spawn").mockImplementation(
+      (executable, args, spawnOptions) => {
+        if (executable === "test-python") {
+          processes.resizer = nativeSpawn(
+            process.execPath,
+            ["-e", KEEPALIVE_SCRIPT],
+            spawnOptions,
+          );
+          return processes.resizer;
+        }
+        return nativeSpawn(executable, args, spawnOptions);
+      },
+    );
+    try {
+      const pty = new WindowsPseudoterminal(context, {
+          args: ["/d", "/c", "echo a\nexit 9"],
+          executable: "cmd.exe",
+          pythonExecutable: "test-python",
+        }),
+        onExit = pty.onExit.catch((error: unknown) => error);
+      await expect(pty.shell).rejects.toThrow("errors.conhost-cannot-pass");
+      await onExit;
+      await vi.waitFor(() => {
+        const { resizer } = processes;
+        expect(resizer?.exitCode ?? resizer?.signalCode ?? null).not.toBe(null);
+      });
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 10);
+      });
+      expect(t).not.toHaveBeenCalledWith(
+        "errors.resizer-exited-unexpectedly",
+        expect.anything(),
+      );
+    } finally {
+      const { resizer } = processes;
+      if (resizer?.exitCode === null && resizer.signalCode === null)
+        resizer.kill();
+    }
+  });
 });
 
 /**
