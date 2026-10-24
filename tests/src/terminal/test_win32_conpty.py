@@ -4316,6 +4316,110 @@ def test_session_end_classifies_programs_at_non_ascii_paths(tmp_path: Path) -> N
         assert b"could not classify" not in result.stderr, result.stderr
 
 
+def _spawn_published_program(
+    ready_file: Path, exit_gate: Path, program: str, flags: str
+) -> list[str]:
+    """Start ``program`` with creation ``flags``; it publishes itself; gate exit.
+
+    ``program`` is Python code that writes its record to ``sys.argv[1]``. The
+    shell waits for ``exit_gate`` and exits 42.
+    """
+    code = (
+        "import os, subprocess, sys, time\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {program!r}, {str(ready_file)!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        f"    creationflags={flags},\n"
+        ")\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+"""A console program that lets go of its hidden console, as daemons do.
+
+It publishes its PID and whether ``FreeConsole`` succeeded.
+"""
+_CONSOLE_FREEING_PROGRAM = (
+    "import ctypes, json, os, sys, time\n"
+    "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+    "freed = bool(kernel32.FreeConsole())\n"
+    "time.sleep(0.5)\n"
+    "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump({'pid': os.getpid(), 'freed': freed}, stream)\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(120)\n"
+)
+
+
+def _run_published_program(
+    tmp_path: Path, shutdown: str, program: str, flags: str, shape: str
+) -> tuple[_HostResult, list[int], list[int]]:
+    """Run a session whose shell starts ``program``; return what is still running.
+
+    The program's record must report ``shape`` as true before the shutdown.
+    The result holds the host's result, the program's PID, and the pinned
+    processes that outlive the session, the program expected among them.
+    """
+    ready_file = tmp_path / "program.json"
+    exit_gate = tmp_path / "shell-exit"
+    published: list[int] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the program; check its shape."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            published.append(pid)
+            assert record.get(shape) is True, record
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+
+        result = _run_host(
+            _spawn_published_program(ready_file, exit_gate, program, flags),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        assert len(published) == 1, result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        # Assert through pinned handles before closing the watch kills survivors.
+        return result, published, watch.survivors(15.0, expected=published)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_keeps_a_program_that_freed_its_console(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A program that let go of its hidden console counts as detached and stays.
+
+    Once ``FreeConsole`` returns, the program holds no console host, so it is
+    a program without a console, which the session end keeps running.
+    """
+    result, published, survivors = _run_published_program(
+        tmp_path,
+        shutdown,
+        _CONSOLE_FREEING_PROGRAM,
+        "subprocess.CREATE_NO_WINDOW",
+        "freed",
+    )
+    assert survivors == published, result.stderr
+
+
 """Creation flag of a child with a hidden console of its own."""
 _CREATE_NO_WINDOW = 0x08000000
 """Creation flag of a child with no console at all."""
