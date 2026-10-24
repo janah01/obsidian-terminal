@@ -386,7 +386,7 @@
     "create-instance-near-existing-ones": "Створювати екземпляр поруч із існуючими",
     "create-instance-near-existing-ones-description": "Перевизначає '$t(settings.new-instance-behavior)', якщо екземпляр вже $t(generic.exist_singular).",
     "default-profile": "Стандартний $t(generic.profile)",
-    "default-profile-description": "Профіль, що відкривається при натисканні на іконку. Залиште порожнім, щоб показувати вибір профілю.",
+    "default-profile-description": "Профіль, що відкривається при натисканні на іконку на цьому пристрої. Залиште порожнім, щоб показувати вибір профілю. Команди для його типу термінала теж відкривають його. Клацніть правою кнопкою миші на іконку, щоб побачити всі профілі.",
     "default-profile-name-": "$t(profile-name-formats.short)",
     "default-profile-name-incompatible": "($t(generic.incompatible, capitalize)) $t(settings.default-profile-name-)",
     "documentation": "$t(generic.documentation, capitalize)",

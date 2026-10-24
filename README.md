@@ -127,6 +127,8 @@ This plugin comes with several profile presets that you can reference.
 
 When setting up a terminal profile, you need to distinguish between shells and terminal emulators. (Search online if needed.) Generally, integrated profiles only work with shells while external ones only work with terminal emulators.
 
+The profiles sync with your vault, but the default profile and the order of the profile list belong to each device. Choosing a default or moving a profile on one device leaves your other devices as they are. On a new device, or after Obsidian's local storage is cleared, choose the default profile again. The `defaultProfile` value in the plugin's settings file is kept only for devices that run an older version of the plugin.
+
 #### Examples
 
 ##### Shells
