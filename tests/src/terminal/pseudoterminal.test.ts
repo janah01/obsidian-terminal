@@ -22,6 +22,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { TerminalPlugin } from "../../../src/main.js";
 import { Settings } from "../../../src/settings-data.js";
 import {
+  CONHOST_LINE_LIMIT,
   CONPTY_CONSOLE_HOST_FALLBACKS,
   CONPTY_DEPENDENCIES,
   ConPtyHostPool,
@@ -917,6 +918,44 @@ describe.skipIf(process.platform !== "win32")(
         await expect(access(marker)).rejects.toThrow();
       },
       CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts the longest command it accepts intact and refuses one more character",
+      async () => {
+        // A refusal depends only on lengths, and every temporary file of
+        // this process has a path of the same length, so the largest
+        // accepted length is found by search. The surrogate pair counts two.
+        const argument = (length: number): string =>
+            `\u{1f600}${"x".repeat(length)}`,
+          accepted = async (length: number): Promise<boolean> => {
+            const outcome = await conhostRefusal(python, [
+              probePy,
+              argument(length),
+            ]);
+            if (outcome === "spawned") return true;
+            expect(outcome).toContain("errors.conhost-cannot-pass");
+            return false;
+          };
+        let low = 0,
+          high = CONHOST_LINE_LIMIT;
+        expect(await accepted(low)).toBe(true);
+        expect(await accepted(high)).toBe(false);
+        while (high - low > 1) {
+          const middle = Math.floor((low + high) / 2);
+          if (await accepted(middle)) low = middle;
+          else high = middle;
+        }
+        const args = [argument(low)],
+          run = await probe(args),
+          program = `"${python}"`;
+        expect(run.code).toBe(0);
+        expect(run.probe?.argv).toEqual(args);
+        expect(run.probe?.line.slice(program.length).trimStart()).toBe(
+          run.probe?.expected,
+        );
+      },
+      CONHOST_TIMEOUT_MS * 6,
     );
   },
 );

@@ -17,6 +17,8 @@ import {
   WINDOWS_CONHOST_PATH,
 } from "../../../src/magic.js";
 import {
+  CONHOST_LAUNCH_VARIABLES,
+  CONHOST_LINE_LIMIT,
   CONPTY_CONSOLE_HOST_FALLBACKS,
   CONPTY_DEPENDENCIES,
   CONPTY_READY_TIMEOUT_MS,
@@ -41,9 +43,11 @@ import {
   WindowsNamedPipeControlChannel,
   WindowsPseudoterminal,
   conPtyConsoleHostSpec,
+  conhostLaunch,
   encodeConPtyOp,
   normalizeConPtyDimension,
   parseConPtyHostEvent,
+  quoteWindowsArgument,
   selectWin32Pseudoterminal,
   splitConPtyLines,
   writeTerminalSliced,
@@ -618,6 +622,274 @@ describe("ConHost command line", () => {
       }
     },
   );
+
+  it("reads the exit code the batch file writes", async () => {
+    const fixture = conhostLaunchFixture(
+      { executable: "cmd.exe" },
+      // The text `call echo` writes: the code, then CR LF.
+      "require('node:fs').writeFileSync(process.argv[1], '7\\r\\n'); setTimeout(() => process.exit(0), 50);",
+    );
+    try {
+      await fixture.pty.shell;
+      await expect(fixture.pty.onExit).resolves.toBe(7);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+/**
+ * Splits a command line by the C runtime's `argv` rules: a port of
+ * `_split_command_line` in `test_win32_conpty.py`, the inverse of the
+ * quoting, so that the quoting is proved by round trip.
+ */
+function splitWindowsCommandLine(commandLine: string): string[] {
+  const ret: string[] = [];
+  let backslashes = 0,
+    current = "",
+    quoted = false,
+    started = false;
+  for (const character of commandLine) {
+    if (character === "\\") {
+      ++backslashes;
+      started = true;
+      continue;
+    }
+    if (character === '"') {
+      current += "\\".repeat(Math.floor(backslashes / 2));
+      if (backslashes % 2 === 1) current += '"';
+      else quoted = !quoted;
+      backslashes = 0;
+      started = true;
+      continue;
+    }
+    current += "\\".repeat(backslashes);
+    backslashes = 0;
+    if ((character === " " || character === "\t") && !quoted) {
+      if (started) ret.push(current);
+      current = "";
+      started = false;
+      continue;
+    }
+    current += character;
+    started = true;
+  }
+  current += "\\".repeat(backslashes);
+  if (started) ret.push(current);
+  return ret;
+}
+
+/** The last batch line after percent expansion with the launch variables. */
+function expandedBatchLine(
+  launch: Extract<ReturnType<typeof conhostLaunch>, { type: "launch" }>,
+): string {
+  return (launch.batch.split("\r\n").at(-1) ?? "").replace(
+    /%%|%([^%]+)%/gu,
+    (_match, name: string | undefined) =>
+      name === undefined ? "%" : (launch.environment[name] ?? ""),
+  );
+}
+
+function acceptedLaunch(
+  program: string,
+  args: readonly string[],
+  exitCodeFile = "C:\\Temp\\tmp-1-abc.bat",
+): Extract<ReturnType<typeof conhostLaunch>, { type: "launch" }> {
+  const launch = conhostLaunch(program, args, exitCodeFile);
+  if (launch.type !== "launch")
+    throw new Error(`Refused: ${launch.reason} ${JSON.stringify(args)}`);
+  return launch;
+}
+
+describe("Windows argument quoting", () => {
+  it.each([
+    // The table of `test_quote_argument_matches_the_canonical_rules`.
+    ["plain", "plain"],
+    ["", '""'],
+    ["with space", '"with space"'],
+    ["with\ttab", '"with\ttab"'],
+    ["C:\\dir\\file", "C:\\dir\\file"],
+    ['say "hi"', '"say \\"hi\\""'],
+    ["C:\\dir with space\\", '"C:\\dir with space\\\\"'],
+    ['a\\"b', '"a\\\\\\"b"'],
+    // Output of `quote_argument` for the cases ConHost used to break.
+    ["C:\\dir\\", "C:\\dir\\"],
+    ["C:\\Program Files\\", '"C:\\Program Files\\\\"'],
+    ['c\\\\"d', '"c\\\\\\\\\\"d"'],
+    ["a\nb", '"a\nb"'],
+    ["a\u000bb", '"a\u000bb"'],
+    ['"', '"\\""'],
+    ["a  b", '"a  b"'],
+    ["J\u00fcrgen", "J\u00fcrgen"],
+    ["\u{1f600}", "\u{1f600}"],
+    ["a^b", "a^b"],
+    ["100%", "100%"],
+    ["!x!", "!x!"],
+    ["a&b", "a&b"],
+  ])("quotes %j as %j, as the ConPTY host does", (argument, expected) => {
+    expect(quoteWindowsArgument(argument)).toBe(expected);
+  });
+
+  it.each(
+    [
+      ["plain"],
+      ["two words"],
+      ["/d", "/k", "-c"],
+      ["a^b!", "100%", "%PATH%", "%%", "%~dp0"],
+      ["a&b|c<d>e(f)g", "a & b | c > d"],
+      ['say "hi"', '"', "x", 'a"&"b'],
+      ["C:\\dir\\", "C:\\Program Files\\", "next"],
+      ['a\\"b', 'c\\\\"d', "\\\\", '\\"'],
+      ["", "", "x", ""],
+      ["wow!", "!PATH!", "!q!", "!ERRORLEVEL!", "%q%"],
+      ["end^", "a  b", "a\tb", "a=b,c;d", "it's `x`"],
+      [
+        "J\u00fcrgen",
+        "\u65e5\u672c\u8a9e",
+        "\u{1f600}",
+        "a\u001ab",
+        "line1\nline2",
+      ],
+      ["C:\\Program Files\\x y\\", "-c", 'print("a & b")', "100% ^!"],
+    ].map((args) => ({ args })),
+  )(
+    "splits the quoted line of $args back into the same arguments",
+    ({ args }) => {
+      expect(
+        splitWindowsCommandLine(args.map(quoteWindowsArgument).join(" ")),
+      ).toEqual(args);
+    },
+  );
+});
+
+describe("ConHost launch", () => {
+  const program = "C:\\Windows\\System32\\cmd.exe",
+    exitCodeFile = "C:\\Temp\\tmp-1-abc.bat";
+
+  it("passes the profile's cmd arguments as the ConPTY host quotes them", () => {
+    expect(
+      acceptedLaunch(program, ["/d", "/k", "prompt CMD$G$S"]).environment,
+    ).toEqual({
+      [CONHOST_LAUNCH_VARIABLES.arguments]: '/d /k ^"prompt CMD$G$S^"',
+      [CONHOST_LAUNCH_VARIABLES.exitCodeFile]: exitCodeFile,
+      [CONHOST_LAUNCH_VARIABLES.program]: program,
+    });
+  });
+
+  it.each([
+    ["a^b", "a^^b"],
+    ["a&b|c<d>e(f)g", "a^&b^|c^<d^>e^(f^)g"],
+    ['say "hi"', '^"say \\^"hi\\^"^"'],
+    ["C:\\Program Files\\", '^"C:\\Program Files\\\\^"'],
+    ["100%", "100%"],
+    ["wow!", "wow!"],
+    ["%PATH%", "%PATH%"],
+  ])(
+    "escapes %j for the one cmd parse that sees it as %j",
+    (argument, expected) => {
+      expect(
+        acceptedLaunch(program, [argument]).environment[
+          CONHOST_LAUNCH_VARIABLES.arguments
+        ],
+      ).toBe(expected);
+    },
+  );
+
+  it("writes a fixed ASCII batch file that clears its variables before the program starts", () => {
+    expect(acceptedLaunch(program, ["/d"]).batch).toBe(
+      [
+        "@echo off",
+        "setlocal DisableDelayedExpansion",
+        'set "OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS=" & set "OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE=" & set "OBSIDIAN_TERMINAL_CONHOST_PROGRAM=" & "%OBSIDIAN_TERMINAL_CONHOST_PROGRAM%" %OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS%& >"%OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE%" call echo %%ERRORLEVEL%%',
+      ].join("\r\n"),
+    );
+    // Without arguments, nothing at all follows the program.
+    expect(acceptedLaunch(program, []).batch).toContain(
+      '"%OBSIDIAN_TERMINAL_CONHOST_PROGRAM%"& >',
+    );
+  });
+
+  it("keeps all profile text out of the batch file", () => {
+    const args = [
+        "prompt",
+        "&",
+        "%PATH%",
+        "!q!",
+        "^",
+        "J\u00fcrgen",
+        "\u{1f600}",
+      ],
+      { batch } = acceptedLaunch("C:\\J\u00fcrgen\\a^b & c.exe", args);
+    expect(batch).toMatch(/^[\x20-\x7e\r\n]*$/u);
+    // The batch text depends only on whether there are arguments.
+    expect(batch).toBe(acceptedLaunch("x", ["y"], "z").batch);
+    for (const text of ["prompt", "%PATH%", "!q!", "^", "a^b", "c.exe"])
+      expect(batch).not.toContain(text);
+  });
+
+  it.each<readonly [string, string, readonly string[], string]>([
+    ["NUL", "nul", ["a\0b"], program],
+    ["NUL in the program", "nul", [], "cmd\0.exe"],
+    ["line feed", "line-break", ["a\nb"], program],
+    ["carriage return", "line-break", ["a\rb"], program],
+    ["line feed in the program", "line-break", [], "C:\\a\nb.exe"],
+    ["quote in the program", "program-quote", [], '"C:\\a b\\c.exe"'],
+  ])("refuses a %s", (_label, reason, args, program0) => {
+    expect(conhostLaunch(program0, args, exitCodeFile)).toEqual({
+      reason,
+      type: "refusal",
+    });
+  });
+
+  it("passes a quote in an argument", () => {
+    expect(conhostLaunch(program, ['"'], exitCodeFile).type).toBe("launch");
+  });
+
+  describe("line limit", () => {
+    // The expanded line holds one argument of `length` characters; find the
+    // length at which it is exactly the limit.
+    const fixed = expandedBatchLine(acceptedLaunch(program, ["x"])).length - 1,
+      fits = CONHOST_LINE_LIMIT - fixed;
+
+    it("accepts a line of exactly the limit", () => {
+      const launch = acceptedLaunch(program, ["x".repeat(fits)]);
+      expect(expandedBatchLine(launch)).toHaveLength(CONHOST_LINE_LIMIT);
+    });
+
+    it.each([
+      ["one character more", "x".repeat(fits + 1)],
+      ["a caret, which counts twice", `${"x".repeat(fits - 1)}^`],
+      [
+        "a surrogate pair, which counts twice",
+        `${"x".repeat(fits - 1)}\u{1f600}`,
+      ],
+      ["a space, which adds quotes", `${"x".repeat(fits - 1)} `],
+    ])("refuses %s", (_label, argument) => {
+      expect(conhostLaunch(program, [argument], exitCodeFile)).toEqual({
+        reason: "too-long",
+        type: "refusal",
+      });
+    });
+
+    it("counts the program and the exit-code file", () => {
+      expect(
+        conhostLaunch(`${program}x`, ["x".repeat(fits)], exitCodeFile),
+      ).toEqual({ reason: "too-long", type: "refusal" });
+      expect(
+        conhostLaunch(program, ["x".repeat(fits)], `${exitCodeFile}x`),
+      ).toEqual({ reason: "too-long", type: "refusal" });
+    });
+
+    it("accepts a surrogate pair that fits", () => {
+      expect(
+        conhostLaunch(
+          program,
+          [`${"x".repeat(fits - 2)}\u{1f600}`],
+          exitCodeFile,
+        ).type,
+      ).toBe("launch");
+    });
+  });
 });
 
 function readyEvent(

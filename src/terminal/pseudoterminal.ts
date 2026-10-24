@@ -18,7 +18,6 @@ import {
   launderUnchecked,
   lazyInit,
   logFormat,
-  multireplace,
   notice2,
   printError,
   promisePromise,
@@ -1052,6 +1051,151 @@ export interface ShellPseudoterminalArguments {
   readonly rows?: number | undefined;
 }
 
+/**
+ * Quotes one argument so that the C runtime splits it back into the same
+ * `argv` entry: unchanged unless it is empty or holds a space, tab, line
+ * feed, vertical tab or quote; otherwise in quotes, with every run of
+ * backslashes before a quote doubled and the quote escaped, and a trailing
+ * run doubled. A port of `quote_argument` in `win32_conpty.py`, so that both
+ * Windows backends give a program the same command line.
+ */
+export function quoteWindowsArgument(argument: string): string {
+  if (argument !== "" && !/[ \t\n\v"]/u.test(argument)) return argument;
+  let backslashes = 0,
+    ret = '"';
+  for (const character of argument) {
+    if (character === "\\") {
+      ++backslashes;
+      continue;
+    }
+    ret +=
+      character === '"'
+        ? `${"\\".repeat(backslashes * 2 + 1)}"`
+        : `${"\\".repeat(backslashes)}${character}`;
+    backslashes = 0;
+  }
+  // Trailing backslashes would otherwise escape the closing quote.
+  return `${ret}${"\\".repeat(backslashes * 2)}"`;
+}
+
+/** Names of the variables that carry a ConHost launch to its batch file. */
+export interface ConHostLaunchVariables {
+  readonly arguments: string;
+  readonly exitCodeFile: string;
+  readonly program: string;
+}
+
+export const CONHOST_LAUNCH_VARIABLES: ConHostLaunchVariables = {
+    arguments: "OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS",
+    exitCodeFile: "OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE",
+    program: "OBSIDIAN_TERMINAL_CONHOST_PROGRAM",
+  },
+  /**
+   * The longest line cmd runs, in UTF-16 code units after percent expansion.
+   * cmd has two limits here. A line longer than this fails with "The input
+   * line is too long." A variable whose value alone is longer expands to
+   * nothing, so the program would start without its arguments. Every value
+   * appears whole in the expanded line, so checking the line catches both.
+   * Both effects were measured on Windows Server 2025; the boundary itself is
+   * the documented limit of cmd.
+   */
+  CONHOST_LINE_LIMIT = 8191;
+
+export type ConHostRefusal =
+  "line-break" | "nul" | "program-quote" | "too-long";
+
+export type ConHostLaunch =
+  | {
+      readonly type: "launch";
+      /** The batch file text: ASCII, and the same for every program. */
+      readonly batch: string;
+      /** Variables to add to conhost's environment after the profile's. */
+      readonly environment: Readonly<Record<string, string>>;
+    }
+  | { readonly type: "refusal"; readonly reason: ConHostRefusal };
+
+/**
+ * The batch file and environment that let conhost start `program` with
+ * `args` and write its exit code to `exitCodeFile`, or why it cannot.
+ *
+ * cmd reads a batch file in the console code page, so the file holds no
+ * profile text. The program, the arguments and the exit-code file reach it
+ * through the environment and are inserted by percent expansion, which runs
+ * once over the whole line before any command on it: the values are never
+ * expanded again, and the `set` commands at the start of the line clear the
+ * variables before the program starts, so the program does not inherit them.
+ * Delayed expansion is off, so `!` is plain text.
+ *
+ * The arguments are quoted as the ConPTY host quotes them. The one parse that
+ * still sees them is cmd's split at `&`, `|`, `<`, `>` and parentheses, so a
+ * caret escapes each of those and each `^` and `"`; with every quote escaped,
+ * cmd never enters its quoted state. Nothing stands between the arguments and
+ * the `&` after them: a space there would reach the program. The program
+ * path stays in quotes, so cmd never takes it for a built-in command.
+ *
+ * The exit code is written by `call echo %%ERRORLEVEL%%`, which reads the
+ * code after the program ends. With it cmd records the code of a `.cmd`
+ * program and, after Ctrl+C in the console, exits without asking
+ * "Terminate batch job (Y/N)?"; the `echo !ERRORLEVEL!` it replaces did
+ * neither (Windows CI runs 40038658462 and 40039342122).
+ *
+ * A `.cmd` or `.bat` program is the exception to ConPTY parity: it parses its
+ * own arguments again, which ConPTY's `cmd /c` start does differently.
+ *
+ * Refused: NUL and line breaks, which a batch line cannot carry; a quote in
+ * the program path, which would end its quotes; and a line past
+ * {@link CONHOST_LINE_LIMIT}. Windows paths, such as `exitCodeFile`, cannot
+ * contain any of these characters.
+ */
+export function conhostLaunch(
+  program: string,
+  args: readonly string[],
+  exitCodeFile: string,
+): ConHostLaunch {
+  const texts = [program, ...args];
+  if (texts.some((text) => text.includes("\0"))) {
+    return { reason: "nul", type: "refusal" };
+  }
+  if (texts.some((text) => /[\r\n]/u.test(text))) {
+    return { reason: "line-break", type: "refusal" };
+  }
+  if (program.includes('"')) {
+    return { reason: "program-quote", type: "refusal" };
+  }
+  const {
+      arguments: argumentsName,
+      exitCodeFile: exitCodeFileName,
+      program: programName,
+    } = CONHOST_LAUNCH_VARIABLES,
+    environment: Readonly<Record<string, string>> = {
+      [argumentsName]: args
+        .map(quoteWindowsArgument)
+        .join(" ")
+        .replace(/[\^&|<>()"]/gu, "^$&"),
+      [exitCodeFileName]: exitCodeFile,
+      [programName]: program,
+    },
+    line = [
+      `set "${argumentsName}=" & set "${exitCodeFileName}=" & `,
+      `set "${programName}=" & "%${programName}%"`,
+      args.length > 0 ? ` %${argumentsName}%` : "",
+      `& >"%${exitCodeFileName}%" call echo %%ERRORLEVEL%%`,
+    ].join(""),
+    expanded = line.replace(
+      /%%|%([^%]+)%/gu,
+      (_match, name: string | undefined) =>
+        name === undefined ? "%" : (environment[name] ?? ""),
+    );
+  if (expanded.length > CONHOST_LINE_LIMIT) {
+    return { reason: "too-long", type: "refusal" };
+  }
+  return {
+    batch: `@echo off\r\nsetlocal DisableDelayedExpansion\r\n${line}`,
+    environment,
+    type: "launch",
+  };
+}
+
 export class WindowsPseudoterminal implements Pseudoterminal {
   public readonly shell;
   public readonly onExit;
@@ -1158,33 +1302,39 @@ export class WindowsPseudoterminal implements Pseudoterminal {
             });
           try {
             /*
-             * The command is written to a file because...
-             * `conhost.exe` "helpfully" escapes the arguments.
+             * conhost starts a batch file, not the program, because
+             * `conhost.exe` "helpfully" escapes its arguments.
              *
              * <https://github.com/microsoft/terminal/blob/cb48babe9dfee5c3e830644eb7ee48f4116d3c47/src/host/ConsoleArguments.cpp#L34>
+             *
+             * The batch file also records the exit code. The command line
+             * reaches it through conhost's environment: see `conhostLaunch`.
              */
-            const inOutTmpEsc = WindowsPseudoterminal.escapeArgumentForBat(
-              inOutTmp.path,
-            );
-            /*
-             * The last command is a one-liner to prevent
-             * "Terminate batch job (Y/N)?" from terminating
-             * writing the exit code.
-             */
-            await fsPromises2.writeFile(
-              inOutTmp.path,
-              `@echo off\r\nsetlocal EnableDelayedExpansion\r\nset q=\\"\r\n${[
-                executable,
-                ...(args ?? []),
-              ]
-                .map((arg) => WindowsPseudoterminal.escapeArgumentForBat(arg))
-                .join(" ")} & echo !ERRORLEVEL! > ${inOutTmpEsc}`,
-              { encoding: DEFAULT_ENCODING, flag: "w" },
-            );
+            const launch = conhostLaunch(executable, args ?? [], inOutTmp.path);
+            if (launch.type === "refusal") {
+              throw new Error(
+                launch.reason === "nul"
+                  ? i18n.t("errors.profile-launch-nul")
+                  : i18n.t("errors.conhost-cannot-pass", {
+                      interpolation: { escapeValue: false },
+                      limit: CONHOST_LINE_LIMIT,
+                    }),
+              );
+            }
+            await fsPromises2.writeFile(inOutTmp.path, launch.batch, {
+              encoding: DEFAULT_ENCODING,
+              flag: "w",
+            });
             const ret = await spawnPromise(async () =>
               childProcess2.spawn(WINDOWS_CONHOST_PATH, [inOutTmp.path], {
                 cwd,
-                env: await applyEnv({ profile: environment }),
+                // Last, so that the profile cannot replace them.
+                env: await applyEnv({
+                  profile: [
+                    ...(environment ?? []),
+                    ...Object.entries(launch.environment),
+                  ],
+                }),
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: !resizer,
               }),
@@ -1252,6 +1402,9 @@ export class WindowsPseudoterminal implements Pseudoterminal {
         }
       })();
     this.resizer = shell.then(async ([, , resizer]) => resizer);
+    // Only `resize` and the exit path read it; a failed spawn is reported
+    // through `shell` and `onExit`.
+    this.resizer.catch(noop);
     this.shell = shell.then(([shell0]) => shell0);
     this.onExit = shell.then(
       async ([shell0, inOutTmp]) =>
@@ -1298,27 +1451,6 @@ export class WindowsPseudoterminal implements Pseudoterminal {
           });
         }),
     );
-  }
-
-  protected static escapeArgumentForBat(arg: string, quoteVar = "!q!"): string {
-    return `"${multireplace(
-      arg,
-      new Map([
-        ["^", "^^"],
-        ["!", "^!"],
-        ["%", "%%"],
-        ['"', quoteVar],
-      ]),
-    )}"`;
-
-    /*
-     * Clusterfuck: <https://stackoverflow.com/a/31413730>
-     *
-     * 1. use `^` to escape `^` and `!`: <https://stackoverflow.com/a/5620353>
-     * 2. use `%` to escape `%`: <https://stackoverflow.com/a/31413730>
-     * 3. use `!q!` to replace `"`": <https://stackoverflow.com/a/31413730>
-     * 4. enclose the argument in double quotes
-     */
   }
 
   public async kill(): Promise<void> {
