@@ -1125,7 +1125,9 @@ export type ConHostLaunch =
  * once over the whole line before any command on it: the values are never
  * expanded again, and the `set` commands at the start of the line clear the
  * variables before the program starts, so the program does not inherit them.
- * Delayed expansion is off, so `!` is plain text.
+ * Delayed expansion is off, so `!` is plain text. Node hands the environment
+ * to Windows as UTF-8, so a lone surrogate, which only a hand-edited profile
+ * can hold, arrives as U+FFFD; ConPTY keeps it.
  *
  * The arguments are quoted as the ConPTY host quotes them. The one parse that
  * still sees them is cmd's split at `&`, `|`, `<`, `>` and parentheses, so a

@@ -1235,6 +1235,20 @@ describe.skipIf(process.platform !== "win32")(
       },
       CONHOST_TIMEOUT_MS * 2,
     );
+
+    // Node hands the environment to Windows as UTF-8, so a lone surrogate,
+    // which only a hand-edited profile can hold, arrives as U+FFFD. ConPTY,
+    // which sends the command as JSON, keeps it.
+    it(
+      "passes a lone surrogate as U+FFFD",
+      async () => {
+        const run = await probe(["a\ud800b"]);
+        expect(run.code).toBe(0);
+        expect(run.probe?.argv).toEqual(["a\ufffdb"]);
+        expect(run.probe?.leaked).toEqual([]);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
   },
 );
 
