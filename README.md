@@ -71,6 +71,7 @@ This file is automatically opened on first install. You can reopen it in setting
 - Additional actions
   - Includes
     - Clear terminal: \(1\), \(3\), \(4\)
+    - Close terminal: \(3\), \(4\)
     - Copy terminal: \(1\)
     - Edit terminal: \(1\)
     - Export, import, or edit settings: \(2\), \(3\)
