@@ -3,7 +3,7 @@ import {
   type PluginContext,
   SI_PREFIX_SCALE,
   type SemVerString,
-  type SettingsManager,
+  SettingsManager,
   StatusBarHider,
   StorageSettingsManager,
   createI18n,
