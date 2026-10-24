@@ -592,6 +592,85 @@ def test_sweep_descendants_reports_what_refused_to_end() -> None:
     assert surveys[0] == 1
 
 
+def test_sweep_descendants_waits_for_a_process_too_new_to_judge() -> None:
+    """A survey that could not judge a new process yet is repeated until it can.
+
+    A program the shell started just before the session ended has not yet
+    connected to its console; the sweep must not end before it is judged.
+    """
+    now = [0.0]
+    surveys = [0]
+    young: set[int] = set()
+    ended: list[list[int]] = []
+    slept: list[float] = []
+
+    def survey() -> Sequence[int]:
+        """Leave process 30 undecided twice, then select it once."""
+        surveys[0] += 1
+        young.clear()
+        if surveys[0] < 3:
+            young.add(30)
+            return []
+        return [30] if surveys[0] == 3 else []
+
+    def end(pids: Sequence[int], _deadline: float) -> Sequence[int]:
+        """Record the round and report that everything ended."""
+        ended.append(list(pids))
+        return []
+
+    def sleep(seconds: float) -> None:
+        """Let the time pass at once."""
+        slept.append(seconds)
+        now[0] += seconds
+
+    left = _MODULE.sweep_descendants(
+        survey,
+        end,
+        lambda: now[0],
+        1.0,
+        undecided=lambda: bool(young),
+        sleep=sleep,
+    )
+    assert left == []
+    assert ended == [[30]]
+    assert surveys[0] == 4
+    assert slept == [_MODULE._SWEEP_RETRY] * 2
+
+
+def test_sweep_descendants_keeps_a_process_too_new_to_judge_at_the_deadline() -> None:
+    """A process that never becomes judgeable holds the sweep until the deadline."""
+    now = [0.0]
+    surveys = [0]
+    slept: list[float] = []
+
+    def survey() -> Sequence[int]:
+        """Never select anything."""
+        surveys[0] += 1
+        return []
+
+    def end(pids: Sequence[int], _deadline: float) -> Sequence[int]:
+        """Fail: nothing was selected."""
+        raise AssertionError(pids)
+
+    def sleep(seconds: float) -> None:
+        """Let the time pass at once."""
+        slept.append(seconds)
+        now[0] += seconds
+
+    left = _MODULE.sweep_descendants(
+        survey,
+        end,
+        lambda: now[0],
+        0.125,
+        undecided=lambda: True,
+        sleep=sleep,
+    )
+    assert left == []
+    assert surveys[0] == 3
+    assert slept == pytest.approx([0.05, 0.05, 0.025])
+    assert now[0] == pytest.approx(0.125)
+
+
 # ---------------------------------------------------------------------------
 # Command-line quoting
 # ---------------------------------------------------------------------------
@@ -4946,6 +5025,102 @@ def test_pseudoconsole_names_the_console_host_its_clients_report(
         pseudoconsole.close()
         for handle in (input_read, input_write, output_write):
             _MODULE._close(handle)
+
+
+"""Seconds after the kill that the late helper is let connect to its console.
+
+Past both sweeps of the session end, which run within milliseconds of the
+kill when nothing holds the pseudoconsole open, and well inside their
+deadline.
+"""
+_LATE_CONNECT = 0.3
+
+
+def _spawn_suspended_helper(ready_file: Path) -> list[str]:
+    """Start a hidden ping suspended, publish its PID, then wait for the kill.
+
+    Suspended, the helper has not connected to its console yet, as a helper
+    the shell started a moment before the session ended has not.
+    """
+    code = (
+        "import json, os, subprocess, sys, time\n"
+        "ping = os.path.join(os.environ['SystemRoot'], 'System32', 'PING.EXE')\n"
+        "helper = subprocess.Popen(\n"
+        "    [ping, '-n', '300', '127.0.0.1'],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW | 0x00000004,\n"
+        ")\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': helper.pid}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "time.sleep(120)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+def _resume_later(pid: int, delay: float) -> None:
+    """Resume the suspended process ``pid`` once ``delay`` seconds have passed."""
+    kernel32 = _kernel32()
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32)
+    open_process.restype = ctypes.c_void_p
+    # ``PROCESS_SUSPEND_RESUME``.
+    handle = open_process(0x0800, False, pid)
+    assert handle, _win32_error()
+    ntdll = ctypes.WinDLL("ntdll")  # ty: ignore[possibly-missing-attribute]
+    ntdll.NtResumeProcess.argtypes = (ctypes.c_void_p,)
+    ntdll.NtResumeProcess.restype = ctypes.c_int32
+    try:
+        time.sleep(delay)
+        assert ntdll.NtResumeProcess(handle) == 0
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_session_end_ends_a_helper_that_connects_to_its_console_late(
+    tmp_path: Path,
+) -> None:
+    """A hidden helper too new to judge at the kill is ended once it connects.
+
+    The sweep cannot judge a program that has not connected to its console
+    yet. Its last round must wait for that program, or a helper the shell
+    started just before the session ended outlives the session, which is the
+    leak the sweep is there to close.
+    """
+    ready_file = tmp_path / "helper.json"
+    resumers: list[threading.Thread] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_kill(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the helper; let the helper connect after the kill."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 30.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            resumer = threading.Thread(target=_resume_later, args=(pid, _LATE_CONNECT))
+            resumer.start()
+            resumers.append(resumer)
+
+        result = _run_host(
+            _spawn_suspended_helper(ready_file),
+            close_stdin=False,
+            replies=({"op": "kill"},),
+            ready_probe=pin_before_kill,
+            timeout=60.0,
+        )
+        for resumer in resumers:
+            resumer.join(10.0)
+        assert len(resumers) == 1, result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert watch.survivors(15.0) == [], result.stderr
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
