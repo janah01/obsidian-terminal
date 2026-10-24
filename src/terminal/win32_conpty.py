@@ -707,6 +707,8 @@ _PID_LIST_CAPACITY = 64
 _PID_LIST_ATTEMPTS = 8
 """Rounds of the sweep: a kept program may start another console program."""
 _SWEEP_ROUNDS = 3
+"""Seconds between the surveys of a sweep that waits for a process too new to judge."""
+_SWEEP_RETRY = 0.05
 """Console check answer: the process has no console at all."""
 _CONSOLE_NONE = "none"
 """Console check answer: the process is attached to the session's pseudoconsole."""
@@ -891,24 +893,32 @@ def sweep_descendants(
     clock: Callable[[], float],
     deadline: float,
     rounds: int = _SWEEP_ROUNDS,
+    undecided: Callable[[], bool] = lambda: False,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> list[int]:
     """End what ``survey`` selects, in rounds, until nothing is left or time is up.
 
     A kept program may start another console program while a round runs, so
     the survey is repeated after a round that ended something, at most
-    ``rounds`` times and never past ``deadline``. ``end`` terminates the
-    selected processes and returns those still running at the deadline; they
-    end the sweep and are returned for a diagnostic.
+    ``rounds`` times and never past ``deadline``. A survey that selects
+    nothing ends the sweep, unless ``undecided`` reports that the last survey
+    left out a process it could not judge yet: the survey is then repeated
+    every ``_SWEEP_RETRY`` seconds until that process can be judged or the
+    deadline passes. ``end`` terminates the selected processes and returns
+    those still running at the deadline; they end the sweep and are returned
+    for a diagnostic.
     """
     left: list[int] = []
-    for _ in range(rounds):
-        if clock() >= deadline:
-            break
+    while rounds > 0 and clock() < deadline:
         selected = survey()
-        if not selected:
-            break
-        left = list(end(selected, deadline))
-        if left:
+        if selected:
+            rounds -= 1
+            left = list(end(selected, deadline))
+            if left:
+                break
+        elif undecided():
+            sleep(max(0.0, min(_SWEEP_RETRY, deadline - clock())))
+        else:
             break
     return left
 
@@ -2796,6 +2806,7 @@ if sys.platform == "win32":
         handles: Mapping[int, int],
         pseudoconsole_host: int,
         creators: Mapping[int, int | None] | None = None,
+        young: set[int] | None = None,
     ) -> dict[int, str]:
         """Say what console each open process has; leave the undecidable out.
 
@@ -2804,7 +2815,8 @@ if sys.platform == "win32":
         console counts as the process's own. Until a new process has connected
         to a console, Windows reports its creator's PID in place of a console
         host, so a process whose answer is its creator's PID in ``creators``
-        is left out: it is too new to judge this round.
+        is left out: it is too new to judge this round. Such processes are
+        added to ``young`` when it is given.
         """
         kinds: dict[int, str] = {}
         for pid, process in handles.items():
@@ -2814,6 +2826,8 @@ if sys.platform == "win32":
             elif host == 0:
                 kinds[pid] = _CONSOLE_NONE
             elif creators is not None and host == creators.get(pid):
+                if young is not None:
+                    young.add(pid)
                 continue
             elif host == pseudoconsole_host:
                 kinds[pid] = _CONSOLE_ATTACHED
@@ -2890,18 +2904,24 @@ if sys.platform == "win32":
             handles[pid] = process
         return records, handles
 
-    def _sweep_descendants(job: int, deadline: float, pseudoconsole_host: int) -> None:
+    def _sweep_descendants(
+        job: int, deadline: float, pseudoconsole_host: int, last: bool = False
+    ) -> None:
         """End the session's tracked console programs within ``deadline``.
 
         ``select_descendants_to_end`` makes the choice; this function supplies
         the processes, the console check (``pseudoconsole_host`` tells the
         attached programs apart, see ``_console_kinds``) and the terminations.
-        What is left at the deadline is diagnosed, and no error leaves this
-        function.
+        The ``last`` sweep of a session waits for a process that is too new to
+        judge until it can be judged or ``deadline`` passes: a program the
+        shell started just before the session ended has no later sweep to end
+        it. What is left at the deadline is diagnosed, and no error leaves
+        this function.
         """
         cache: dict[tuple[int, int], str] = {}
         handles: dict[int, int] = {}
         skip = {os.getpid()}
+        young: set[int] = set()
 
         def release() -> None:
             """Close the handles of the previous round."""
@@ -2912,6 +2932,7 @@ if sys.platform == "win32":
         def survey() -> Sequence[int]:
             """Describe the tracked processes and choose the ones to end."""
             release()
+            young.clear()
             records, opened = _descendant_records(job, cache, skip)
             handles.update(opened)
             return select_descendants_to_end(
@@ -2920,6 +2941,7 @@ if sys.platform == "win32":
                     {pid: handles[pid] for pid in pids if pid in handles},
                     pseudoconsole_host,
                     {record.pid: record.parent_pid for record in records},
+                    young,
                 ),
                 _windowed_process_ids(),
             )
@@ -2941,7 +2963,13 @@ if sys.platform == "win32":
             return [pid for pid, handle in targets if handle in running]
 
         try:
-            left = sweep_descendants(survey, end, time.monotonic, deadline)
+            left = sweep_descendants(
+                survey,
+                end,
+                time.monotonic,
+                deadline,
+                undecided=lambda: last and bool(young),
+            )
         except OSError as error:
             diagnose(f"could not end the programs started from the terminal: {error}")
         else:
@@ -3540,7 +3568,7 @@ if sys.platform == "win32":
                     " programs attached to it are swept with the others"
                 )
             drained.wait(max(0.0, deadline - _SWEEP_LAST_ROUND - time.monotonic()))
-            _sweep_descendants(job, deadline, pseudoconsole_host)
+            _sweep_descendants(job, deadline, pseudoconsole_host, last=True)
             _permit_breakaway((job, breakaway_job))
 
         def _release(self) -> None:
