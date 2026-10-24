@@ -3,6 +3,7 @@
  */
 import { cloneAsWritable } from "@polyipseity/obsidian-plugin-library";
 import { describe, expect, it, vi } from "vitest";
+import { expectTypeOf } from "vitest";
 import { LocalSettings, Settings } from "../../src/settings-data.js";
 import { PROFILE_PRESETS } from "../../src/terminal/profile-presets.js";
 import { inheritedPythonExecutable } from "../../src/terminal/win32-doctor.js";
@@ -360,6 +361,41 @@ describe("src/settings-data.ts", () => {
         win32Backend: "shell-pipes",
       }).value,
     ).toMatchObject({ win32Backend: "conpty" });
+  });
+
+  // Both tuple types are written out, so that a source archive without the
+  // vendored library still knows them. They must stay what `deepFreeze` made
+  // of them: frozen, in the order the profile editor offers them, and
+  // literal rather than widened to `string`.
+  it("keeps the profile types and Windows backends frozen, ordered and literal", () => {
+    expect(Settings.Profile.TYPES).toEqual([
+      "",
+      "invalid",
+      "developerConsole",
+      "external",
+      "integrated",
+    ]);
+    expect(Object.isFrozen(Settings.Profile.TYPES)).toBe(true);
+    expect(Object.isFrozen(Settings.Profile.WIN32_BACKENDS)).toBe(true);
+    expectTypeOf<Settings.Profile.Type>().toEqualTypeOf<
+      "" | "developerConsole" | "external" | "integrated" | "invalid"
+    >();
+    expectTypeOf<Settings.Profile.Win32Backend>().toEqualTypeOf<
+      "conpty" | "legacy"
+    >();
+  });
+
+  it.each(["", "invalid", "developerConsole", "external", "integrated"])(
+    "Profile.fix keeps the profile type %j",
+    (type) => {
+      expect(Settings.Profile.fix({ type }).value.type).toBe(type);
+    },
+  );
+
+  // For example a profile written by a newer version on another device that
+  // syncs the same vault.
+  it("Profile.fix makes a profile of an unknown type invalid", () => {
+    expect(Settings.Profile.fix({ type: "ssh" }).value.type).toBe("invalid");
   });
 
   it("defaults the plugin-level Python executable to automatic discovery", () => {

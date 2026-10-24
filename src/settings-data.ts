@@ -565,7 +565,13 @@ export namespace Settings {
   export type Profiles = Readonly<Record<string, Profile>>;
   export namespace Profile {
     export type Entry = readonly [key: string, value: Profile];
-    export const TYPES = deepFreeze([
+    export const TYPES: readonly [
+      "",
+      "invalid",
+      "developerConsole",
+      "external",
+      "integrated",
+    ] = deepFreeze([
       "",
       "invalid",
       "developerConsole",
@@ -684,7 +690,10 @@ export namespace Settings {
     }
     /** Windows process and pseudoterminal implementations, in the order the
      * profile editor offers them. */
-    export const WIN32_BACKENDS = deepFreeze(["conpty", "legacy"]);
+    export const WIN32_BACKENDS: readonly ["conpty", "legacy"] = deepFreeze([
+      "conpty",
+      "legacy",
+    ]);
     export type Win32Backend = (typeof WIN32_BACKENDS)[number];
     export const DEFAULTS: {
       readonly [key in Type]: DeepRequired<
