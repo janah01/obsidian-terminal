@@ -1760,6 +1760,11 @@ export namespace Settings {
    * {@link addKeymappingDefaults}. Without a list of its own, the list is the
    * default one, which has every built-in keymapping.
    *
+   * A later version comes back to this one when the list holds an action
+   * that this version does not know and so loads as Ignore: the later
+   * version then offers its built-in keymappings again and gives such an
+   * entry its action back, as this version does after 3.29.0.
+   *
    * @param unc the settings read
    * @returns the version, or nothing
    */
@@ -1772,6 +1777,16 @@ export namespace Settings {
       Number.isSafeInteger(version) &&
       version >= 0
     ) {
+      if (
+        version > KEYMAPPING_DEFAULTS_VERSION &&
+        Array.isArray(keymappings) &&
+        keymappings.some(
+          (mapping: unknown) =>
+            !isKeymappingAction(launderUnchecked<Keymapping>(mapping).action),
+        )
+      ) {
+        return { keymappingDefaultsVersion: KEYMAPPING_DEFAULTS_VERSION };
+      }
       return { keymappingDefaultsVersion: version };
     }
     if (!Array.isArray(keymappings)) {

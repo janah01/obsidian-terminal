@@ -520,6 +520,52 @@ describe("src/settings-data.ts", () => {
       },
     );
 
+    // A later version's built-in keymapping, with an action this one lacks.
+    const laterBuiltIn = { ...windows, action: "laterAction", key: "j" },
+      later = Settings.KEYMAPPING_DEFAULTS_VERSION + 1;
+
+    it("take a later version back to this one when an action is unknown here", () => {
+      // The entry loads as Ignore. Saved with the later version, the later
+      // device would neither offer it again nor bring its action back.
+      const fixed = Settings.fix(
+        released329(list329, {
+          keymappingDefaultsVersion: later,
+          keymappings: [...list329, laterBuiltIn],
+        }),
+      );
+      expect(fixed.valid).toBe(false);
+      expect(fixed.value.keymappings.at(-1)).toStrictEqual({
+        ...laterBuiltIn,
+        action: "ignore",
+      });
+      expect(fixed.value.keymappingDefaultsVersion).toBe(
+        Settings.KEYMAPPING_DEFAULTS_VERSION,
+      );
+    });
+
+    it("keep a later version when every action is known here", () => {
+      const fixed = Settings.fix(
+        released329([...list329, { ...laterBuiltIn, action: "ignore" }], {
+          keymappingDefaultsVersion: later,
+        }),
+      );
+      expect(fixed.valid).toBe(true);
+      expect(fixed.value.keymappingDefaultsVersion).toBe(later);
+    });
+
+    it.each([0, 1])(
+      "keep version %j when an action is unknown here",
+      (version) => {
+        const fixed = Settings.fix(
+          released329(list329, {
+            keymappingDefaultsVersion: version,
+            keymappings: [...list329, laterBuiltIn],
+          }),
+        );
+        expect(fixed.value.keymappingDefaultsVersion).toBe(version);
+      },
+    );
+
     it("converge through a save and a load, before and after the upgrade", () => {
       for (const stored of [released329(), upgrade(released329()).settings]) {
         const first = Settings.fix(stored).value,
