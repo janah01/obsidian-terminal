@@ -227,7 +227,7 @@ def test_main_is_not_implemented_off_windows() -> None:
 
 
 def _record(
-    pid: int, parent_pid: int, subsystem: str, created: int | None = None
+    pid: int, parent_pid: int | None, subsystem: str, created: int | None = None
 ) -> Any:
     """Build one descendant record; ``created`` defaults to the PID's order."""
     return _MODULE.DescendantRecord(
@@ -361,6 +361,16 @@ def test_sweep_ends_only_candidates_the_console_check_confirms() -> None:
     ]
     answers = {10: "own", 20: "own", 30: "own"}
     assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == [10]
+
+
+def test_sweep_keeps_a_program_whose_parent_is_not_known_yet() -> None:
+    """A process listed without a parent this round is kept until the next.
+
+    The job lists a process that the snapshot does not show only when it is
+    too new to judge or already gone; neither is an orphan to end.
+    """
+    records = [_record(10, 1, "console"), _record(20, None, "console")]
+    assert _MODULE.select_descendants_to_end(records, _consoles(10, 20)) == [10]
 
 
 def test_sweep_keeps_what_a_console_less_program_runs() -> None:

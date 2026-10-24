@@ -719,11 +719,12 @@ class DescendantRecord(NamedTuple):
     """One process the session's tracking job holds, as seen in a sweep round.
 
     ``created`` orders processes in time, so a parent PID that Windows reused
-    after the real parent exited is not mistaken for an ancestor.
+    after the real parent exited is not mistaken for an ancestor. A
+    ``parent_pid`` of ``None`` means the parent is not known this round.
     """
 
     pid: int
-    parent_pid: int
+    parent_pid: int | None
     created: int
     subsystem: str
 
@@ -800,8 +801,9 @@ def select_descendants_to_end(
     Parent links are followed only through records created no later than the
     child, so a reused parent PID breaks the chain, and an orphan whose
     launcher has exited has no ancestor at all. GUI programs, programs whose
-    image cannot be read, console programs without a console and anything
-    ``consoles`` leaves unanswered are kept.
+    image cannot be read, console programs without a console, a process
+    whose parent is not known this round (too new to judge, or gone) and
+    anything ``consoles`` leaves unanswered are kept.
     """
     by_pid = {record.pid: record for record in records}
     asked = [record.pid for record in records if record.subsystem == _SUBSYSTEM_CONSOLE]
@@ -834,6 +836,7 @@ def select_descendants_to_end(
         record.pid
         for record in records
         if record.subsystem == _SUBSYSTEM_CONSOLE
+        and record.parent_pid is not None
         and kinds.get(record.pid) == _CONSOLE_OWN
         and record.pid not in windowed
         and not sheltered(record)
@@ -2794,15 +2797,20 @@ if sys.platform == "win32":
     ) -> tuple[list[DescendantRecord], dict[int, int]]:
         """Describe every process ``job`` holds; return the records and handles.
 
-        ``cache`` keeps each image's subsystem by PID and creation time across
-        rounds, so a round reads only the images of new processes. The handles
-        stay open until the caller closes them: terminating and waiting go
-        through them, so a PID reused meanwhile cannot be hit.
+        The job's list is read before the snapshot that names the parents, so
+        a listed process is in the snapshot unless it has exited since; read
+        the other way round, a process started in between would have no
+        parent and pass for an orphan. ``cache`` keeps each image's subsystem
+        by PID and creation time across rounds, so a round reads only the
+        images of new processes. The handles stay open until the caller
+        closes them: terminating and waiting go through them, so a PID reused
+        meanwhile cannot be hit.
         """
+        listed = _tracked_process_ids(job)
         parents = _parent_process_ids()
         records: list[DescendantRecord] = []
         handles: dict[int, int] = {}
-        for pid in _tracked_process_ids(job):
+        for pid in listed:
             if pid in skip:
                 continue
             process = _open_tracked_process(pid, job)
@@ -2823,9 +2831,7 @@ if sys.platform == "win32":
                 if subsystem == _SUBSYSTEM_UNKNOWN:
                     diagnose(f"could not classify {path or pid}; it is left running")
                 cache[(pid, created)] = subsystem
-            records.append(
-                DescendantRecord(pid, parents.get(pid, 0), created, subsystem)
-            )
+            records.append(DescendantRecord(pid, parents.get(pid), created, subsystem))
             handles[pid] = process
         return records, handles
 
