@@ -2315,35 +2315,36 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
 });
 
 describe("closing the tab of a program that opens outside Obsidian", () => {
-  it("leaves no closed tab that starts the program again after the pane menu's Edit", async () => {
+  const external = {
+    ...Settings.Profile.DEFAULTS.external,
+    executable: "/usr/bin/true",
+  };
+
+  // A terminal that runs an integrated shell; its pane menu's Edit switches it
+  // to the external profile and confirms.
+  function editToExternal() {
     const { context, workspace } = makeTerminalContext(),
       { leaf, view, setViewState } = makeTerminalLeaf(context),
       type = TerminalView.type.namespaced(context),
-      external = {
-        ...Settings.Profile.DEFAULTS.external,
-        executable: "/usr/bin/true",
-      },
       // What Obsidian keeps for Undo close tab: the view's state at the close.
       closed: unknown[] = [],
+      close = vi.fn(),
       confirmations: Promise<void>[] = [];
     vi.spyOn(library, "notice2").mockImplementation(vi.fn());
-    const open = vi
-        .spyOn(profileProperties, "openProfile")
-        .mockResolvedValue(null),
-      leaves = vi.spyOn(workspace, "getLeavesOfType").mockReturnValue([leaf]);
-    Object.assign(workspace, { requestUpdateLayout: vi.fn() });
-    Object.assign(leaf, {
-      detach: vi.fn(() => {
+    const report = vi.spyOn(library, "printError").mockImplementation(vi.fn()),
+      open = vi.spyOn(profileProperties, "openProfile").mockResolvedValue(null),
+      leaves = vi.spyOn(workspace, "getLeavesOfType").mockReturnValue([leaf]),
+      // A local, so that the assertions need no unbound method.
+      detach = vi.fn(() => {
         closed.push(readStateCollaboratively(type, view.getState()));
         leaves.mockReturnValue([]);
-      }),
-      updateHeader: vi.fn(),
-    });
+      });
+    Object.assign(workspace, { requestUpdateLayout: vi.fn() });
+    Object.assign(leaf, { detach, updateHeader: vi.fn() });
     // Obsidian hands a state of the leaf's own view type to that view.
     setViewState.mockImplementation(async ({ state }) =>
       view.setState(state, { history: false }),
     );
-    // The terminal the user edits runs an integrated shell.
     view["state"] = {
       ...TerminalView.State.DEFAULT,
       cwd: "/vault",
@@ -2352,24 +2353,64 @@ describe("closing the tab of a program that opens outside Obsidian", () => {
     vi.spyOn(EditTerminalModal.prototype, "open").mockImplementation(function (
       this: EditTerminalModal,
     ) {
-      // The user picks the external profile in the dialog and confirms.
       Object.assign(this["state"], { profile: external });
-      confirmations.push(this["confirm"](vi.fn()));
+      confirmations.push(this["confirm"](close));
     });
+    return {
+      close,
+      closed,
+      context,
+      detach,
+      open,
+      report,
+      async edit(): Promise<void> {
+        terminalPaneActions(view).get("components.terminal.menus.edit")?.();
+        await Promise.all(confirmations);
+        await tick();
+      },
+    };
+  }
 
-    terminalPaneActions(view).get("components.terminal.menus.edit")?.();
-    await Promise.all(confirmations);
-    await tick();
-
-    expect(open).toHaveBeenCalledExactlyOnceWith(context, external, {
-      cwd: "/vault",
-    });
-    // Undo close tab must not run the external program a second time.
-    expect(closed).not.toContainEqual(
+  // The tab closed once, after the program was started, with the shell's own
+  // state: Undo close tab brings the shell back and starts no program.
+  function expectClosedWithShell({
+    closed,
+    detach,
+    open,
+  }: ReturnType<typeof editToExternal>): void {
+    expect(detach).toHaveBeenCalledOnce();
+    expect(open).toHaveBeenCalledBefore(detach);
+    expect(closed).toEqual([
       expect.objectContaining({
-        profile: expect.objectContaining({ type: "external" }) as unknown,
+        cwd: "/vault",
+        profile: expect.objectContaining({ type: "integrated" }) as unknown,
       }),
+    ]);
+  }
+
+  it("leaves no closed tab that starts the program again after the pane menu's Edit", async () => {
+    const edited = editToExternal();
+
+    await edited.edit();
+
+    expect(edited.open).toHaveBeenCalledExactlyOnceWith(
+      edited.context,
+      external,
+      { cwd: "/vault" },
     );
+    expect(edited.close).toHaveBeenCalledOnce();
+    expectClosedWithShell(edited);
+  });
+
+  it("closes the edited terminal with its own state when the program fails to start", async () => {
+    const edited = editToExternal();
+    edited.open.mockRejectedValue(new Error("spawn /bin/sh ENOENT"));
+
+    await edited.edit();
+
+    expect(edited.report).toHaveBeenCalledOnce();
+    expect(edited.close).toHaveBeenCalledOnce();
+    expectClosedWithShell(edited);
   });
 });
 
