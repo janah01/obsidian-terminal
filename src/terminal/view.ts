@@ -1923,7 +1923,8 @@ export class TerminalView extends ItemView {
 
 /**
  * What a terminal of the profile is called before the program names it or the
- * user renames it: the profile's name, else its program, else its type.
+ * user renames it: the profile's name, else the base name of its program when
+ * it has a program setting, even an empty one, else its type.
  */
 function profileTitle(
   context: TerminalPlugin,
