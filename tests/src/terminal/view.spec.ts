@@ -566,6 +566,96 @@ describe("hotkeys while a terminal has focus", () => {
     );
   });
 
+  it("warns and changes nothing when the hotkey table refuses the reload", () => {
+    const { context } = makeTerminalContext(),
+      hotkeyManager = Object.freeze({ baked: true }),
+      warn = vi.spyOn(self.console, "warn").mockImplementation(() => {});
+    vi.spyOn(self.console, "debug").mockImplementation(() => {});
+    Object.assign(context.app, { hotkeyManager });
+
+    // A settings change runs the reload; it must not fail that change.
+    expect(() => {
+      TerminalView.reloadFocusedHotkeys(context);
+    }).not.toThrow();
+
+    expect(hotkeyManager.baked).toBe(true);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "errors.private-API-changed",
+      expect.any(TypeError),
+    );
+  });
+
+  it("leaves the default hotkey of a command off the list to the terminal", () => {
+    const { context, executeCommand, press } = loadView(),
+      // Registered with a default key, as the root command's Mod+Shift+H.
+      command = library.addCommand(context, () => "open", {
+        checkCallback: vi.fn((_checking: boolean): boolean => true),
+        hotkeys: [{ key: "H", modifiers: ["Mod", "Shift"] }],
+        id: "open-terminal.integrated.root",
+      });
+    TerminalView.allowWhileFocused(command);
+    expect(press(["Mod", "Shift"], "H")).toBe(false);
+
+    TerminalView.allowWhileFocused(command, false);
+    TerminalView.reloadFocusedHotkeys(context);
+    expect(press(["Mod", "Shift"], "H")).toBeUndefined();
+
+    TerminalView.allowWhileFocused(command);
+    TerminalView.reloadFocusedHotkeys(context);
+    expect(press(["Mod", "Shift"], "H")).toBe(false);
+    expect(executeCommand).toHaveBeenCalledTimes(2);
+    expect(executeCommand).toHaveBeenLastCalledWith(command);
+  });
+
+  it("leaves the key to the terminal when the command leaves the list before the first key", () => {
+    const { addBoundCommand, executeCommand, press } = loadView(),
+      { check, command } = addBoundCommand("open-terminal.integrated.root", {
+        key: "r",
+        modifiers: ["Ctrl"],
+      });
+    TerminalView.allowWhileFocused(command);
+    TerminalView.allowWhileFocused(command, false);
+
+    expect(press(["Ctrl"], "r")).toBeUndefined();
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["one that reads every hotkey", undefined],
+    ["one with a list of its own", new Set(["other-plugin:command"])],
+  ])(
+    "applies a change of the list beside another hotkey listener, %s",
+    (_name, ids) => {
+      const { addBoundCommand, context, executeCommand, press } = loadView(),
+        { command } = addBoundCommand("open-terminal.integrated.root", {
+          key: "r",
+          modifiers: ["Ctrl"],
+        }),
+        // Another listener of the library patches the same table later.
+        other = library.newHotkeyListener(context, ids),
+        pressOther = (): unknown =>
+          other(new KeyboardEvent("keydown", { key: "r" }), {
+            key: "r",
+            modifiers: compile(["Ctrl"]),
+            vkey: "r",
+          });
+      TerminalView.allowWhileFocused(command);
+      expect(press(["Ctrl"], "r")).toBe(false);
+
+      TerminalView.allowWhileFocused(command, false);
+      TerminalView.reloadFocusedHotkeys(context);
+      expect(press(["Ctrl"], "r")).toBeUndefined();
+      // The other listener keeps its own table.
+      expect(pressOther()).toBe(ids ? undefined : false);
+
+      TerminalView.allowWhileFocused(command);
+      TerminalView.reloadFocusedHotkeys(context);
+      expect(press(["Ctrl"], "r")).toBe(false);
+      expect(executeCommand).toHaveBeenCalledTimes(ids ? 2 : 3);
+    },
+  );
+
   it("honours a command allowed after a bake only once the hotkey table is stale again", () => {
     const { addBoundCommand, executeCommand, press } = loadView(),
       { command } = addBoundCommand("open-terminal.external.root", {
