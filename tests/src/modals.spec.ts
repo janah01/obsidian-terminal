@@ -1434,4 +1434,85 @@ describe("keymapping editor argument", () => {
     expect(first.actionArg).toBe(99);
     editor.modal.close();
   });
+
+  describe("scroll amount while it is typed", () => {
+    const scrollLines = {
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 3,
+    } satisfies Settings.Keymapping;
+
+    // A field being typed in has focus, which needs it in the document.
+    function focus(field: HTMLInputElement): HTMLInputElement {
+      row("").settingEl.append(field);
+      field.focus();
+      expect(document.activeElement).toBe(field);
+      return field;
+    }
+
+    it("leaves an emptied field empty and shows the saved number once left", async () => {
+      const editor = await openEditor(scrollLines),
+        field = focus(editor.numberField());
+      // Backspace over "3".
+      editor.typeNumber("");
+      expect(field.value).toBe("");
+      expect(editor.callback).not.toHaveBeenCalled();
+      field.blur();
+      expect(field.value).toBe("3");
+      expect(editor.callback).not.toHaveBeenCalled();
+      editor.modal.close();
+    });
+
+    it("takes -2 typed over a selected -1", async () => {
+      const editor = await openEditor({
+          ...seeded,
+          action: "scrollPages",
+          actionArg: -1,
+        }),
+        field = focus(editor.numberField());
+      // The minus typed first is not a number yet: the field reports no text.
+      editor.typeNumber("");
+      expect(field.value).toBe("");
+      expect(editor.callback).not.toHaveBeenCalled();
+      editor.typeNumber("-2");
+      expect(field.value).toBe("-2");
+      expect(editor.saved()).toStrictEqual({
+        ...seeded,
+        action: "scrollPages",
+        actionArg: -2,
+      });
+      editor.modal.close();
+    });
+
+    it("keeps a decimal in the field while the whole number stays saved", async () => {
+      const editor = await openEditor(scrollLines),
+        field = focus(editor.numberField());
+      // On Linux the field reports "1." as "1", then "1.5" as it is.
+      editor.typeNumber("1");
+      editor.typeNumber("1.5");
+      expect(field.value).toBe("1.5");
+      expect(editor.callback).toHaveBeenCalledOnce();
+      expect(editor.saved()).toMatchObject({ actionArg: 1 });
+      field.blur();
+      expect(field.value).toBe("1");
+      editor.modal.close();
+    });
+
+    it("does not rewrite a focused field whose text stands for the saved number", async () => {
+      const editor = await openEditor(scrollLines),
+        field = focus(editor.numberField());
+      editor.typeNumber("05");
+      expect(editor.saved()).toMatchObject({ actionArg: 5 });
+      expect(field.value).toBe("05");
+      editor.typeNumber("-0");
+      expect(editor.saved()?.actionArg).toBe(-0);
+      expect(field.value).toBe("-0");
+      editor.typeNumber("-05");
+      expect(editor.saved()).toMatchObject({ actionArg: -5 });
+      expect(field.value).toBe("-05");
+      field.blur();
+      expect(field.value).toBe("-5");
+      editor.modal.close();
+    });
+  });
 });

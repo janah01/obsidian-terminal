@@ -1970,17 +1970,35 @@ export class KeymappingEditModal extends Modal {
         // Display current value if it's a number, else empty
         const numValue = data.actionArg;
         if (typeof numValue === "number") {
-          text.setValue(String(numValue));
+          // A focused field whose text already stands for the number keeps
+          // its text, so a number being typed is not rewritten under the caret.
+          const { inputEl } = text;
+          if (
+            inputEl !== inputEl.ownerDocument.activeElement ||
+            Number(text.getValue()) !== numValue
+          ) {
+            text.setValue(String(numValue));
+          }
           text.onChange(async (val) => {
+            // Only a whole number is stored. Other text, such as an emptied
+            // field, a minus typed first or "1.5", stays as typed.
+            if (!/^-?\d+$/u.test(val)) {
+              return;
+            }
             const parsed = parseInt(val, 10);
             if (!Settings.Keymapping.isValidActionArg("number", parsed)) {
-              text.setValue(String(data.actionArg));
               return;
             }
             data.actionArg = parsed;
             await this.postMutate();
           });
         }
+        // Leaving the field shows the stored number again.
+        text.inputEl.onblur = (): void => {
+          if (typeof data.actionArg === "number") {
+            text.setValue(String(data.actionArg));
+          }
+        };
       });
 
       // Text area for string actions (sendEscapeSequence, sendHexCode, sendText)
