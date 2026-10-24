@@ -364,6 +364,7 @@ describe("hotkeys while a terminal has focus", () => {
           modifiers: compile(modifiers),
           vkey: key,
         }),
+      context,
       hotkeys,
     };
   }
@@ -630,22 +631,12 @@ describe("hotkeys while a terminal has focus", () => {
     // The listener as `TerminalView.load` makes it, for any platform: the
     // test runs on one only.
     function listenerOn(platform0: string) {
-      const { context } = makeTerminalContext(),
-        hotkeys = new HotkeyTable(),
-        palette = { callback: vi.fn(), id: "command-palette:open" },
-        executeCommand = vi.fn((_command: unknown): boolean => true);
-      hotkeys.setHotkeys(palette.id, [{ key: "p", modifiers: ["Mod"] }]);
-      Object.assign(context.app, {
-        commands: {
-          executeCommand,
-          findCommand: (id: string): unknown =>
-            id === palette.id ? palette : undefined,
-        },
-        hotkeyManager: hotkeys,
-        keymap: { constructor: { isMatch } },
-      });
-      Object.assign(context, { register: vi.fn() });
-      const listener = newFocusedKeyListener(context, new Set(), platform0);
+      const { addBoundCommand, context, executeCommand } = loadView(),
+        { command: palette } = addBoundCommand("command-palette:open", {
+          key: "p",
+          modifiers: ["Mod"],
+        }),
+        listener = newFocusedKeyListener(context, new Set(), platform0);
       return {
         executeCommand,
         palette,
