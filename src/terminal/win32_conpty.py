@@ -1670,6 +1670,16 @@ if sys.platform == "win32":
     _IMAGE_NAME_WIN32 = 0
     """``GetWindow`` relationship selecting the owner of a window."""
     _GW_OWNER = 4
+    """``NtQueryInformationProcess`` class naming the console host of a process.
+
+    Microsoft does not document this class; process explorers read it to show
+    a process's console host. A process without a console reports zero, and a
+    failed query leaves the process alone. The two low bits of the value are
+    flags and are masked off.
+    """
+    _PROCESS_CONSOLE_HOST_PROCESS = 49
+    """``STATUS_SUCCESS``; an ``NTSTATUS`` below it is a failure."""
+    _STATUS_SUCCESS = 0
     """Win32 error meaning a job's process list did not fit the buffer."""
     _ERROR_MORE_DATA = 234
     """``INVALID_HANDLE_VALUE`` as the unsigned pointer ``ctypes`` returns."""
@@ -2116,6 +2126,14 @@ if sys.platform == "win32":
     except AttributeError:
         """Open a console driver object by its NT name."""
         _NtOpenFile = _no_nt_open_file
+
+    """Query process information from ``ntdll``."""
+    _NtQueryInformationProcess = _bind(
+        "NtQueryInformationProcess",
+        (_HANDLE, ctypes.c_int, _VOID, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)),
+        _LONG,
+        _ntdll,
+    )
 
     def _as_handle(value: int | None) -> int:
         """Return a pointer-width Win32 result as a plain integer handle."""
@@ -2732,24 +2750,6 @@ if sys.platform == "win32":
         ):
             return None
         return buffer.value
-
-    """``NtQueryInformationProcess`` class naming the console host of a process.
-
-    Microsoft does not document this class; process explorers read it to show
-    a process's console host. A process without a console reports zero, and a
-    failed query leaves the process alone. The two low bits of the value are
-    flags and are masked off.
-    """
-    _PROCESS_CONSOLE_HOST_PROCESS = 49
-    """``STATUS_SUCCESS``; an ``NTSTATUS`` below it is a failure."""
-    _STATUS_SUCCESS = 0
-    """Query process information from ``ntdll``."""
-    _NtQueryInformationProcess = _bind(
-        "NtQueryInformationProcess",
-        (_HANDLE, ctypes.c_int, _VOID, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)),
-        _LONG,
-        _ntdll,
-    )
 
     def _console_host_of(process: int) -> int | None:
         """Return the PID of the console host serving ``process``, 0 without one.
