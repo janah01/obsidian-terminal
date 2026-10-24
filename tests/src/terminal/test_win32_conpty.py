@@ -3056,13 +3056,27 @@ class _ExitTimes:
 
 
 def _read_when_published(path: Path, timeout: float) -> str:
-    """Poll for a file another process publishes atomically; return its text."""
+    """Poll for a file another process publishes atomically; return its text.
+
+    A ``timeout`` below zero, the rest of a budget already spent, counts as 0.
+    """
+    timeout = max(0.0, timeout)
     deadline = time.monotonic() + timeout
     while not path.exists():
         if time.monotonic() >= deadline:
             raise AssertionError(f"{path} was not published within {timeout:.0f}s")
         time.sleep(0.05)
     return path.read_text(encoding="utf-8")
+
+
+def test_a_wait_with_no_time_left_reports_zero_seconds(tmp_path: Path) -> None:
+    """A file awaited after its budget ran out is reported within 0s, not -0s.
+
+    Files read in turn share one deadline, so the last of them can be given
+    what is left of it, which is below zero once an earlier file came late.
+    """
+    with pytest.raises(AssertionError, match=r"was not published within 0s$"):
+        _read_when_published(tmp_path / "program.json", -0.3)
 
 
 def _create_control_server(pipe_name: str) -> int:
