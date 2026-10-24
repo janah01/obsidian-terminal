@@ -5043,13 +5043,13 @@ def test_session_end_ends_programs_left_behind_through_msys_bash(
         assert watch.survivors(15.0) == [], result.stderr
 
 
-"""Code of a program that asks to leave its job, publishes the answer, then waits.
+"""Code defining ``job_flags()``: the limit flags of the caller's job, or ``None``.
 
-The answer carries the limit flags of the job the program runs in, so that a
-refusal names the job that refused: the session's root job has none.
+With a ``NULL`` job handle, ``QueryInformationJobObject`` answers for the job
+the calling process is in.
 """
-_BREAKAWAY_PROBE = (
-    "import ctypes, json, os, subprocess, sys, time\n"
+_JOB_FLAGS_CODE = (
+    "import ctypes\n"
     "from ctypes import wintypes\n"
     "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
     "class Basic(ctypes.Structure):\n"
@@ -5064,29 +5064,75 @@ _BREAKAWAY_PROBE = (
     "kernel32.QueryInformationJobObject.argtypes = (\n"
     "    ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p\n"
     ")\n"
-    "basic = Basic()\n"
-    "# JobObjectBasicLimitInformation of the job this process is in.\n"
-    "known = kernel32.QueryInformationJobObject(\n"
-    "    None, 2, ctypes.byref(basic), ctypes.sizeof(basic), None\n"
-    ")\n"
-    "record = {'pid': os.getpid(), 'jobFlags': basic.LimitFlags if known else None}\n"
-    "try:\n"
-    "    record['away'] = subprocess.Popen(\n"
-    "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
-    "        stdin=subprocess.DEVNULL,\n"
-    "        stdout=subprocess.DEVNULL,\n"
-    "        stderr=subprocess.DEVNULL,\n"
-    "        creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB\n"
-    "        | subprocess.CREATE_NO_WINDOW,\n"
-    "    ).pid\n"
-    "except OSError as error:\n"
-    "    record['refused'] = str(error)\n"
-    "path = sys.argv[1]\n"
-    "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
-    "    json.dump(record, stream)\n"
-    "os.replace(path + '.tmp', path)\n"
+    "def job_flags():\n"
+    "    basic = Basic()\n"
+    "    # JobObjectBasicLimitInformation of the job this process is in.\n"
+    "    known = kernel32.QueryInformationJobObject(\n"
+    "        None, 2, ctypes.byref(basic), ctypes.sizeof(basic), None\n"
+    "    )\n"
+    "    return basic.LimitFlags if known else None\n"
+)
+"""Code defining ``break_away(record)``: start a sleeper outside the job.
+
+It notes the sleeper's PID under ``away``, or the error under ``refused``.
+"""
+_BREAK_AWAY_CODE = (
+    "import subprocess, sys\n"
+    "def break_away(record):\n"
+    "    try:\n"
+    "        record['away'] = subprocess.Popen(\n"
+    "            [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+    "            stdin=subprocess.DEVNULL,\n"
+    "            stdout=subprocess.DEVNULL,\n"
+    "            stderr=subprocess.DEVNULL,\n"
+    "            creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB\n"
+    "            | subprocess.CREATE_NO_WINDOW,\n"
+    "        ).pid\n"
+    "    except OSError as error:\n"
+    "        record['refused'] = str(error)\n"
+)
+"""Code defining ``publish(path, record)``: write a JSON record atomically."""
+_PUBLISH_CODE = (
+    "import json, os\n"
+    "def publish(path, record):\n"
+    "    with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "        json.dump(record, stream)\n"
+    "    os.replace(path + '.tmp', path)\n"
+)
+"""Code of a program that asks to leave its job, publishes the answer, then waits.
+
+The answer carries the limit flags of the job the program runs in, so that a
+refusal names the job that refused: the session's root job has none.
+"""
+_BREAKAWAY_PROBE = (
+    _JOB_FLAGS_CODE + _BREAK_AWAY_CODE + _PUBLISH_CODE + "import os, sys, time\n"
+    "record = {'pid': os.getpid(), 'jobFlags': job_flags()}\n"
+    "break_away(record)\n"
+    "publish(sys.argv[1], record)\n"
     "time.sleep(60)\n"
 )
+"""Code of a kept program that asks to leave its job once a gate opens.
+
+It publishes its PID and job flags at once (``sys.argv[2]``), waits for the
+gate (``sys.argv[1]``), then publishes its job flags again with the answer to
+its breakaway (``sys.argv[3]``), and waits.
+"""
+_KEPT_PROBE = (
+    _JOB_FLAGS_CODE + _BREAK_AWAY_CODE + _PUBLISH_CODE + "import os, sys, time\n"
+    "gate, before, after = sys.argv[1:4]\n"
+    "publish(before, {'pid': os.getpid(), 'jobFlags': job_flags()})\n"
+    "deadline = time.monotonic() + 120\n"
+    "while not os.path.exists(gate) and time.monotonic() < deadline:\n"
+    "    time.sleep(0.05)\n"
+    "record = {'jobFlags': job_flags()}\n"
+    "break_away(record)\n"
+    "publish(after, record)\n"
+    "time.sleep(120)\n"
+)
+"""``JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK``."""
+_BREAKAWAY_LIMITS = 0x00000800 | 0x00001000
+"""``JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK``: a job that does not track children."""
+_SILENT_BREAKAWAY_LIMIT = 0x00001000
 
 
 """What the breakaway probe publishes."""
@@ -5133,14 +5179,22 @@ def _breakaway_probe_shell(shape: str, script: Path, ready_file: Path) -> list[s
         ),
     ),
 )
-def test_a_program_that_broke_away_may_break_away_again(
+def test_a_program_in_the_root_job_may_not_break_away_while_the_session_runs(
     tmp_path: Path, shape: str
 ) -> None:
-    """A breakaway asked for anywhere under the shell is not refused.
+    """A second breakaway under the shell is refused until the session ends.
 
-    Every program Git Bash runs has already broken away once, because MSYS
-    asks for it, so a program that asks again must not get
-    ``ERROR_ACCESS_DENIED`` from the session's own jobs.
+    Every program Git Bash runs has broken away once already, because MSYS
+    asks for it, and so has one the shell started with
+    ``CREATE_BREAKAWAY_FROM_JOB``: both sit in the root tracking job. That
+    job permits no breakaway, or MSYS would carry everything it runs out of
+    the sweep's reach, so such a program's own ``CREATE_BREAKAWAY_FROM_JOB``
+    fails with access denied while the session runs. This pins the price of
+    tracking MSYS, and the limit flags name the job that refused. On a
+    desktop 3.29.0 let the call succeed, as nothing above the shell's job
+    refused it; under this runner's own job it refused there as well, so the
+    difference to 3.29.0 does not show here. The next test pins that the
+    refusal ends with the session.
     """
     script = tmp_path / "probe.py"
     script.write_text(_BREAKAWAY_PROBE, encoding="utf-8")
@@ -5169,8 +5223,97 @@ def test_a_program_that_broke_away_may_break_away_again(
             timeout=60.0,
         )
         assert len(records) == 1, result
-        assert records[0]["refused"] is None, records[0]
-        assert isinstance(records[0].get("away"), int), records[0]
+        # The root tracking job, which has no limit flags, refused.
+        assert records[0]["jobFlags"] == 0, records[0]
+        assert records[0]["away"] is None, records[0]
+        refused = records[0]["refused"]
+        assert isinstance(refused, str) and "WinError 5" in refused, records[0]
+
+
+def _kept_probe_shell(script: Path, gate: Path, before: Path, after: Path) -> list[str]:
+    """Return a shell that starts the kept probe in the root job, then waits.
+
+    The shell starts the probe with ``CREATE_BREAKAWAY_FROM_JOB``, which
+    carries it up into the root tracking job, and ``DETACHED_PROCESS``, so it
+    has no console and the session end keeps it. The shell waits to be killed.
+    """
+    code = (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, {str(script)!r}, {str(gate)!r}, {str(before)!r},"
+        f" {str(after)!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB\n"
+        "    | subprocess.DETACHED_PROCESS,\n"
+        ")\n"
+        "time.sleep(120)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_what_the_session_kept_may_break_away_once_it_has_ended(
+    tmp_path: Path,
+) -> None:
+    """Once the session has ended, a kept program's job lets it and its children go.
+
+    While the session runs, the tracking jobs hold a kept program's children
+    and refuse its breakaway. Once the sweep is over, the host lets both
+    jobs permit every breakaway, so a program the session kept behaves as on
+    3.29.0 from then on: a child it starts is not tracked, and one it asks to
+    break away is not refused.
+    """
+    script = tmp_path / "probe.py"
+    script.write_text(_KEPT_PROBE, encoding="utf-8")
+    gate, before, after = (tmp_path / name for name in ("gate", "before", "after"))
+    records: list[Mapping[str, object]] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_kill(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the probe, and keep the probe's first answer."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(before, 45.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            records.append({"pid": pid, "jobFlags": record.get("jobFlags")})
+
+        result = _run_host(
+            _kept_probe_shell(script, gate, before, after),
+            close_stdin=False,
+            replies=({"op": "kill"},),
+            ready_probe=pin_before_kill,
+            timeout=60.0,
+        )
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert len(records) == 1, result
+        probe = records[0]["pid"]
+        assert isinstance(probe, int), records
+        # The probe has no console, so it outlived the session.
+        assert watch.survivors(15.0, expected=[probe]) == [probe], result.stderr
+        gate.touch()
+        answer: object = json.loads(_read_when_published(after, 30.0))
+        assert isinstance(answer, dict), answer
+        away = answer.get("away")
+        if isinstance(away, int):
+            watch.pin(away)
+        records.append(
+            {key: answer.get(key) for key in ("jobFlags", "away", "refused")}
+        )
+    tracked, freed = records[0].get("jobFlags"), records[1].get("jobFlags")
+    # While the session ran, the probe's job held its children ...
+    assert isinstance(tracked, int) and not tracked & _SILENT_BREAKAWAY_LIMIT, records
+    # ... and once it ended, the job lets them and the probe go.
+    assert isinstance(freed, int) and freed & _BREAKAWAY_LIMITS == _BREAKAWAY_LIMITS, (
+        records,
+        result.stderr,
+    )
+    assert records[1].get("refused") is None and isinstance(away, int), records
 
 
 def _spawn_closing_grandchild(

@@ -2594,7 +2594,10 @@ if sys.platform == "win32":
         silently or by asking, stops here and stays tracked (MSYS programs ask
         for one whenever their job permits it). The job below permits an
         explicit breakaway, so a program under the shell that asks for one is
-        not refused, as it was not before; it only moves up into the root.
+        not refused; it moves up into the root. From the root itself, which
+        holds what MSYS runs and what asked once already, a breakaway is
+        refused while the session runs: that is the price of tracking MSYS.
+        ``_permit_breakaway`` lifts it once the sweep is over.
         """
         tracking = _create_job_with_limits(0)
         try:
@@ -2603,6 +2606,27 @@ if sys.platform == "win32":
             _close(tracking)
             raise
         return tracking, breakaway
+
+    def _permit_breakaway(jobs: Sequence[int]) -> None:
+        """Let the processes in ``jobs``, and their future children, leave them.
+
+        Run once the sweep is over: what the session kept then behaves as it
+        did before the session tracked it, and a program that asks to break
+        away is no longer refused. A job that refuses the change is diagnosed
+        and left as it is.
+        """
+        limits = _JOB_LIMITS()
+        limits.LimitFlags = (
+            _JOB_OBJECT_LIMIT_BREAKAWAY_OK | _JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+        )
+        for job in jobs:
+            if job and not _SetInformationJobObject(
+                job,
+                _JOBOBJECT_EXTENDED_LIMIT_CLASS,
+                ctypes.byref(limits),
+                ctypes.sizeof(limits),
+            ):
+                diagnose(f"could not release a tracking job: {_last_error()}")
 
     def _terminate_process(process: int) -> None:
         """Terminate an uncontained suspended child and wait for cleanup."""
@@ -3468,11 +3492,15 @@ if sys.platform == "win32":
             answered. When the pseudoconsole's host never became known, the
             attached programs cannot be told apart, so one sweep runs after
             the drain and ends them with the others: a sweep before the close
-            would take their close event away.
+            would take their close event away. Once the sweep is over, the
+            tracking jobs permit every breakaway again, so what the session
+            kept, and what it starts later, behaves as before the session
+            tracked it.
             """
             deadline = started + _SWEEP_DEADLINE
             with self._handles:
                 job = self._tracking_job
+                breakaway_job = self._breakaway_job
                 pseudoconsole_host = self._pseudoconsole_host
             if not job:
                 return
@@ -3485,6 +3513,7 @@ if sys.platform == "win32":
                 )
             drained.wait(max(0.0, deadline - _SWEEP_LAST_ROUND - time.monotonic()))
             _sweep_descendants(job, deadline, pseudoconsole_host)
+            _permit_breakaway((job, breakaway_job))
 
         def _release(self) -> None:
             """Close every handle the session still owns, exactly once."""
@@ -3518,11 +3547,11 @@ if sys.platform == "win32":
             _close(job)
             sweep = self._sweep_thread
             if sweep is not None and sweep.is_alive():
-                # The sweep may still use the handle; see the input pump above.
-                diagnose("sweep still running; its job handle closes with the host")
+                # The sweep may still use the handles; see the input pump above.
+                diagnose("sweep still running; its job handles close with the host")
             else:
                 _close(tracking_job)
-            _close(breakaway_job)
+                _close(breakaway_job)
             _close(self._process)
             self._process = 0
 
