@@ -6336,3 +6336,267 @@ def test_windows_terminal_packages_name_installed_folders() -> None:
         assert _MODULE._WINDOWS_TERMINAL_PACKAGE.fullmatch(name), name
         assert os.path.isdir(root), root
         assert name.lower() in root.lower(), (name, root)
+
+
+# Scratch probe for the windowed-program flake. Never to be merged.
+
+"""The windowed program before the change, as fork run 40062908190 ran it."""
+_OLD_WINDOWED_CONSOLE_PROGRAM = (
+    "import ctypes, json, os, sys, threading, time\n"
+    "user32 = ctypes.WinDLL('user32', use_last_error=True)\n"
+    "user32.FindWindowW.restype = ctypes.c_void_p\n"
+    "title = f'session-end window {os.getpid()}'\n"
+    "threading.Thread(\n"
+    "    target=lambda: user32.MessageBoxW(None, 'unsaved work', title, 0),\n"
+    "    daemon=True,\n"
+    ").start()\n"
+    "deadline = time.monotonic() + 30\n"
+    "window = None\n"
+    "while not window and time.monotonic() < deadline:\n"
+    "    time.sleep(0.05)\n"
+    "    window = user32.FindWindowW(None, title)\n"
+    "visible = bool(window) and bool(user32.IsWindowVisible(ctypes.c_void_p(window)))\n"
+    "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump({'pid': os.getpid(), 'visible': visible}, stream)\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(120)\n"
+)
+
+"""The line of both programs that shows their message box."""
+_MESSAGE_BOX_TARGET = (
+    "    target=lambda: user32.MessageBoxW(None, 'unsaved work', title, 0),\n"
+)
+
+"""A window created hidden that shows two seconds later, then pumps messages."""
+_LATE_WINDOW = (
+    "import ctypes.wintypes\n"
+    "def show_late():\n"
+    "    create = user32.CreateWindowExW\n"
+    "    create.restype = ctypes.c_void_p\n"
+    "    create.argtypes = (\n"
+    "        ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32,\n"
+    "        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,\n"
+    "        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,\n"
+    "    )\n"
+    "    window = create(\n"
+    "        0, 'STATIC', title, 0x00CF0000, 100, 100, 320, 200,\n"
+    "        None, None, None, None,\n"
+    "    )\n"
+    "    time.sleep(2.0)\n"
+    "    user32.ShowWindow(ctypes.c_void_p(window), 5)\n"
+    "    message = ctypes.wintypes.MSG()\n"
+    "    while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:\n"
+    "        user32.TranslateMessage(ctypes.byref(message))\n"
+    "        user32.DispatchMessageW(ctypes.byref(message))\n"
+)
+
+"""Time how long a message box is findable before it is visible, in ms."""
+_RACE_PROGRAM = (
+    "import ctypes, json, os, sys, threading, time\n"
+    "user32 = ctypes.WinDLL('user32', use_last_error=True)\n"
+    "user32.FindWindowW.restype = ctypes.c_void_p\n"
+    "title = f'race window {os.getpid()}'\n"
+    "threading.Thread(\n"
+    "    target=lambda: user32.MessageBoxW(None, 'unsaved work', title, 0),\n"
+    "    daemon=True,\n"
+    ").start()\n"
+    "begin = time.perf_counter()\n"
+    "found = shown = None\n"
+    "hidden = 0\n"
+    "while shown is None and time.perf_counter() < begin + 30:\n"
+    "    window = user32.FindWindowW(None, title)\n"
+    "    if window:\n"
+    "        now = time.perf_counter()\n"
+    "        if found is None:\n"
+    "            found = now\n"
+    "        if user32.IsWindowVisible(ctypes.c_void_p(window)):\n"
+    "            shown = now\n"
+    "        else:\n"
+    "            hidden += 1\n"
+    "record = {\n"
+    "    'found': None if found is None else round((found - begin) * 1000, 2),\n"
+    "    'shown': None if shown is None else round((shown - begin) * 1000, 2),\n"
+    "    'hiddenPolls': hidden,\n"
+    "}\n"
+    "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump(record, stream)\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(120)\n"
+)
+
+
+def _scratch_with_late_window(program: str) -> str:
+    """Return ``program`` with its message box replaced by a late window."""
+    assert program.count("threading.Thread(\n") == 1
+    assert program.count(_MESSAGE_BOX_TARGET) == 1
+    return program.replace(
+        "threading.Thread(\n", _LATE_WINDOW + "threading.Thread(\n"
+    ).replace(_MESSAGE_BOX_TARGET, "    target=show_late,\n")
+
+
+def _scratch_with_slow_message_box(program: str, seconds: float) -> str:
+    """Return ``program`` with its message box shown ``seconds`` late."""
+    assert program.count(_MESSAGE_BOX_TARGET) == 1
+    return program.replace(
+        _MESSAGE_BOX_TARGET,
+        f"    target=lambda: (time.sleep({seconds}), "
+        "user32.MessageBoxW(None, 'unsaved work', title, 0)),\n",
+    )
+
+
+def _scratch_run_direct(path: Path, program: str) -> dict[str, Any]:
+    """Run ``program`` in a console of its own, outside any session; return its record."""
+    process = subprocess.Popen(
+        [getattr(sys, "_base_executable", sys.executable), "-c", program, str(path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    )
+    try:
+        record = json.loads(_read_when_published(path, 90.0))
+    finally:
+        process.kill()
+        process.wait(10.0)
+    assert isinstance(record, dict), record
+    return record
+
+
+def _scratch_report(capsys: pytest.CaptureFixture[str], line: str) -> None:
+    """Print one probe line to the job log, past pytest's capture."""
+    with capsys.disabled():
+        print(f"\n[windowed-probe] {line}", flush=True)
+
+
+def _scratch_reading(monkeypatch: pytest.MonkeyPatch, seen: list[str]) -> None:
+    """Make the probe's reads also note what each published file held."""
+    read = _read_when_published
+
+    def reporting(path: Path, timeout: float) -> str:
+        """Read as the probe does, and note the file's name and text."""
+        started = time.monotonic()
+        text = read(path, timeout)
+        seen.append(f"{path.name}={text} after {time.monotonic() - started:.1f}s")
+        return text
+
+    monkeypatch.setattr(sys.modules[__name__], "_read_when_published", reporting)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+@pytest.mark.parametrize("attempt", range(10))
+def test_scratch_windowed_program_repeats(
+    tmp_path: Path,
+    shutdown: str,
+    attempt: int,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Repeat the windowed-program session end and log every record it read."""
+    seen: list[str] = []
+    _scratch_reading(monkeypatch, seen)
+    started = time.monotonic()
+    try:
+        result, published, survivors = _run_published_program(
+            tmp_path,
+            shutdown,
+            _WINDOWED_CONSOLE_PROGRAM,
+            "subprocess.CREATE_NEW_CONSOLE",
+            "visible",
+            deadline=_WINDOW_DEADLINE,
+            announces_start=True,
+        )
+    finally:
+        _scratch_report(
+            capsys,
+            f"repeat {attempt} {shutdown}: {seen} in {time.monotonic() - started:.1f}s",
+        )
+    assert survivors == published, result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_scratch_message_box_race(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measure whether a message box is findable before it is visible.
+
+    The old program read the visibility once, at the first find, polling
+    every 50 ms. Its records over 40 runs say how often it published a box
+    as not visible; the tight loop over 30 runs says for how long a box is
+    findable and hidden.
+    """
+    old: list[bool] = []
+    for index in range(40):
+        record = _scratch_run_direct(
+            tmp_path / f"old-{index}.json", _OLD_WINDOWED_CONSOLE_PROGRAM
+        )
+        old.append(record.get("visible") is True)
+    hidden: list[object] = []
+    for index in range(30):
+        record = _scratch_run_direct(tmp_path / f"race-{index}.json", _RACE_PROGRAM)
+        found, shown = record.get("found"), record.get("shown")
+        hidden.append(
+            (round(shown - found, 2), record.get("hiddenPolls"))
+            if isinstance(found, float) and isinstance(shown, float)
+            else record
+        )
+    _scratch_report(
+        capsys,
+        f"old program not visible in {old.count(False)} of {len(old)} runs; "
+        f"(ms findable and hidden, hidden polls) per run: {hidden}",
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_scratch_window_found_before_it_shows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A window found hidden that shows 2 s later: old red, new green."""
+    old = _scratch_run_direct(
+        tmp_path / "old.json", _scratch_with_late_window(_OLD_WINDOWED_CONSOLE_PROGRAM)
+    )
+    new = _scratch_run_direct(
+        tmp_path / "new.json", _scratch_with_late_window(_WINDOWED_CONSOLE_PROGRAM)
+    )
+    _scratch_report(capsys, f"late window: old {old}; new {new}")
+    assert old.get("visible") is False, old
+    assert new.get("found") is True, new
+    assert new.get("visible") is True, new
+    waited = new.get("waited")
+    assert isinstance(waited, float), new
+    assert waited >= 2.0, new
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("variant", ("late-window", "slow-message-box"))
+def test_scratch_session_end_keeps_a_window_that_shows_late(
+    tmp_path: Path,
+    variant: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The whole session end with a window that shows late: 2 s hidden, or 35 s."""
+    program = (
+        _scratch_with_late_window(_WINDOWED_CONSOLE_PROGRAM)
+        if variant == "late-window"
+        else _scratch_with_slow_message_box(_WINDOWED_CONSOLE_PROGRAM, 35.0)
+    )
+    seen: list[str] = []
+    _scratch_reading(monkeypatch, seen)
+    started = time.monotonic()
+    try:
+        result, published, survivors = _run_published_program(
+            tmp_path,
+            "natural-exit",
+            program,
+            "subprocess.CREATE_NEW_CONSOLE",
+            "visible",
+            deadline=_WINDOW_DEADLINE,
+            announces_start=True,
+        )
+    finally:
+        _scratch_report(
+            capsys,
+            f"{variant}: {seen} in {time.monotonic() - started:.1f}s",
+        )
+    assert survivors == published, result.stderr
