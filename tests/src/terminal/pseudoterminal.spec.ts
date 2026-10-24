@@ -1125,6 +1125,20 @@ describe("ConHost launch", () => {
         ).type,
       ).toBe("launch");
     });
+
+    it("counts the text that starts the command, as its message says", () => {
+      // The limit is cmd's whole line, so a command that alone fits it can
+      // still be refused. This one is 8,100 characters after quoting, as the
+      // ConPTY host quotes it.
+      const args = ["x".repeat(8100 - program.length - 1)],
+        command = [program, ...args].map(quoteWindowsArgument).join(" ");
+      expect(command).toHaveLength(8100);
+      expect(command.length).toBeLessThanOrEqual(CONHOST_LINE_LIMIT);
+      expect(conhostLaunch(program, args, exitCodeFile)).toEqual({
+        reason: "too-long",
+        type: "refusal",
+      });
+    });
   });
 
   /**

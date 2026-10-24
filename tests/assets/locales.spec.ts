@@ -306,7 +306,7 @@ describe("PluginLocales", () => {
   it("names every cause of a refused ConHost command, with its limit, in all 49 locales", async () => {
     const { errors } = await PluginLocales.RESOURCES.en.translation();
     expect(errors["conhost-cannot-pass"]).toBe(
-      "ConHost cannot start this command: it contains a line break, its $t(generic.executable) path contains a quote, or it is longer than {{limit}} characters after quoting. Change the $t(generic.profile), or open it with the ConPTY backend.",
+      "ConHost cannot start this command: it contains a line break, its $t(generic.executable) path contains a quote, or it is too long for cmd, which runs lines of at most {{limit}} characters, including the text that starts the command. Change the $t(generic.profile).",
     );
     for (const language of PluginLocales.LANGUAGES) {
       const translation = await PluginLocales.RESOURCES[language].translation();
