@@ -1873,14 +1873,25 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
     };
   }
 
+  // The spies of `bed` that watch the leaves.
+  function leafSpies({ allocate, left, right, activate, reveal, pin }: Bed) {
+    return [allocate, left, right, activate, reveal, pin];
+  }
+
   function expectNoLeaf(spies: Bed): void {
-    const { allocate, left, right, activate, reveal, pin } = spies;
-    expect(allocate).not.toHaveBeenCalled();
-    expect(left).not.toHaveBeenCalled();
-    expect(right).not.toHaveBeenCalled();
-    expect(activate).not.toHaveBeenCalled();
-    expect(reveal).not.toHaveBeenCalled();
-    expect(pin).not.toHaveBeenCalled();
+    for (const spy of leafSpies(spies)) expect(spy).not.toHaveBeenCalled();
+  }
+
+  // The opening notice names the program by this title.
+  function expectNoticeTitle(spies: Bed, title: string): void {
+    const { t } = spies.context.language.value;
+    vi.mocked(t).mockClear();
+    const [message] = spies.notice.mock.calls[0] ?? [];
+    message?.();
+    expect(t).toHaveBeenCalledExactlyOnceWith("notices.spawning-terminal", {
+      interpolation: { escapeValue: false },
+      title,
+    });
   }
 
   // Two terminal tabs: "second" opened last, then the user went back to "first".
@@ -1894,16 +1905,7 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
     ]);
     await TerminalView.spawn(context, TerminalView.State.DEFAULT, second.leaf);
     await TerminalView.spawn(context, TerminalView.State.DEFAULT, first.leaf);
-    for (const spy of [
-      spies.allocate,
-      spies.left,
-      spies.right,
-      spies.activate,
-      spies.reveal,
-      spies.pin,
-    ]) {
-      spy.mockClear();
-    }
+    for (const spy of leafSpies(spies)) spy.mockClear();
     return { first, second };
   }
 
@@ -2008,8 +2010,7 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
   ])(
     "names the program by %s in the opening notice",
     async (_, profile, userTitle, title) => {
-      const spies = bed({ noticeTimeout: 7 }),
-        { t } = spies.context.language.value;
+      const spies = bed({ noticeTimeout: 7 });
 
       await TerminalView.spawn(
         spies.context,
@@ -2021,13 +2022,7 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
         7,
         spies.context,
       );
-      vi.mocked(t).mockClear();
-      const [message] = spies.notice.mock.calls[0] ?? [];
-      message?.();
-      expect(t).toHaveBeenCalledExactlyOnceWith("notices.spawning-terminal", {
-        interpolation: { escapeValue: false },
-        title,
-      });
+      expectNoticeTitle(spies, title);
     },
   );
 
@@ -2036,9 +2031,7 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
 
     await TerminalView.spawn(spies.context, opening());
 
-    expect(spies.notice.mock.invocationCallOrder[0] ?? Infinity).toBeLessThan(
-      spies.open.mock.invocationCallOrder[0] ?? -Infinity,
-    );
+    expect(spies.notice).toHaveBeenCalledBefore(spies.open);
   });
 
   it("settles once the program has started", async () => {
@@ -2213,16 +2206,10 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
   });
 
   describe("a tab restored with the program's state", () => {
-    class RestoredView extends TerminalView {
-      public override startEmulator(focus: boolean): void {
-        super.startEmulator(focus);
-      }
-    }
-
     function restore(spies: Bed, state: TerminalView.State) {
       const leaf = new WorkspaceLeaf(),
         detach = vi.fn(),
-        view = new RestoredView(spies.context, leaf);
+        view = new TerminalView(spies.context, leaf);
       Object.assign(leaf, { detach });
       view.app = spies.context.app;
       Object.defineProperty(view, "state", { value: state });
@@ -2231,10 +2218,9 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
 
     it("opens the program once and closes the tab", async () => {
       const spies = bed(),
-        { t } = spies.context.language.value,
         { detach, view } = restore(spies, opening({ userTitle: "Restored" }));
 
-      view.startEmulator(false);
+      view["startEmulator"](false);
       await tick();
 
       expect(spies.open).toHaveBeenCalledExactlyOnceWith(
@@ -2244,13 +2230,7 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
       );
       expect(detach).toHaveBeenCalledOnce();
       expect(view.contentEl.childElementCount).toBe(0);
-      vi.mocked(t).mockClear();
-      const [message] = spies.notice.mock.calls[0] ?? [];
-      message?.();
-      expect(t).toHaveBeenCalledExactlyOnceWith("notices.spawning-terminal", {
-        interpolation: { escapeValue: false },
-        title: "Restored",
-      });
+      expectNoticeTitle(spies, "Restored");
     });
 
     it("reports a failed start once and still closes the tab", async () => {
@@ -2258,7 +2238,7 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
         { detach, view } = restore(spies, opening());
       spies.open.mockRejectedValue(new Error("no shell"));
 
-      view.startEmulator(false);
+      view["startEmulator"](false);
       await tick();
 
       expect(spies.report).toHaveBeenCalledOnce();
@@ -2278,11 +2258,10 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
       userTitle = "",
       rawTitle = "",
     }: Shown): string {
-      const { context, settings } = makeTerminalContext({
+      const { context } = makeTerminalContext({
           showTerminalTabPrefix: false,
         }),
         view = new TerminalView(context, new WorkspaceLeaf());
-      settings.showTerminalTabPrefix = false;
       Object.defineProperty(view, "state", {
         value: { ...TerminalView.State.DEFAULT, profile, userTitle },
       });
