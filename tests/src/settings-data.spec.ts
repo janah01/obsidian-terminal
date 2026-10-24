@@ -169,6 +169,67 @@ describe("src/settings-data.ts", () => {
     expect(hasFailed(LocalSettings.fix({}).value)).toBe(false);
   });
 
+  describe("local settings whose storage key is not found", () => {
+    // The key needs a private API of Obsidian, which may change.
+    function failingLocalSettings(): {
+      readonly getItem: ReturnType<typeof vi.fn>;
+      readonly manager: StorageSettingsManager<LocalSettings>;
+      readonly setItem: ReturnType<typeof vi.fn>;
+    } {
+      const getItem = vi.fn(),
+        setItem = vi.fn(),
+        context = {
+          app: {
+            get appId(): never {
+              throw new Error("appId is gone");
+            },
+          },
+          language: {
+            onLoaded: Promise.resolve(),
+            value: { t: (key: string): string => key },
+          },
+          manifest: { id: "terminal" },
+        } as unknown as PluginContext,
+        manager = new StorageSettingsManager(context, LocalSettings.fix, {
+          getItem,
+          setItem,
+        } as unknown as Storage);
+      return { getItem, manager, setItem };
+    }
+
+    it("load with the marker, the defaults and no report", async () => {
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => {}),
+        warn = vi.spyOn(console, "warn").mockImplementation(() => {}),
+        errors = vi.spyOn(console, "error").mockImplementation(() => {}),
+        { getItem, manager, setItem } = failingLocalSettings();
+      manager.load();
+      try {
+        await manager.onLoaded;
+        await manager.write();
+
+        expect(warn).toHaveBeenCalledWith(
+          "errors.private-API-changed",
+          expect.any(Error),
+        );
+        expect(StorageSettingsManager.hasFailed(manager.value)).toBe(true);
+        expect(manager.value).toMatchObject({
+          hasUsedIntegratedTerminal: false,
+          lastReadChangelogVersion:
+            LocalSettings.fix(null).value.lastReadChangelogVersion,
+          recovery: {},
+        });
+        expect(errors).not.toHaveBeenCalled();
+        expect(getItem).not.toHaveBeenCalled();
+        expect(setItem).not.toHaveBeenCalled();
+      } finally {
+        manager.unload();
+        for (const spy of [debug, warn, errors]) {
+          spy.mockRestore();
+        }
+      }
+    });
+  });
+
   it("LocalSettings.fix ensures lastReadChangelogVersion exists and is a string", () => {
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
     const fixed = LocalSettings.fix({});
