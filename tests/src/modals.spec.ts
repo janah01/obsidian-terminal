@@ -6,6 +6,8 @@ import {
 import * as doctor from "../../src/terminal/win32-doctor.js";
 import { Keymap, Scope } from "../mocks/obsidian.js";
 import { Settings } from "../../src/settings-data.js";
+import { DropdownComponent, Setting } from "obsidian";
+import { UpdatableUI } from "@polyipseity/obsidian-plugin-library";
 import {
   DEFAULT_TERMINAL_OPTIONS,
   PROFILE_PRESETS,
@@ -1128,5 +1130,308 @@ describe("keymapping editor key recorder", () => {
     press({ ctrlKey: true, key: "p" });
     expect(runHotkey).toHaveBeenCalledOnce();
     expect(callback).not.toHaveBeenCalled();
+  });
+});
+
+describe("keymapping editor argument", () => {
+  const seeded = {
+    ...Settings.Keymapping.DEFAULT,
+    ctrl: true,
+    key: "k",
+  } satisfies Settings.Keymapping;
+  let rows: ReturnType<typeof capturePythonRows> = new Map(),
+    choices = new WeakMap<Setting, (value: string) => unknown>();
+
+  beforeEach(() => {
+    rows = capturePythonRows();
+    choices = new WeakMap();
+    const newSetting = vi.spyOn(UpdatableUI.prototype, "newSetting"),
+      render = newSetting.getMockImplementation();
+    if (!render) throw new Error("Settings rows not captured");
+    // UpdatableUI takes the change handler off every control before it draws
+    // a row again. The shared rows keep theirs, so a handler left from an
+    // earlier draw would hide a field that no longer saves anything.
+    newSetting.mockImplementation(function (
+      this: UpdatableUI,
+      element,
+      configure,
+    ) {
+      return render.call(this, element, (setting) => {
+        for (const row of rows.values()) {
+          if (row !== setting) continue;
+          for (const { inputEl } of [...row.texts, ...row.textAreas]) {
+            inputEl.oninput = null;
+          }
+        }
+        configure(setting);
+      });
+    });
+    // As Obsidian's: setting the value is not a choice of the user's and
+    // calls nothing. The shared mock's would, and the editor would loop.
+    vi.spyOn(Setting.prototype, "addDropdown").mockImplementation(function (
+      this: Setting,
+      configure,
+    ) {
+      const dropdown = new DropdownComponent(this.settingEl);
+      vi.spyOn(dropdown, "onChange").mockImplementation((callback) => {
+        choices.set(this, callback);
+        return dropdown;
+      });
+      configure(dropdown);
+      return this;
+    });
+  });
+  afterEach(() => {
+    const keymap = new Keymap();
+    for (const scope of keymap.getScopes()) {
+      keymap.popScope(scope);
+    }
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  function row(name: string): NonNullable<ReturnType<typeof rows.get>> {
+    const found = rows.get(name);
+    if (!found) throw new Error(`Row missing: ${name}`);
+    return found;
+  }
+
+  async function openEditor(mapping: Settings.Keymapping): Promise<{
+    readonly callback: ReturnType<
+      typeof vi.fn<(value: Settings.Keymapping) => void>
+    >;
+    readonly modal: KeymappingEditModal;
+    readonly saved: () => Settings.Keymapping | undefined;
+    readonly choose: (name: string, value: string) => Promise<void>;
+    readonly chooseAction: (action: Settings.KeymappingAction) => Promise<void>;
+    readonly numberField: () => HTMLInputElement;
+    readonly textField: () => HTMLTextAreaElement;
+    readonly typeNumber: (value: string) => HTMLInputElement;
+    readonly typeText: (value: string) => HTMLTextAreaElement;
+  }> {
+    const context = await pythonSettingsContext(),
+      callback = vi.fn<(value: Settings.Keymapping) => void>(),
+      modal = new KeymappingEditModal(context, mapping, callback);
+    document.body.append(modal.contentEl);
+    modal.open();
+    // The argument row has no name.
+    const numberField = (): HTMLInputElement => {
+        const text = row("").texts[0];
+        if (!text) throw new Error("Number field missing");
+        return text.inputEl;
+      },
+      textArea = (): HTMLTextAreaElement => {
+        const area = row("").textAreas[0];
+        if (!area) throw new Error("Text field missing");
+        return area.inputEl;
+      },
+      choose = async (name: string, value: string): Promise<void> => {
+        const chosen = choices.get(row(name));
+        if (!chosen) throw new Error(`Dropdown missing: ${name}`);
+        await chosen(value);
+      };
+    return {
+      callback,
+      choose,
+      chooseAction: async (action) =>
+        choose("components.keymappings.action", action),
+      modal,
+      numberField,
+      saved: () => callback.mock.lastCall?.[0],
+      textField: textArea,
+      typeNumber: (value) => typePythonValue(row("").texts[0], value),
+      typeText: (value) => {
+        const area = textArea();
+        area.value = value;
+        area.dispatchEvent(new Event("input"));
+        return area;
+      },
+    };
+  }
+
+  it("saves text typed after a new mapping changes to Send text", async () => {
+    const editor = await openEditor(seeded);
+    await editor.chooseAction("sendText");
+    editor.typeText("hello");
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "sendText",
+      actionArg: "hello",
+    });
+    editor.modal.close();
+
+    const saved = editor.saved();
+    if (!saved) throw new Error("Nothing saved");
+    const reopened = await openEditor(saved);
+    expect(reopened.textField().value).toBe("hello");
+    expect(reopened.textField().style.display).toBe("");
+    reopened.modal.close();
+  });
+
+  it("saves text typed after Scroll lines changes to Send text", async () => {
+    const editor = await openEditor({
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 5,
+    });
+    await editor.chooseAction("sendText");
+    expect(editor.saved()).toMatchObject({ action: "sendText", actionArg: "" });
+    editor.typeText("hello");
+    expect(editor.saved()).toMatchObject({
+      action: "sendText",
+      actionArg: "hello",
+    });
+    editor.modal.close();
+  });
+
+  it("saves a number typed after Send text changes to Scroll lines", async () => {
+    const editor = await openEditor({
+      ...seeded,
+      action: "sendText",
+      actionArg: "abc",
+    });
+    await editor.chooseAction("scrollLines");
+    expect(editor.saved()).toMatchObject({
+      action: "scrollLines",
+      actionArg: 1,
+    });
+    expect(editor.numberField().value).toBe("1");
+    editor.typeNumber("5");
+    expect(editor.saved()).toMatchObject({
+      action: "scrollLines",
+      actionArg: 5,
+    });
+    editor.modal.close();
+  });
+
+  it("drops the argument and hides its row when the new action takes none", async () => {
+    const editor = await openEditor({
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 3,
+    });
+    await editor.chooseAction("ignore");
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "ignore",
+      actionArg: null,
+    });
+    expect(row("").settingEl.style.display).toBe("none");
+    editor.modal.close();
+  });
+
+  it("keeps the argument from every action to every other only when its kind stays", async () => {
+    const seeds = { number: 3, string: "abc" } as const,
+      defaults = { number: 1, string: "" } as const;
+    for (const from of Settings.KEY_MAPPING_ACTIONS) {
+      const fromType = Settings.ACTION_ARG_TYPES[from],
+        start = Settings.Keymapping.fix({
+          ...seeded,
+          action: from,
+          actionArg: fromType === null ? null : seeds[fromType],
+        }).value;
+      for (const to of Settings.KEY_MAPPING_ACTIONS) {
+        // A dropdown reports no change when the same option is chosen.
+        if (to === from) continue;
+        const toType = Settings.ACTION_ARG_TYPES[to],
+          editor = await openEditor(start);
+        await editor.chooseAction(to);
+        const saved = editor.saved(),
+          fixed = Settings.Keymapping.fix(saved);
+        expect(saved, `${from} -> ${to}`).toStrictEqual({
+          ...start,
+          action: to,
+          actionArg:
+            toType === null
+              ? null
+              : toType === fromType
+                ? seeds[toType]
+                : defaults[toType],
+        });
+        // Loading the settings again would report nothing to repair.
+        expect(fixed.valid, `${from} -> ${to}`).toBe(true);
+        expect(fixed.value, `${from} -> ${to}`).toStrictEqual(saved);
+        editor.modal.close();
+      }
+    }
+  });
+
+  it("leaves only the shown field saving after the action changes back and forth", async () => {
+    const editor = await openEditor({
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 3,
+    });
+    await editor.chooseAction("sendText");
+    await editor.chooseAction("scrollLines");
+    editor.callback.mockClear();
+    editor.typeText("zzz");
+    expect(editor.callback).not.toHaveBeenCalled();
+    editor.typeNumber("7");
+    expect(editor.saved()).toMatchObject({
+      action: "scrollLines",
+      actionArg: 7,
+    });
+
+    await editor.chooseAction("sendText");
+    editor.callback.mockClear();
+    editor.typeNumber("8");
+    expect(editor.callback).not.toHaveBeenCalled();
+    editor.typeText("hi");
+    expect(editor.saved()).toMatchObject({
+      action: "sendText",
+      actionArg: "hi",
+    });
+    editor.modal.close();
+  });
+
+  it("keeps both a key recorded and the action chosen while recording", async () => {
+    const editor = await openEditor(seeded);
+    row("components.keymappings.record").buttons[0]?.buttonEl.click();
+    await editor.chooseAction("sendText");
+    new Keymap().onKeyEvent(
+      new KeyboardEvent("keydown", { altKey: true, key: "j" }),
+    );
+    editor.typeText("hello");
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "sendText",
+      actionArg: "hello",
+      alt: true,
+      ctrl: false,
+      key: "j",
+    });
+    editor.modal.close();
+  });
+
+  it("keeps the new argument when the platform changes after the action", async () => {
+    const editor = await openEditor(seeded);
+    await editor.chooseAction("sendText");
+    editor.typeText("hello");
+    await editor.choose("components.keymappings.platform", "darwin");
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "sendText",
+      actionArg: "hello",
+      platform: "darwin",
+    });
+    editor.modal.close();
+  });
+
+  it("hands each save a copy that later edits do not change", async () => {
+    const editor = await openEditor(seeded);
+    await editor.chooseAction("scrollLines");
+    const first = editor.saved();
+    if (!first) throw new Error("Nothing saved");
+    Object.assign(first, { actionArg: 99 });
+    await editor.choose("components.keymappings.platform", "linux");
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 1,
+      platform: "linux",
+    });
+    expect(first.actionArg).toBe(99);
+    editor.modal.close();
   });
 });

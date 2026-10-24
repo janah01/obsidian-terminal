@@ -1909,9 +1909,17 @@ export class KeymappingEditModal extends Modal {
           }
           dd.setValue(data.action);
           dd.onChange(async (val) => {
-            data.action = Settings.isKeymappingAction(val)
+            const action = Settings.isKeymappingAction(val)
               ? val
               : Settings.Keymapping.DEFAULT.action;
+            // The new action can take another kind of argument. The fixer
+            // keeps an argument of the right kind and puts in its default
+            // otherwise, as loading the settings would.
+            const { actionArg } = Settings.Keymapping.fix({
+              ...data,
+              action,
+            }).value;
+            Object.assign(data, { action, actionArg });
             await this.postMutate();
           });
         });
