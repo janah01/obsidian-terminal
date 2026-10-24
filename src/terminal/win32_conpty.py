@@ -707,6 +707,12 @@ _PID_LIST_CAPACITY = 64
 _PID_LIST_ATTEMPTS = 8
 """Rounds of the sweep: a kept program may start another console program."""
 _SWEEP_ROUNDS = 3
+"""Console check answer: the process has no console at all."""
+_CONSOLE_NONE = "none"
+"""Console check answer: the process is attached to the session's pseudoconsole."""
+_CONSOLE_ATTACHED = "attached"
+"""Console check answer: the process has a console of its own."""
+_CONSOLE_OWN = "own"
 
 
 class DescendantRecord(NamedTuple):
@@ -775,18 +781,21 @@ def image_subsystem(header: bytes) -> str:
 
 def select_descendants_to_end(
     records: Sequence[DescendantRecord],
-    has_console: Callable[[Sequence[int]], Mapping[int, bool]],
+    consoles: Callable[[Sequence[int]], Mapping[int, str]],
 ) -> list[int]:
     """Choose the tracked processes that end with the session.
 
     A process ends when its image is a console program, no GUI program above
-    it still runs, and ``has_console`` says it has a console: a hidden one, a
-    window of its own, or the pseudoconsole. Parent links are followed only
-    through records created no later than the child, so a reused parent PID
-    breaks the chain, and an orphan whose launcher has exited has no ancestor
-    at all. GUI programs, programs whose image cannot be read, console
-    programs without a console (detached ones) and anything ``has_console``
-    leaves unanswered are kept.
+    it still runs, and ``consoles`` answers ``own``: it has a console of its
+    own, hidden or with a window. A process attached to the session's
+    pseudoconsole (``attached``) is left to that console host, which closes
+    it with the pseudoconsole and gives it the usual time to answer; the
+    programs it left in consoles of their own are not spared on its account.
+    Parent links are followed only through records created no later than the
+    child, so a reused parent PID breaks the chain, and an orphan whose
+    launcher has exited has no ancestor at all. GUI programs, programs whose
+    image cannot be read, console programs without a console (``none``, the
+    detached ones) and anything ``consoles`` leaves unanswered are kept.
     """
     by_pid = {record.pid: record for record in records}
 
@@ -810,8 +819,8 @@ def select_descendants_to_end(
     ]
     if not candidates:
         return []
-    consoles = has_console(candidates)
-    return [pid for pid in candidates if consoles.get(pid) is True]
+    kinds = consoles(candidates)
+    return [pid for pid in candidates if kinds.get(pid) == _CONSOLE_OWN]
 
 
 def job_process_ids(
@@ -1666,20 +1675,21 @@ if sys.platform == "win32":
     _POLL_MILLISECONDS = 100
     """Milliseconds a contained child may take to exit before it is terminated."""
     _TERMINATE_GRACE_MILLISECONDS = 2000
-    """Seconds the end-of-session sweep gives the pseudoconsole to drain first.
+    """Seconds the end-of-session sweep keeps for its last round.
 
     Programs still attached to the pseudoconsole get ``CTRL_CLOSE_EVENT`` when
     it closes and normally end within milliseconds, which ends the drain; the
-    sweep starts when the drain ends or when this grace is up, whichever comes
-    first, so a program that ignores the event does not hold the session open
-    for the console host's own five-second timeout.
+    last sweep starts when the drain ends or when this much of the sweep's
+    deadline is left, whichever comes first, so a program that ignores the
+    event does not hold the sweep open for the console host's own
+    five-second timeout.
     """
-    _SWEEP_GRACE = 1.5
+    _SWEEP_LAST_ROUND = 1.0
     """Seconds from the start of ``_finish`` within which the sweep must be done.
 
-    The grace, the sweep and the control-reader stop have to fit inside the
-    five seconds the plugin waits for ``exit`` after a kill before it kills
-    the host itself.
+    The sweep and the control-reader stop have to fit inside the five seconds
+    the plugin waits for ``exit`` after a kill before it kills the host
+    itself.
     """
     _SWEEP_DEADLINE = 3.0
     """Seconds ``_finish`` waits for the sweep past its deadline before going on."""
@@ -2693,16 +2703,27 @@ if sys.platform == "win32":
             return None
         return int(host.value) & ~3
 
-    def _console_owners(handles: Mapping[int, int]) -> dict[int, bool]:
-        """Report which open processes have a console; leave the undecidable out."""
-        owners: dict[int, bool] = {}
+    def _console_kinds(
+        handles: Mapping[int, int], pseudoconsole_host: int
+    ) -> dict[int, str]:
+        """Say what console each open process has; leave the undecidable out.
+
+        A process whose console host is ``pseudoconsole_host`` is attached to
+        the session's pseudoconsole. While that host is unknown (zero), every
+        console counts as the process's own.
+        """
+        kinds: dict[int, str] = {}
         for pid, process in handles.items():
             host = _console_host_of(process)
             if host is None:
                 diagnose(f"could not tell whether {pid} has a console")
+            elif host == 0:
+                kinds[pid] = _CONSOLE_NONE
+            elif host == pseudoconsole_host:
+                kinds[pid] = _CONSOLE_ATTACHED
             else:
-                owners[pid] = host != 0
-        return owners
+                kinds[pid] = _CONSOLE_OWN
+        return kinds
 
     def _descendant_records(
         job: int, cache: dict[tuple[int, int], str], skip: Collection[int]
@@ -2744,12 +2765,14 @@ if sys.platform == "win32":
             handles[pid] = process
         return records, handles
 
-    def _sweep_descendants(job: int, deadline: float) -> None:
+    def _sweep_descendants(job: int, deadline: float, pseudoconsole_host: int) -> None:
         """End the session's tracked console programs within ``deadline``.
 
         ``select_descendants_to_end`` makes the choice; this function supplies
-        the processes, the console check and the terminations. What is left at
-        the deadline is diagnosed, and no error leaves this function.
+        the processes, the console check (``pseudoconsole_host`` tells the
+        attached programs apart, see ``_console_kinds``) and the terminations.
+        What is left at the deadline is diagnosed, and no error leaves this
+        function.
         """
         cache: dict[tuple[int, int], str] = {}
         handles: dict[int, int] = {}
@@ -2768,8 +2791,9 @@ if sys.platform == "win32":
             handles.update(opened)
             return select_descendants_to_end(
                 records,
-                lambda pids: _console_owners(
-                    {pid: handles[pid] for pid in pids if pid in handles}
+                lambda pids: _console_kinds(
+                    {pid: handles[pid] for pid in pids if pid in handles},
+                    pseudoconsole_host,
                 ),
             )
 
@@ -2983,6 +3007,9 @@ if sys.platform == "win32":
             self._tracking_job = 0
             self._breakaway_job = 0
             self._sweep_thread: threading.Thread | None = None
+            # The console host serving the pseudoconsole, once the shell has
+            # connected to it; the sweep leaves that host's clients to it.
+            self._pseudoconsole_host = 0
             self._process = 0
             self._thread = 0
             self._process_id = 0
@@ -3274,9 +3301,25 @@ if sys.platform == "win32":
             self._process = self._thread = self._process_id = 0
             _discard_child(child[0], child[1])
 
+        def _note_pseudoconsole_host(self) -> None:
+            """Record the pseudoconsole's console host once the shell has connected.
+
+            A process reports its creator's console host until it has
+            connected to a console of its own, so the shell's answer counts
+            only once it differs from this host's own. The sweep then tells
+            the programs attached to the pseudoconsole from the ones in
+            consoles of their own.
+            """
+            host = _console_host_of(self._process)
+            if host and host != _console_host_of(_GetCurrentProcess()):
+                with self._handles:
+                    self._pseudoconsole_host = host
+
         def _supervise(self) -> int:
             """Wait for the child to exit, or terminate it when asked to."""
             while not self._stopping.is_set():
+                if not self._pseudoconsole_host:
+                    self._note_pseudoconsole_host()
                 if (
                     _WaitForSingleObject(self._process, _POLL_MILLISECONDS)
                     == _WAIT_OBJECT_0
@@ -3305,15 +3348,14 @@ if sys.platform == "win32":
             must still be open; the joins below bound a host that never
             finishes.  Stopping the blocked stdin reader needs no drained
             output, so it runs concurrently to shorten the close path, and so
-            does the sweep of the tracked console programs: it waits for the
-            drain, which attached programs end by answering the close event,
-            but not longer than its grace.
+            does the sweep of the tracked console programs
+            (``_sweep_after_drain`` says when its rounds run).
             """
             started = time.monotonic()
             drained = threading.Event()
             sweep = threading.Thread(
                 target=self._sweep_after_drain,
-                args=(drained, started + _SWEEP_DEADLINE),
+                args=(drained, started),
                 name="conpty-sweep",
                 daemon=True,
             )
@@ -3343,19 +3385,35 @@ if sys.platform == "win32":
             )
             self._release()
 
-        def _sweep_after_drain(self, drained: threading.Event, deadline: float) -> None:
-            """Run the sweep once the output drain ends or the grace is up.
+        def _sweep_after_drain(self, drained: threading.Event, started: float) -> None:
+            """Sweep at once and again once the drain ends, inside the deadline.
 
-            Programs attached to the pseudoconsole get its close event first
-            and normally exit within milliseconds, which ends the drain. One
-            that ignores the event is swept after the grace instead of holding
-            the session open for the console host's own five-second timeout.
+            The programs attached to the pseudoconsole are not swept: the
+            console host closes them with the pseudoconsole and gives them its
+            usual time to answer the close event. So the first sweep ends the
+            console programs left in consoles of their own without waiting,
+            and the second, once the drain ends or when one round's worth of
+            the deadline is left, catches what a program started while it
+            answered. When the pseudoconsole's host never became known, the
+            attached programs cannot be told apart, so one sweep runs after
+            the drain and ends them with the others: a sweep before the close
+            would take their close event away.
             """
-            drained.wait(_SWEEP_GRACE)
+            deadline = started + _SWEEP_DEADLINE
             with self._handles:
                 job = self._tracking_job
-            if job:
-                _sweep_descendants(job, deadline)
+                pseudoconsole_host = self._pseudoconsole_host
+            if not job:
+                return
+            if pseudoconsole_host:
+                _sweep_descendants(job, deadline, pseudoconsole_host)
+            else:
+                diagnose(
+                    "the pseudoconsole's console host is not known;"
+                    " programs attached to it are swept with the others"
+                )
+            drained.wait(max(0.0, deadline - _SWEEP_LAST_ROUND - time.monotonic()))
+            _sweep_descendants(job, deadline, pseudoconsole_host)
 
         def _release(self) -> None:
             """Close every handle the session still owns, exactly once."""

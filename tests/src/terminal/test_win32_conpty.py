@@ -235,9 +235,12 @@ def _record(
     )
 
 
-def _consoles(*pids: int) -> Callable[[Sequence[int]], Mapping[int, bool]]:
-    """Return a console probe that reports exactly ``pids`` as having a console."""
-    return lambda candidates: {pid: pid in pids for pid in candidates}
+def _consoles(*pids: int) -> Callable[[Sequence[int]], Mapping[int, str]]:
+    """Return a console check that gives exactly ``pids`` a console of their own.
+
+    Every other process asked about has no console at all.
+    """
+    return lambda asked: {pid: "own" if pid in pids else "none" for pid in asked}
 
 
 def test_sweep_ends_console_programs_without_a_live_gui_ancestor() -> None:
@@ -265,25 +268,51 @@ def test_sweep_does_not_follow_a_reused_parent_pid() -> None:
 
 
 def test_sweep_keeps_gui_unknown_and_console_less_programs() -> None:
-    """GUI images, unreadable images, detached programs and unanswered PIDs stay."""
+    """GUI images, unreadable images, detached programs and unanswered PIDs stay.
+
+    So does a program attached to the session's pseudoconsole: its console
+    host closes it with the pseudoconsole.
+    """
     records = [
         _record(10, 1, "unknown"),
         _record(20, 1, "gui"),
         _record(30, 1, "console"),
         _record(40, 1, "console"),
+        _record(50, 1, "console"),
     ]
-    # 30 has no console; the probe says nothing about 40.
-    assert _MODULE.select_descendants_to_end(records, lambda _pids: {30: False}) == []
+    # 30 has no console, 50 is attached to the pseudoconsole; the check says
+    # nothing about 40.
+    answers = {30: "none", 50: "attached"}
+    assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == []
+
+
+def test_sweep_leaves_attached_programs_to_the_console_host() -> None:
+    """A program attached to the pseudoconsole is not swept, nor does it shelter.
+
+    The console host closes it with the pseudoconsole and gives it the usual
+    time to answer. What it left in a hidden console of its own is the leak
+    the sweep exists for, so that still ends.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole.
+        _record(10, 1, "console"),
+        # An agent CLI running in the terminal, attached as well.
+        _record(20, 10, "console"),
+        # A helper the agent left in a hidden console of its own.
+        _record(30, 20, "console"),
+    ]
+    answers = {10: "attached", 20: "attached", 30: "own"}
+    assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == [30]
 
 
 def test_sweep_probes_only_the_console_candidates() -> None:
-    """The console probe is asked about console images without a GUI ancestor."""
+    """The console check is asked about console images without a GUI ancestor."""
     asked: list[list[int]] = []
 
-    def probe(candidates: Sequence[int]) -> Mapping[int, bool]:
-        """Record the question and answer yes for every candidate."""
+    def probe(candidates: Sequence[int]) -> Mapping[int, str]:
+        """Record the question and give every candidate a console of its own."""
         asked.append(list(candidates))
-        return {pid: True for pid in candidates}
+        return {pid: "own" for pid in candidates}
 
     records = [
         _record(10, 1, "console"),
@@ -326,7 +355,7 @@ def test_sweep_ends_only_candidates_the_console_check_confirms() -> None:
         _record(20, 1, "gui"),
         _record(30, 20, "console"),
     ]
-    answers = {10: True, 20: True, 30: True}
+    answers = {10: "own", 20: "own", 30: "own"}
     assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == [10]
 
 
@@ -2921,6 +2950,10 @@ class _ProcessWatch:
             )
         self._handles[pid] = int(handle)
 
+    def handle(self, pid: int) -> int:
+        """Return the open handle of a pinned process."""
+        return self._handles[pid]
+
     def survivors(self, timeout: float, expected: Collection[int] = ()) -> list[int]:
         """Return the pinned PIDs still running once ``timeout`` seconds pass.
 
@@ -2953,6 +2986,36 @@ class _ProcessWatch:
             if pid in expected and running(handle, grace)
         )
         return [pid for pid in self._handles if pid in alive]
+
+
+class _ExitTimes:
+    """Note when pinned processes exit, from one waiting thread per process."""
+
+    def __init__(self) -> None:
+        """Start with nothing watched."""
+        self._times: dict[int, float] = {}
+        self._threads: list[threading.Thread] = []
+
+    def watch(self, pid: int, handle: int, timeout: float) -> None:
+        """Wait on ``handle`` in the background and note when ``pid`` exits."""
+        wait = _kernel32().WaitForSingleObject
+        wait.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        wait.restype = ctypes.c_uint32
+
+        def run() -> None:
+            """Note the time once the process handle is signalled."""
+            if wait(handle, int(timeout * 1000)) == 0:
+                self._times[pid] = time.monotonic()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self._threads.append(thread)
+
+    def of(self, pid: int) -> float | None:
+        """Return when ``pid`` exited, once every watcher is done; ``None`` if not."""
+        for thread in self._threads:
+            thread.join()
+        return self._times.get(pid)
 
 
 def _read_when_published(path: Path, timeout: float) -> str:
@@ -4257,7 +4320,7 @@ def test_session_end_keeps_the_workers_of_a_detached_program(
     ready_file = tmp_path / "daemon.json"
     exit_gate = tmp_path / "shell-exit"
     published: list[tuple[int, int]] = []
-    consoles: list[dict[int, bool]] = []
+    consoles: list[dict[int, int | None]] = []
     with closing(_ProcessWatch()) as watch:
 
         def pin_before_shutdown(ready: Mapping[str, object]) -> None:
@@ -4277,7 +4340,9 @@ def test_session_end_keeps_the_workers_of_a_detached_program(
                 for pid in (daemon, worker)
             }
             try:
-                consoles.append(_MODULE._console_owners(handles))
+                consoles.append(
+                    {pid: _MODULE._console_host_of(h) for pid, h in handles.items()}
+                )
             finally:
                 for handle in handles.values():
                     _MODULE._close(handle)
@@ -4293,8 +4358,10 @@ def test_session_end_keeps_the_workers_of_a_detached_program(
         )
         assert len(published) == 1, result
         daemon, worker = published[0]
-        # The shape holds: the daemon has no console, its worker has one.
-        assert consoles == [{daemon: False, worker: True}], consoles
+        # The shape holds: the daemon has no console host, its worker has one
+        # of its own.
+        assert consoles[0][daemon] == 0, consoles
+        assert consoles[0][worker] not in (None, 0, worker), consoles
         assert result.messages[-1] == {"event": "exit", "code": result.code}
         if shutdown == "natural-exit":
             assert result.code == 42, result
@@ -4632,12 +4699,13 @@ _CHILD_IN_JOBS = (
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_console_owner_check_tells_consoles_apart(tmp_path: Path) -> None:
+def test_console_check_tells_consoles_apart(tmp_path: Path) -> None:
     """A program with a hidden console of its own has a console host; a detached one has none.
 
     Asked before a child has finished starting, the check still sees the
     console host it inherited from its creator, so both children report that
-    they are up before the question is put.
+    they are up before the question is put. Named as the pseudoconsole's
+    host, a console makes its client an attached one.
     """
     started = (tmp_path / "own", tmp_path / "detached")
     sleeper = (
@@ -4662,14 +4730,16 @@ def test_console_owner_check_tells_consoles_apart(tmp_path: Path) -> None:
         assert all(handles.values()), handles
         for marker in started:
             assert _read_when_published(marker, 30.0) == "up"
-        owners = _MODULE._console_owners(handles)
-        assert owners.get(own.pid) is True, owners
-        assert owners.get(detached.pid) is False, owners
+        kinds = _MODULE._console_kinds(handles, 0)
+        assert kinds.get(own.pid) == "own", kinds
+        assert kinds.get(detached.pid) == "none", kinds
         # Whether this process has a console depends on the runner; either way
         # the answer is one the sweep understands.
-        assert owners.get(os.getpid()) in (True, False), owners
+        assert kinds.get(os.getpid()) in ("own", "none"), kinds
         host = _MODULE._console_host_of(handles[own.pid])
         assert isinstance(host, int) and host not in (0, own.pid), host
+        attached = _MODULE._console_kinds({own.pid: handles[own.pid]}, host)
+        assert attached == {own.pid: "attached"}, attached
     finally:
         for handle in handles.values():
             _MODULE._close(handle)
@@ -4680,20 +4750,38 @@ def test_console_owner_check_tells_consoles_apart(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_console_owner_check_sees_a_pseudoconsole_client() -> None:
-    """A shell attached to the pseudoconsole has a console host."""
-    answers: list[dict[int, bool]] = []
+def test_console_check_sees_a_pseudoconsole_client_by_its_host() -> None:
+    """A shell attached to the pseudoconsole reports its host, not this host's own.
+
+    The host records the pseudoconsole's console host the same way, once the
+    shell has connected and its answer differs from the host's own, and the
+    sweep tells the attached programs apart by it.
+    """
+    answers: list[tuple[int, int | None, int | None, dict[int, str]]] = []
 
     def probe(ready: Mapping[str, object]) -> None:
-        """Ask about the shell while the session is live."""
-        pid = ready["childPid"]
-        assert isinstance(pid, int)
-        handle = _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
-        assert handle, _MODULE._last_error()
+        """Ask about the shell and the host while the session is live."""
+        shell_pid, host_pid = ready["childPid"], ready["hostPid"]
+        assert isinstance(shell_pid, int) and isinstance(host_pid, int), ready
+        handles = {
+            pid: _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
+            for pid in (shell_pid, host_pid)
+        }
+        assert all(handles.values()), _MODULE._last_error()
         try:
-            answers.append(_MODULE._console_owners({pid: handle}))
+            # Until it has connected, the shell reports its creator's host.
+            deadline = time.monotonic() + 10.0
+            while True:
+                shell = _MODULE._console_host_of(handles[shell_pid])
+                host = _MODULE._console_host_of(handles[host_pid])
+                if (shell and shell != host) or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            kinds = _MODULE._console_kinds({shell_pid: handles[shell_pid]}, shell or 0)
+            answers.append((shell_pid, shell, host, kinds))
         finally:
-            _MODULE._close(handle)
+            for handle in handles.values():
+                _MODULE._close(handle)
 
     result = _run_host(
         [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -4704,7 +4792,9 @@ def test_console_owner_check_sees_a_pseudoconsole_client() -> None:
     )
     assert result.messages[-1] == {"event": "exit", "code": result.code}
     assert len(answers) == 1, result
-    assert list(answers[0].values()) == [True], (answers, result.stderr)
+    shell_pid, shell, host, kinds = answers[0]
+    assert shell and shell != host, (answers, result.stderr)
+    assert kinds == {shell_pid: "attached"}, (answers, result.stderr)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
@@ -4757,13 +4847,24 @@ def test_tracking_jobs_hold_what_leaves_the_kill_on_close_job(tmp_path: Path) ->
 _GIT_BASH_LAUNCHER = Path(r"C:\Program Files\Git\bin\bash.exe")
 """The MSYS ``bash.exe`` that the launcher starts."""
 _MSYS_BASH = Path(r"C:\Program Files\Git\usr\bin\bash.exe")
-"""Seconds a session end may take once an attached program ignores the close.
+"""Seconds within which the sweep ends a hidden helper, whatever else runs.
 
 The plugin kills the host ``TERMINAL_EXIT_CLEANUP_WAIT`` (5 s) after it asks
-for the kill; the console host alone keeps such a program for its own 5 s
-timeout, so the bound sits between the host's budget and that timeout.
+for the kill, so the sweep's own deadline and join margin sit below that.
 """
 _IGNORED_CLOSE_BOUND = 4.0
+"""Seconds an attached program that ignores the close is known to live on.
+
+The console host ends such a program through its own five-second timeout;
+a sweep that ended it sooner would take that time away from programs that
+use it to save their state.
+"""
+_CONSOLE_HOST_PATIENCE = 3.0
+"""Seconds a session end may take once an attached program ignores the close.
+
+The console host's timeout decides, as on 3.29.0, and nothing may hang after it.
+"""
+_SESSION_END_BOUND = 10.0
 
 
 def _pin_shell_and_published_pid(
@@ -5036,14 +5137,35 @@ def test_a_program_that_broke_away_may_break_away_again(
 
 
 def _spawn_closing_grandchild(
-    ready_file: Path, marker: Path, exit_gate: Path, handler_seconds: float
+    ready_file: Path,
+    marker: Path,
+    exit_gate: Path,
+    handler_seconds: float,
+    helper_file: Path | None = None,
 ) -> list[str]:
     """Publish an attached grandchild that marks ``CTRL_CLOSE_EVENT``; gate exit.
 
     The grandchild shares the shell's pseudoconsole. Its control handler
     writes ``marker`` and then keeps running for ``handler_seconds`` before it
-    lets the process end.
+    lets the process end. With ``helper_file``, the shell also leaves a
+    sleeper in a hidden console of its own and publishes its PID there.
     """
+    helper_code = (
+        ""
+        if helper_file is None
+        else (
+            "helper = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(120)'],\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+            ")\n"
+            f"with open({str(helper_file)!r} + '.tmp', 'w', encoding='utf-8') as s:\n"
+            "    json.dump({'pid': helper.pid}, s)\n"
+            f"os.replace({str(helper_file)!r} + '.tmp', {str(helper_file)!r})\n"
+        )
+    )
     grandchild_code = (
         "import ctypes, json, os, sys, time\n"
         "from ctypes import wintypes\n"
@@ -5067,13 +5189,14 @@ def _spawn_closing_grandchild(
         "time.sleep(120)\n"
     )
     code = (
-        "import os, subprocess, sys, time\n"
+        "import json, os, subprocess, sys, time\n"
         "grandchild = subprocess.Popen(\n"
         f"    [sys.executable, '-c', {grandchild_code!r}],\n"
         "    stdin=subprocess.DEVNULL,\n"
         "    stdout=subprocess.DEVNULL,\n"
         "    stderr=subprocess.DEVNULL,\n"
         ")\n"
+        f"{helper_code}"
         "deadline = time.monotonic() + 120\n"
         f"while not os.path.exists({str(exit_gate)!r}):\n"
         "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
@@ -5083,28 +5206,59 @@ def _spawn_closing_grandchild(
     return [getattr(sys, "_base_executable", sys.executable), "-c", code]
 
 
-def _run_closing_grandchild(
-    tmp_path: Path, shutdown: str, handler_seconds: float
-) -> tuple[_HostResult, Path, float]:
-    """Run a session with an attached grandchild; return the result, marker, time.
+class _ClosingRun(NamedTuple):
+    """What a session with an attached closing grandchild left behind.
 
-    The time is what passed between the shutdown request and the host's exit.
+    ``elapsed`` is what passed between the shutdown request and the host's
+    exit; ``exits`` holds, per pinned role, how long after that request the
+    process exited, or ``None`` if it did not within the watch.
+    """
+
+    result: _HostResult
+    marker: Path
+    elapsed: float
+    exits: Mapping[str, float | None]
+
+
+def _run_closing_grandchild(
+    tmp_path: Path, shutdown: str, handler_seconds: float, with_helper: bool = False
+) -> _ClosingRun:
+    """Run a session with an attached grandchild; return what it left behind.
+
+    With ``with_helper``, the shell also leaves a sleeper in a hidden console
+    of its own, timed under the role ``helper``; the grandchild is ``attached``.
     """
     ready_file = tmp_path / "grandchild.json"
+    helper_file = tmp_path / "helper.json" if with_helper else None
     marker = tmp_path / "close-event"
     exit_gate = tmp_path / "shell-exit"
     started: list[float] = []
+    roles: dict[str, int] = {}
+    times = _ExitTimes()
     with closing(_ProcessWatch()) as watch:
 
         def pin_before_shutdown(ready: Mapping[str, object]) -> None:
-            """Pin the shell and the grandchild before the shutdown starts."""
-            _pin_shell_and_published_pid(watch, ready, ready_file, 30.0)
+            """Pin the shell, the grandchild and the helper before the shutdown."""
+            roles["attached"] = _pin_shell_and_published_pid(
+                watch, ready, ready_file, 30.0
+            )
+            if helper_file is not None:
+                record: object = json.loads(_read_when_published(helper_file, 30.0))
+                assert isinstance(record, dict), record
+                helper = record.get("pid")
+                assert isinstance(helper, int), record
+                watch.pin(helper)
+                roles["helper"] = helper
+            for pid in roles.values():
+                times.watch(pid, watch.handle(pid), 60.0)
             if shutdown == "natural-exit":
                 exit_gate.touch()
             started.append(time.monotonic())
 
         result = _run_host(
-            _spawn_closing_grandchild(ready_file, marker, exit_gate, handler_seconds),
+            _spawn_closing_grandchild(
+                ready_file, marker, exit_gate, handler_seconds, helper_file
+            ),
             close_stdin=False,
             replies=({"op": "kill"},) if shutdown == "kill" else (),
             ready_probe=pin_before_shutdown,
@@ -5113,7 +5267,12 @@ def _run_closing_grandchild(
         elapsed = time.monotonic() - started[0]
         assert result.messages[-1] == {"event": "exit", "code": result.code}
         assert watch.survivors(15.0) == [], result.stderr
-    return result, marker, elapsed
+        exits = {
+            role: None if at is None else at - started[0]
+            for role, pid in roles.items()
+            for at in (times.of(pid),)
+        }
+    return _ClosingRun(result, marker, elapsed, exits)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
@@ -5126,25 +5285,37 @@ def test_attached_programs_get_the_console_close_event_at_session_end(
     The event is how an agent CLI, a REPL or an editor saves its state when
     the terminal closes, so nothing may end such a program before it arrives.
     """
-    result, marker, _elapsed = _run_closing_grandchild(tmp_path, shutdown, 0.0)
+    run = _run_closing_grandchild(tmp_path, shutdown, 0.0)
     if shutdown == "natural-exit":
-        assert result.code == 42, result
-    assert marker.is_file(), result
+        assert run.result.code == 42, run.result
+    assert run.marker.is_file(), run.result
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_session_end_is_bounded_when_an_attached_program_ignores_the_close(
+def test_session_end_ends_hidden_helpers_while_an_attached_program_ignores_the_close(
     tmp_path: Path,
 ) -> None:
-    """A program whose close handler never returns is ended within the budget.
+    """A hidden helper ends within the budget; the attached program keeps its time.
 
-    The plugin kills the host five seconds after it asks for the kill. Left to
-    the console host, such a program lives through its own five-second
-    timeout, and the plugin's kill wins the race before ``exit`` is reported.
+    A program attached to the pseudoconsole whose close handler never
+    returns is left to the console host, which ends it through its own
+    five-second timeout, as on 3.29.0; the sweep does not cut that short.
+    The sleeper the shell left in a hidden console of its own is ended within
+    the sweep's budget all the same, and the session ends once the console
+    host has given up on the attached program.
     """
-    result, marker, elapsed = _run_closing_grandchild(tmp_path, "kill", 30.0)
-    assert marker.is_file()
-    assert elapsed < _IGNORED_CLOSE_BOUND, (elapsed, result.stderr)
+    run = _run_closing_grandchild(tmp_path, "kill", 30.0, with_helper=True)
+    assert run.marker.is_file()
+    helper, attached = run.exits["helper"], run.exits["attached"]
+    assert helper is not None and helper < _IGNORED_CLOSE_BOUND, (
+        run.exits,
+        run.result.stderr,
+    )
+    assert attached is not None and attached >= _CONSOLE_HOST_PATIENCE, (
+        run.exits,
+        run.result.stderr,
+    )
+    assert run.elapsed < _SESSION_END_BOUND, (run.elapsed, run.exits, run.result.stderr)
 
 
 def _spawn_saving_grandchild(
