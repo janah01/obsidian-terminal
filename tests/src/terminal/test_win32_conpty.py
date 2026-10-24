@@ -5485,6 +5485,8 @@ def test_session_end_ends_hidden_helpers_while_an_attached_program_ignores_the_c
     host has given up on the attached program.
     """
     run = _run_closing_grandchild(tmp_path, "kill", 30.0, with_helper=True)
+    print("PROBE exits", run.exits)
+    print("PROBE stderr\n" + run.result.stderr.decode("utf-8", "replace"))
     assert run.marker.is_file()
     helper, attached = run.exits["helper"], run.exits["attached"]
     assert helper is not None and helper < _IGNORED_CLOSE_BOUND, (
@@ -5591,6 +5593,8 @@ def test_attached_programs_may_finish_saving_on_close(
             ready_probe=pin_before_shutdown,
             timeout=60.0,
         )
+        print("PROBE messages", result.messages[:1])
+        print("PROBE stderr\n" + result.stderr.decode("utf-8", "replace"))
         assert result.messages[-1] == {"event": "exit", "code": result.code}
         assert watch.survivors(15.0) == [], result.stderr
     assert saved.is_file(), result.stderr

@@ -3112,6 +3112,7 @@ if sys.platform == "win32":
             # The console host serving the pseudoconsole, once the shell has
             # connected to it; the sweep leaves that host's clients to it.
             self._pseudoconsole_host = 0
+            self._probe_polls = 0
             self._process = 0
             self._thread = 0
             self._process_id = 0
@@ -3430,18 +3431,20 @@ if sys.platform == "win32":
                     _as_handle(struct.hPtyReference),
                     _as_handle(struct.hConPtyProcess),
                 )
+            self._probe_polls += 1
             diagnose(
-                f"probe: shell {self._process_id} host {host} own {own}"
-                f" ownById {own_by_id} pty {pty}"
+                f"probe: poll {self._probe_polls} host-pid {os.getpid()} shell"
+                f" {self._process_id} host {host} own {own} ownById {own_by_id}"
+                f" pty {pty} recorded {self._pseudoconsole_host}"
             )
-            if host and host != own:
+            if host and host != own and not self._pseudoconsole_host:
                 with self._handles:
                     self._pseudoconsole_host = host
 
         def _supervise(self) -> int:
             """Wait for the child to exit, or terminate it when asked to."""
             while not self._stopping.is_set():
-                if not self._pseudoconsole_host:
+                if not self._pseudoconsole_host or self._probe_polls < 20:
                     self._note_pseudoconsole_host()
                 if (
                     _WaitForSingleObject(self._process, _POLL_MILLISECONDS)
