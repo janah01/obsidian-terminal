@@ -565,12 +565,16 @@ describe("hotkeys while a terminal has focus", () => {
     });
 
     it("follows the keymappings as they are when the key is pressed", () => {
-      const keymappings: Settings.Keymapping[] = [],
-        { addBoundCommand, executeCommand, press } = loadView({ keymappings });
+      const { addBoundCommand, context, executeCommand, press } = loadView({
+        keymappings: [],
+      });
       addBoundCommand("command-palette:open", palette);
       expect(press(["Mod"], "p", ctrl)).toBeUndefined();
 
-      keymappings.push(ctrlP);
+      // A change of the settings replaces their value, as `mutate` does.
+      Object.assign(context.settings, {
+        value: { ...context.settings.value, keymappings: [ctrlP] },
+      });
 
       expect(press(["Mod"], "p", ctrl)).toBe(false);
       expect(executeCommand).toHaveBeenCalledOnce();
