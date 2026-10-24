@@ -1561,10 +1561,9 @@ describe("TerminalView focus", () => {
       Object.assign(leaf, { detach });
       // `startFind` is protected, so `vi.spyOn` cannot name it.
       view["startFind"] = startFind;
-      view["emulator"] = {
-        close: vi.fn().mockResolvedValue(undefined),
-        terminal: { clear, focus: vi.fn() },
-      } as unknown as TerminalView.EMULATOR;
+      const { emulator } = makeEmulator();
+      Object.assign(emulator.terminal, { clear });
+      view["emulator"] = emulator;
       view.contentEl.append(textarea);
       into.body.append(view.contentEl);
       return {
@@ -1741,7 +1740,6 @@ describe("TerminalView focus", () => {
       openPalette();
 
       for (const id of ACTING) {
-        expect(() => command(id)(true)).not.toThrow();
         expect(command(id)(true)).toBe(false);
         command(id)(false);
       }
