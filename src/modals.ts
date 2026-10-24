@@ -1786,7 +1786,9 @@ export class KeymappingEditModal extends Modal {
     callback: (data: DeepWritable<Settings.Keymapping>) => unknown,
   ) {
     super(context.app);
-    this.data = cloneAsWritable(keymapping);
+    // The fields save only an argument of the kind the action takes, so a
+    // mapping with another kind is fixed first, as loading the settings does.
+    this.data = cloneAsWritable(Settings.Keymapping.fix(keymapping).value);
     this.#callback = callback;
   }
 

@@ -1482,6 +1482,24 @@ describe("keymapping editor argument", () => {
     editor.modal.close();
   });
 
+  it("saves typed text even when it opens on a mapping whose argument has the wrong kind", async () => {
+    // Every caller in this release loads or fixes the mapping first. This
+    // asks whether the editor itself still drops what is typed, as 3.29.0 did.
+    const wrong: Settings.Keymapping = {
+      ...seeded,
+      action: "sendText",
+      actionArg: "",
+    };
+    Reflect.set(wrong, "actionArg", 5);
+    const editor = await openEditor(wrong);
+    editor.typeText("hello");
+    expect(editor.saved()).toMatchObject({
+      action: "sendText",
+      actionArg: "hello",
+    });
+    editor.modal.close();
+  });
+
   it("keeps the argument while a held chord with modifiers is recorded", async () => {
     const editor = await openEditor({
       ...seeded,
