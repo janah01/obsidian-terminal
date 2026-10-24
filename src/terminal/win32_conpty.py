@@ -2814,6 +2814,8 @@ if sys.platform == "win32":
             elif host == 0:
                 kinds[pid] = _CONSOLE_NONE
             elif creators is not None and host == creators.get(pid):
+                if os.environ.get("OBSIDIAN_TERMINAL_SWEEP_TRACE"):
+                    diagnose(f"trace {time.monotonic():.3f}: {pid} too new to judge")
                 continue
             elif host == pseudoconsole_host:
                 kinds[pid] = _CONSOLE_ATTACHED
@@ -2914,7 +2916,7 @@ if sys.platform == "win32":
             release()
             records, opened = _descendant_records(job, cache, skip)
             handles.update(opened)
-            return select_descendants_to_end(
+            selected = select_descendants_to_end(
                 records,
                 lambda pids: _console_kinds(
                     {pid: handles[pid] for pid in pids if pid in handles},
@@ -2923,6 +2925,12 @@ if sys.platform == "win32":
                 ),
                 _windowed_process_ids(),
             )
+            if os.environ.get("OBSIDIAN_TERMINAL_SWEEP_TRACE"):
+                diagnose(
+                    f"trace {time.monotonic():.3f}: survey of"
+                    f" {[record.pid for record in records]} selected {list(selected)}"
+                )
+            return selected
 
         def end(pids: Sequence[int], until: float) -> Sequence[int]:
             """Terminate the chosen processes; return those running at ``until``."""

@@ -6367,3 +6367,134 @@ def test_windows_terminal_packages_name_installed_folders() -> None:
         assert _MODULE._WINDOWS_TERMINAL_PACKAGE.fullmatch(name), name
         assert os.path.isdir(root), root
         assert name.lower() in root.lower(), (name, root)
+
+
+"""Environment variable that makes the host trace its sweep rounds (probe only)."""
+_SCRATCH_SWEEP_TRACE = "OBSIDIAN_TERMINAL_SWEEP_TRACE"
+
+
+def _scratch_young_helper_shell(ready_file: Path, suspended: bool) -> list[str]:
+    """Start a hidden ping, suspended or not, publish its PID at once, then sleep."""
+    flags = "subprocess.CREATE_NO_WINDOW" + (" | 0x4" if suspended else "")
+    code = (
+        "import json, os, subprocess, sys, time\n"
+        "ping = os.path.join(os.environ['SystemRoot'], 'System32', 'PING.EXE')\n"
+        "helper = subprocess.Popen(\n"
+        "    [ping, '-n', '300', '127.0.0.1'],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        f"    creationflags={flags},\n"
+        ")\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': helper.pid, 'at': time.monotonic()}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "time.sleep(120)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+def _scratch_resume(pid: int, delay: float, resumed: list[float]) -> None:
+    """Resume suspended process ``pid`` after ``delay`` seconds; note when."""
+    kernel32 = _kernel32()
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32)
+    open_process.restype = ctypes.c_void_p
+    handle = open_process(0x0800, False, pid)
+    assert handle, _win32_error()
+    ntdll = ctypes.WinDLL("ntdll")  # ty: ignore[possibly-missing-attribute]
+    ntdll.NtResumeProcess.argtypes = (ctypes.c_void_p,)
+    ntdll.NtResumeProcess.restype = ctypes.c_int32
+    try:
+        time.sleep(delay)
+        assert ntdll.NtResumeProcess(handle) == 0
+        resumed.append(time.monotonic())
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _scratch_young_helper_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    label: str,
+    resume_after: float | None,
+) -> list[int]:
+    """Kill a session as soon as its shell published a fresh helper; report."""
+    monkeypatch.setenv(_SCRATCH_SWEEP_TRACE, "1")
+    ready_file = tmp_path / f"helper-{label}.json"
+    published: list[object] = []
+    released: list[float] = []
+    resumed: list[float] = []
+    threads: list[threading.Thread] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_kill(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the helper; resume the helper later if asked."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 30.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            published.append(record)
+            if resume_after is not None:
+                thread = threading.Thread(
+                    target=_scratch_resume, args=(pid, resume_after, resumed)
+                )
+                thread.start()
+                threads.append(thread)
+            released.append(time.monotonic())
+
+        result = _run_host(
+            _scratch_young_helper_shell(ready_file, resume_after is not None),
+            close_stdin=False,
+            replies=({"op": "kill"},),
+            ready_probe=pin_before_kill,
+            timeout=60.0,
+        )
+        for thread in threads:
+            thread.join(10.0)
+        survivors = watch.survivors(5.0)
+        trace = result.stderr.decode("utf-8", "replace").strip().replace("\n", " | ")
+        with capsys.disabled():
+            print(
+                f"\n[young-helper-probe] {label} resume_after={resume_after}"
+                f" published={published} killSent={released}"
+                f" resumed={resumed} survivors={survivors} trace={trace}",
+                flush=True,
+            )
+        return survivors
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("resume_after", (0.3, 1.0, 2.5))
+def test_scratch_a_helper_that_connects_late_is_ended(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    resume_after: float,
+) -> None:
+    """A hidden helper still suspended at the kill connects later; is it ended?"""
+    survivors = _scratch_young_helper_run(
+        tmp_path, monkeypatch, capsys, f"late-{resume_after}", resume_after
+    )
+    assert survivors == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("attempt", range(20), ids=lambda n: f"attempt {n}")
+def test_scratch_a_fresh_helper_at_the_kill_is_ended(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    attempt: int,
+) -> None:
+    """A hidden helper started just before the kill; how often does it escape?"""
+    survivors = _scratch_young_helper_run(
+        tmp_path, monkeypatch, capsys, f"fresh-{attempt}", None
+    )
+    assert survivors == []
