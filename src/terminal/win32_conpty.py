@@ -1986,6 +1986,8 @@ if sys.platform == "win32":
     )
     """Return a pseudo-handle for the current process."""
     _GetCurrentProcess = _bind("GetCurrentProcess", (), _HANDLE)
+    """Return the PID of an open process (probe only)."""
+    _GetProcessId = _bind("GetProcessId", (_HANDLE,), _DWORD)
     """Locate the host executable used by the default Windows search."""
     _GetModuleFileNameW = _bind(
         "GetModuleFileNameW", (_HANDLE, _LPWSTR, _DWORD), _DWORD
@@ -2788,6 +2790,11 @@ if sys.platform == "win32":
                 kinds[pid] = _CONSOLE_ATTACHED
             else:
                 kinds[pid] = _CONSOLE_OWN
+            image = os.path.basename(_process_image_path(process) or "?")
+            diagnose(
+                f"probe: {pid} {image} host {host} pseudoconsole {pseudoconsole_host}"
+                f" -> {kinds.get(pid)}"
+            )
         return kinds
 
     def _windowed_process_ids() -> set[int]:
@@ -3406,7 +3413,28 @@ if sys.platform == "win32":
             consoles of their own.
             """
             host = _console_host_of(self._process)
-            if host and host != _console_host_of(_GetCurrentProcess()):
+            own = _console_host_of(_GetCurrentProcess())
+            by_id = _as_handle(_OpenProcess(_PROCESS_SWEEP_ACCESS, False, os.getpid()))
+            own_by_id = _console_host_of(by_id) if by_id else None
+            if by_id:
+                _close(by_id)
+            pty: tuple[int, int, int, int] | None = None
+            pseudoconsole = self._pseudoconsole
+            if pseudoconsole is not None:
+                struct = ctypes.cast(
+                    pseudoconsole.handle, ctypes.POINTER(_PSEUDOCONSOLE)
+                ).contents
+                pty = (
+                    int(_GetProcessId(_as_handle(struct.hConPtyProcess))),
+                    _as_handle(struct.hSignal),
+                    _as_handle(struct.hPtyReference),
+                    _as_handle(struct.hConPtyProcess),
+                )
+            diagnose(
+                f"probe: shell {self._process_id} host {host} own {own}"
+                f" ownById {own_by_id} pty {pty}"
+            )
+            if host and host != own:
                 with self._handles:
                     self._pseudoconsole_host = host
 
@@ -3504,6 +3532,7 @@ if sys.platform == "win32":
                 pseudoconsole_host = self._pseudoconsole_host
             if not job:
                 return
+            diagnose(f"probe: sweep with pseudoconsole host {pseudoconsole_host}")
             if pseudoconsole_host:
                 _sweep_descendants(job, deadline, pseudoconsole_host)
             else:
