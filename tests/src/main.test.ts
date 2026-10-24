@@ -553,7 +553,7 @@ describe("Export settings to current file", () => {
     Object.assign(app.workspace, { getActiveFile: vi.fn(() => file) });
     vi.spyOn(app.metadataCache, "getFileCache").mockReturnValue({});
     vi.spyOn(app.fileManager, "processFrontMatter").mockImplementation(
-      async (_file, fn) => {
+      (_file, fn) => {
         const fm: Json = {};
         fn(fm);
         written.push(fm);
@@ -562,9 +562,8 @@ describe("Export settings to current file", () => {
     );
     command("export-settings.current-file").checkCallback?.(false);
     await vi.waitFor(() => {
-      expect(written).toHaveLength(1);
+      expect(written).toStrictEqual([plugin.settings.value]);
     });
-    expect(written).toStrictEqual([plugin.settings.value]);
   });
 });
 
