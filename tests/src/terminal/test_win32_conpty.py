@@ -5271,6 +5271,48 @@ def test_session_falls_back_from_a_broken_console_host(
     assert result.messages[-1] == {"event": "exit", "code": 0}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("deferred", (False, True), ids=("immediate", "deferred"))
+def test_session_end_sweeps_after_a_console_host_fallback(
+    tmp_path: Path, deferred: bool
+) -> None:
+    """A shell that runs on the built-in host after a fallback is tracked too.
+
+    The fallback starts the shell again on the built-in console host; that
+    shell, the one that runs, must sit in the tracking jobs, so the program
+    it leaves in a hidden console ends with the session.
+    """
+    console_host = tmp_path / "OpenConsole.exe"
+    system = os.path.join(os.environ["SystemRoot"], "System32")
+    shutil.copyfile(os.path.join(system, "hostname.exe"), console_host)
+    ready_file = tmp_path / "sleeper.json"
+    exit_gate = tmp_path / "shell-exit"
+    launcher = tmp_path / "launcher.py"
+    _write_hidden_sleeper_launcher(launcher, ready_file, exit_gate)
+    pinned: list[int] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_kill(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the sleeper before the kill."""
+            pinned.append(_pin_shell_and_published_pid(watch, ready, ready_file, 45.0))
+
+        result = _run_host(
+            [getattr(sys, "_base_executable", sys.executable), str(launcher)],
+            close_stdin=False,
+            replies=({"op": "kill"},),
+            ready_probe=pin_before_kill,
+            timeout=60.0,
+            deferred=deferred,
+            console_host="auto",
+            host_script=_stub_console_host_script(tmp_path, console_host),
+        )
+        assert len(pinned) == 1, result
+        report = _ready_report(result)
+        assert (report["engine"], report["fallback"]) == ("conhost", "exited"), result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert watch.survivors(15.0) == [], result.stderr
+
+
 def _console_host_dies_before_hello_script(directory: Path) -> Path:
     """Write a host script whose OpenConsole ends just before ``hello``.
 
