@@ -29,7 +29,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", ".."),
   // The compiler reports file names with `/` on every platform.
   SCANNED = ["src", "assets"].map(
     (dir) => `${join(ROOT, dir).split(sep).join("/")}/`,
-  );
+  ),
+  PROBE = `${join(ROOT, "tests", "fixtures", "scorecard-types").split(sep).join("/")}/`;
 
 function isLibrary(specifier: string): boolean {
   return specifier === LIBRARY || specifier.startsWith(`${LIBRARY}/`);
@@ -48,7 +49,7 @@ interface Scan {
   readonly found: readonly string[];
 }
 
-function scan(): Scan {
+function scan(prefixes: readonly string[] = SCANNED): Scan {
   const config = ts.getParsedCommandLineOfConfigFile(
     join(ROOT, "tsconfig.json"),
     {},
@@ -93,7 +94,7 @@ function scan(): Scan {
           ),
     );
   const scanned = (file: string): boolean =>
-      SCANNED.some((dir) => file.startsWith(dir)),
+      prefixes.some((dir) => file.startsWith(dir)),
     rootNames = config.fileNames.filter(scanned),
     program = ts.createProgram({ host, options: config.options, rootNames }),
     checker = program.getTypeChecker(),
@@ -144,6 +145,23 @@ describe("types without the vendored library", () => {
       expect(files).toContain("src/main.ts");
       expect(files).toContain("src/settings-data.ts");
       expect(found).toStrictEqual([]);
+    },
+  );
+
+  // A green scan is worth something only while the scan can still go red: a
+  // renamed library or another TypeScript would otherwise leave it passing
+  // without hiding anything.
+  it(
+    "finds each kind of member in a sample that has them",
+    { timeout: 120_000 },
+    () => {
+      const { files, found } = scan([PROBE]);
+      expect(files).toStrictEqual(["tests/fixtures/scorecard-types/probe.ts"]);
+      expect(found).toStrictEqual([
+        "tests/fixtures/scorecard-types/probe.ts:16:22 (typeof INFERRED)[number] (any)",
+        "tests/fixtures/scorecard-types/probe.ts:18:21 SemVerString (library type)",
+        "tests/fixtures/scorecard-types/probe.ts:20:25 (typeof INFERRED)[number] (any)",
+      ]);
     },
   );
 });
