@@ -2248,6 +2248,82 @@ describe("default profile and profile order of this device", () => {
     }
   });
 
+  it("keeps data.json as a device on 3.29.0 reads it through every edit, and saves it only when it changed", async () => {
+    const { context, defaultRow, edit, nextStart, reset, tab, write } =
+      await drawProfiles(synced, {
+        lastReadChangelogVersion: "0.0.0",
+        defaultProfile: "zsh",
+      });
+    try {
+      const keys = Object.keys(context.settings.value).sort();
+      let saved = JSON.stringify(context.settings.value),
+        writes = 0;
+      const check = (step: string, changes: boolean): void => {
+          const now = JSON.stringify(context.settings.value);
+          expect([step, now !== saved]).toEqual([step, changes]);
+          // The fixer of 3.29.0 finds nothing to change.
+          expect([step, nextStart().valid]).toEqual([step, true]);
+          expect([step, Object.keys(context.settings.value).sort()]).toEqual([
+            step,
+            keys,
+          ]);
+          if (now !== saved) writes += 1;
+          saved = now;
+          expect([step, write.mock.calls.length]).toEqual([step, writes]);
+        },
+        sendList = async (
+          change: (
+            data: ProfileListModal.Data,
+          ) => Partial<ProfileListModal.Data>,
+        ): Promise<void> => {
+          const { data, send } = edit();
+          await send({ ...data, ...change(data) });
+        };
+      defaultRow.choose("bash");
+      await vi.waitFor(() => {
+        expect(context.localSettings.value.defaultProfile).toBe("bash");
+      });
+      check("choose a default", false);
+      defaultRow.reset?.extraSettingsEl.click();
+      await vi.waitFor(() => {
+        expect(context.localSettings.value.defaultProfile).toBeNull();
+      });
+      check("reset the default", false);
+      await sendList(({ entries }) => ({ entries: [...entries].reverse() }));
+      check("move", false);
+      await sendList(() => ({
+        defaultProfile: "zsh" as Settings.DefaultProfile,
+      }));
+      check("mark as default", false);
+      await sendList(({ entries }) => ({
+        entries: entries.map(([id, profile]) => [
+          id,
+          id === "bash" ? { ...profile, name: "Bash" } : profile,
+        ]),
+      }));
+      check("rename", true);
+      await sendList(({ entries }) => ({
+        entries: [["fish", { ...integrated, name: "fish" }], ...entries],
+      }));
+      check("add", true);
+      await sendList(({ entries }) => ({
+        entries: entries.filter(([id]) => id !== "pwsh"),
+      }));
+      check("delete the default of data.json", true);
+      expect(context.settings.value.defaultProfile).toBeNull();
+      reset.extraSettingsEl.click();
+      await vi.waitFor(() => {
+        expect(context.settings.value.profiles).toEqual(
+          Settings.DEFAULT.profiles,
+        );
+      });
+      check("reset the profiles", true);
+      expect(writes).toBe(4);
+    } finally {
+      tab.dispose();
+    }
+  });
+
   it.each([
     ["zsh", null],
     ["darwinIntegratedDefault", "darwinIntegratedDefault"],
