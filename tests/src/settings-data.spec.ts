@@ -208,6 +208,20 @@ describe("src/settings-data.ts", () => {
     ]);
   });
 
+  it("Profile.fix reports a value without a known type as malformed", () => {
+    // Such a value becomes an invalid profile that keeps every key it has,
+    // so the profile editor must not import it over a profile.
+    for (const value of [{}, { name: "x" }, { noticeTimeout: 5 }]) {
+      const fixed = Settings.Profile.fix(value);
+      expect(fixed.value).toEqual({ ...value, type: "invalid" });
+      expect(fixed.valid).toBe(false);
+    }
+    expect(Settings.Profile.fix({ type: "unknown" }).valid).toBe(false);
+    const invalid = { name: "x", type: "invalid" };
+    expect(Settings.Profile.fix(invalid).value).toEqual(invalid);
+    expect(Settings.Profile.fix(invalid).valid).toBe(true);
+  });
+
   it("normalizes the Windows backend selector", () => {
     // Presentation order for the profile editor; the default is ConPTY.
     expect(Settings.Profile.WIN32_BACKENDS).toEqual(["conpty", "legacy"]);
