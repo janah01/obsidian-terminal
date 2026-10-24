@@ -782,15 +782,18 @@ def image_subsystem(header: bytes) -> str:
 def select_descendants_to_end(
     records: Sequence[DescendantRecord],
     consoles: Callable[[Sequence[int]], Mapping[int, str]],
+    windowed: Collection[int] = (),
 ) -> list[int]:
     """Choose the tracked processes that end with the session.
 
     A process ends when its image is a console program, ``consoles`` answers
-    ``own`` for it (a console of its own, hidden or with a window), and no
-    program above it that keeps running shelters it. GUI programs shelter
-    what runs under them, and so do console programs without a console
-    (``none``, the detached ones): a daemon that was meant to outlive the
-    terminal keeps its workers. A process attached to the session's
+    ``own`` for it (a console of its own, hidden or with a window), it is not
+    in ``windowed`` (the processes that show a top-level window of their
+    own), and no program above it that keeps running shelters it. GUI
+    programs and windowed programs shelter what runs under them, and so do
+    console programs without a console (``none``, the detached ones): a
+    daemon that was meant to outlive the terminal keeps its workers. A
+    process attached to the session's
     pseudoconsole (``attached``) is left to that console host, which closes
     it with the pseudoconsole and gives it the usual time to answer, and
     shelters nothing: what it left in consoles of its own is the leak.
@@ -809,7 +812,9 @@ def select_descendants_to_end(
     def shelters(record: DescendantRecord) -> bool:
         """Report whether ``record`` keeps running and keeps what runs under it."""
         return (
-            record.subsystem == _SUBSYSTEM_GUI or kinds.get(record.pid) == _CONSOLE_NONE
+            record.subsystem == _SUBSYSTEM_GUI
+            or record.pid in windowed
+            or kinds.get(record.pid) == _CONSOLE_NONE
         )
 
     def sheltered(record: DescendantRecord) -> bool:
@@ -830,6 +835,7 @@ def select_descendants_to_end(
         for record in records
         if record.subsystem == _SUBSYSTEM_CONSOLE
         and kinds.get(record.pid) == _CONSOLE_OWN
+        and record.pid not in windowed
         and not sheltered(record)
     ]
 
@@ -1659,6 +1665,8 @@ if sys.platform == "win32":
     _TH32CS_SNAPPROCESS = 0x00000002
     """``QueryFullProcessImageNameW`` flag selecting a Win32 path."""
     _IMAGE_NAME_WIN32 = 0
+    """``GetWindow`` relationship selecting the owner of a window."""
+    _GW_OWNER = 4
     """Win32 error meaning a job's process list did not fit the buffer."""
     _ERROR_MORE_DATA = 234
     """``INVALID_HANDLE_VALUE`` as the unsigned pointer ``ctypes`` returns."""
@@ -1741,6 +1749,8 @@ if sys.platform == "win32":
     _SIZE = ctypes.c_size_t
     """Win32 signed 32-bit integer, used for ``HRESULT`` results."""
     _LONG = ctypes.c_long
+    """Pointer-width signed window message parameter."""
+    _LPARAM = wintypes.LPARAM
     """Pointer-width pseudoconsole handle."""
     _HPCON = ctypes.c_void_p
 
@@ -2060,6 +2070,23 @@ if sys.platform == "win32":
         _ResizePseudoConsole = _no_conpty
         """Flush and destroy a pseudoconsole."""
         _ClosePseudoConsole = _no_conpty
+
+    """The ``user32`` library, which lists the windows on the desktop."""
+    _user32 = ctypes.WinDLL("user32")  # ty: ignore[possibly-missing-attribute]
+    """Callback type of ``EnumWindows``: one call per top-level window."""
+    _WNDENUMPROC = ctypes.WINFUNCTYPE(  # ty: ignore[possibly-missing-attribute]
+        _BOOL, _HANDLE, _LPARAM
+    )
+    """Call back once per top-level window on the calling thread's desktop."""
+    _EnumWindows = _bind("EnumWindows", (_WNDENUMPROC, _LPARAM), _BOOL, _user32)
+    """Return a window related to the given one, such as its owner."""
+    _GetWindow = _bind("GetWindow", (_HANDLE, _UINT), _HANDLE, _user32)
+    """Return the thread that created a window; store its process."""
+    _GetWindowThreadProcessId = _bind(
+        "GetWindowThreadProcessId", (_HANDLE, _PDWORD), _DWORD, _user32
+    )
+    """Report whether a window has the visible style."""
+    _IsWindowVisible = _bind("IsWindowVisible", (_HANDLE,), _BOOL, _user32)
 
     """The ``ntdll`` library, which opens console driver objects."""
     _ntdll = ctypes.WinDLL("ntdll")  # ty: ignore[possibly-missing-attribute]
@@ -2736,6 +2763,32 @@ if sys.platform == "win32":
                 kinds[pid] = _CONSOLE_OWN
         return kinds
 
+    def _windowed_process_ids() -> set[int]:
+        """Return the processes that own a visible, unowned top-level window.
+
+        A console window belongs to the console host, not to the program in
+        it, so a program in a console of its own qualifies only through a
+        window of its own. A failed enumeration keeps what was read so far.
+        """
+        owners: set[int] = set()
+
+        @_WNDENUMPROC
+        def visit(window: int | None, _parameter: int) -> bool:
+            """Note the owner of a visible, unowned top-level window; go on."""
+            if (
+                window
+                and _IsWindowVisible(window)
+                and not _GetWindow(window, _GW_OWNER)
+            ):
+                pid = _DWORD(0)
+                if _GetWindowThreadProcessId(window, ctypes.byref(pid)):
+                    owners.add(int(pid.value))
+            return True
+
+        if not _EnumWindows(visit, 0):
+            diagnose(f"could not list the windows on the desktop: {_last_error()}")
+        return owners
+
     def _descendant_records(
         job: int, cache: dict[tuple[int, int], str], skip: Collection[int]
     ) -> tuple[list[DescendantRecord], dict[int, int]]:
@@ -2806,6 +2859,7 @@ if sys.platform == "win32":
                     {pid: handles[pid] for pid in pids if pid in handles},
                     pseudoconsole_host,
                 ),
+                _windowed_process_ids(),
             )
 
         def end(pids: Sequence[int], until: float) -> Sequence[int]:

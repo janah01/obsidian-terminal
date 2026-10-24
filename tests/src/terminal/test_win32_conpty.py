@@ -381,6 +381,29 @@ def test_sweep_keeps_what_a_console_less_program_runs() -> None:
     assert _MODULE.select_descendants_to_end(records, _consoles(10, 30)) == [10]
 
 
+def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
+    """A console program that shows a window of its own stays, with its helpers.
+
+    A Tk or Qt app run as ``start python app.py`` is a console image in a
+    console of its own that shows a window: it keeps running like a GUI
+    program, and so does what it runs.
+    """
+    records = [
+        # The shell.
+        _record(10, 1, "console"),
+        # A console image showing a window, in a console of its own.
+        _record(20, 10, "console"),
+        # A hidden-console helper it runs.
+        _record(30, 20, "console"),
+        # A hidden-console helper the shell left behind.
+        _record(40, 10, "console"),
+    ]
+    ended = _MODULE.select_descendants_to_end(
+        records, _consoles(10, 20, 30, 40), windowed={20}
+    )
+    assert ended == [10, 40]
+
+
 def _pe_header(magic: int, subsystem: int, signature_offset: int = 0x80) -> bytes:
     """Build the start of a PE image with the given optional-header fields."""
     header = bytearray(signature_offset + 24 + 70)
