@@ -896,6 +896,69 @@ describe("ConHost launch", () => {
       ).toBe("launch");
     });
   });
+
+  /**
+   * cmd's split of an expanded line: the commands between `&` outside quotes,
+   * with the carets outside quotes removed, and the `|`, `<`, `>`, `(` and
+   * `)` each command has outside quotes and unescaped.
+   */
+  function cmdCommands(
+    line: string,
+  ): readonly { readonly specials: string; readonly text: string }[] {
+    const ret: { specials: string; text: string }[] = [];
+    let current = { specials: "", text: "" },
+      quoted = false;
+    for (let index = 0; index < line.length; ++index) {
+      const character = line[index] ?? "";
+      if (character === '"') quoted = !quoted;
+      else if (!quoted && character === "^") {
+        current.text += line[++index] ?? "";
+        continue;
+      } else if (!quoted && character === "&") {
+        ret.push(current);
+        current = { specials: "", text: "" };
+        continue;
+      } else if (!quoted && "|<>()".includes(character))
+        current.specials += character;
+      current.text += character;
+    }
+    ret.push(current);
+    return ret;
+  }
+
+  it("gives cmd five commands and the program the ConPTY arguments, whatever the arguments hold", () => {
+    // A seeded walk over the characters that cmd or the argv rules treat
+    // specially, in every position and combination.
+    const alphabet = Array.from(
+      " \t\v\f\"\\^&|<>()%!=,;@:~*?/$`'1a\u001a\u00a0\u00fc\u00ff\u{1f600}",
+    );
+    let seed = 1;
+    const next = (bound: number): number => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % bound;
+    };
+    for (let round = 0; round < 2000; ++round) {
+      const args = Array.from({ length: next(5) }, () =>
+          Array.from(
+            { length: next(7) },
+            () => alphabet[next(alphabet.length)],
+          ).join(""),
+        ),
+        { batch, environment } = acceptedLaunch(program, args),
+        commands = cmdCommands(expandedBatchLine(batch, environment)),
+        command = commands[3]?.text.trimStart() ?? "",
+        tail = command.slice(`"${program}"`.length);
+      expect(
+        commands.map(({ specials }) => specials),
+        tail,
+      ).toEqual(["", "", "", "", ">"]);
+      expect(command.startsWith(`"${program}"`)).toBe(true);
+      expect(tail).toBe(
+        args.length > 0 ? ` ${args.map(quoteWindowsArgument).join(" ")}` : "",
+      );
+      expect(splitWindowsCommandLine(tail)).toEqual(args);
+    }
+  });
 });
 
 function readyEvent(
