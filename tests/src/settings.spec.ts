@@ -1618,7 +1618,7 @@ describe("settings tab descriptions", () => {
         `${i18n.t("settings.intercept-keys-when-focused-description")} Keys whose keymapping is 'Send to Obsidian' are the exception: Obsidian runs their hotkeys.`,
       );
       expect(description(i18n.t("settings.keymappings"))).toMatch(
-        / The action 'Send to Obsidian' leaves the key to Obsidian, which runs its hotkey for it\. With it, the built-in Ctrl\+P on Windows and Command\+P on macOS open the command palette\.$/u,
+        / The action 'Send to Obsidian' leaves the key to Obsidian, which runs its hotkey for it\. The built-in Ctrl\+P on Windows and Command\+P on macOS use it to open the command palette\.$/u,
       );
     } finally {
       tab.dispose();
