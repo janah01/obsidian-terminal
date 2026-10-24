@@ -1514,6 +1514,7 @@ describe("TerminalView focus", () => {
     const ACTING = ["clear-terminal", "close-terminal", "find-in-terminal"];
 
     function loadCommands(overrides: Partial<Settings> = {}) {
+      listenForFocus();
       const { context, workspace } = makeTerminalContext(overrides);
       const addCommand = vi.fn<TerminalPlugin["addCommand"]>(
         (command) => command,
@@ -1533,9 +1534,6 @@ describe("TerminalView focus", () => {
         const view: unknown = active?.view;
         return view instanceof type ? view : null;
       });
-      // Each focus is later than the one before, as on a real clock.
-      let now = Date.now();
-      vi.spyOn(Date, "now").mockImplementation(() => ++now);
       TerminalView.load(context);
       const command = (id: string) => {
         const found = addCommand.mock.calls
@@ -1609,8 +1607,7 @@ describe("TerminalView focus", () => {
     /*
      * The mock's `registerDomEvent` drops the listener. Obsidian keeps it, and
      * the view's `focusin` listener is what records a use of the terminal, so
-     * tests that care which terminal was used last call this before they
-     * open any.
+     * `loadCommands` calls this before any terminal opens.
      */
     function listenForFocus(): void {
       vi.spyOn(TerminalView.prototype, "registerDomEvent").mockImplementation(
@@ -1807,6 +1804,51 @@ describe("TerminalView focus", () => {
       expect(shown.acted() + used.acted()).toBe(0);
     });
 
+    it("offers them for the terminal in use after another one opened behind it", async () => {
+      const { command, context } = loadCommands();
+      const inUse = await openTerminal(context);
+      inUse.use();
+      // Opened in another split with neither the keyboard nor the active tab,
+      // as with Focus on new instance off.
+      const behind = await openTerminal(context);
+      openPalette();
+
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      command("clear-terminal")(false);
+      expect(inUse.clear).toHaveBeenCalledOnce();
+      expect(behind.acted()).toBe(0);
+    });
+
+    it("clears the terminal that has the keyboard after another one opened behind it", async () => {
+      const { command, context } = loadCommands();
+      const inUse = await openTerminal(context);
+      inUse.use();
+      const behind = await openTerminal(context);
+      expect(inUse.view["isLookedAt"]).toBe(true);
+
+      // Its hotkey, as the focused terminal's scope runs it.
+      command("clear-terminal")(false);
+      expect(inUse.clear).toHaveBeenCalledOnce();
+      expect(behind.acted()).toBe(0);
+    });
+
+    it("follows the terminal used last when the clock went back between two uses", async () => {
+      const { command, context } = loadCommands();
+      const earlier = await openTerminal(context),
+        later = await openTerminal(context);
+      earlier.use();
+      // The system clock is set back, by hand or by a time sync.
+      let now = Date.now() - 60_000;
+      vi.spyOn(Date, "now").mockImplementation(() => ++now);
+      later.use();
+      openPalette();
+
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      command("clear-terminal")(false);
+      expect(later.clear).toHaveBeenCalledOnce();
+      expect(earlier.acted()).toBe(0);
+    });
+
     it("does not act on a closed terminal whose leaf is still the active one", async () => {
       const { command, context } = loadCommands();
       const older = await openTerminal(context),
@@ -1825,7 +1867,6 @@ describe("TerminalView focus", () => {
     });
 
     it("moves on to the terminal used before once the one used last closes and its tab takes over", async () => {
-      listenForFocus();
       const { command, context } = loadCommands();
       const older = await openTerminal(context),
         closed = await openTerminal(context);
@@ -1843,7 +1884,6 @@ describe("TerminalView focus", () => {
     });
 
     it("acts on the terminal typed in last, not on the one opened last", async () => {
-      listenForFocus();
       const { command, context } = loadCommands();
       const typedIn = await openTerminal(context),
         openedLast = await openTerminal(context);
@@ -1967,7 +2007,6 @@ describe("TerminalView focus", () => {
       });
 
       it("reaches neither terminal from the tab of a main-window terminal while a pop-out terminal was used last", async () => {
-        listenForFocus();
         const { command, context } = loadCommands();
         const shown = await openTerminal(context),
           used = await openTerminal(context, popOut());

@@ -211,6 +211,15 @@ const win32BuildNumber = once(async (): Promise<number | undefined> => {
 const terminalUses = new WeakMap<TerminalView, number>();
 // Intentionally mutable so session uses have a strict order even within one tick.
 let terminalUseSequence = 0;
+// When each terminal last had the keyboard, on the same sequence: a clock that
+// is set back would reorder times, but not these marks.
+const terminalFocuses = new WeakMap<TerminalView, number>();
+
+function recordTerminalFocus(view: TerminalView): number {
+  const mark = ++terminalUseSequence;
+  terminalFocuses.set(view, mark);
+  return mark;
+}
 
 function recordTerminalUse(view: TerminalView): void {
   terminalUses.set(view, ++terminalUseSequence);
@@ -720,21 +729,36 @@ export class TerminalView extends ItemView {
         return callback(checking, lastFocus);
       };
     /*
-     * The terminal used last, while the user works in it: it has the keyboard
-     * in the window in front, or its tab is the active one. A ribbon click or
-     * the command palette takes the keyboard but leaves the active tab as it
-     * was. A note, also one in another window, is neither.
+     * The terminal the user works in: the one that has the keyboard in the
+     * window in front, else the one of the active tab, as long as no other
+     * terminal had the keyboard since it opened or last had it. A ribbon
+     * click or the command palette takes the keyboard but leaves the active
+     * tab as it was. A note, also one in another window, is neither. A
+     * terminal that only opened takes nothing from the one in use.
      */
-    const withTerminalInUse = (
-      callback: (checking: boolean, view: TerminalView) => boolean,
-    ): ((checking: boolean) => boolean) =>
-      withLastFocusedView(
-        (checking, view) =>
-          (view.isLookedAt ||
-            workspace.getActiveViewOfType(TerminalView) === view) &&
-          callback(checking, view),
-        [false, true],
-      );
+    const terminalInUse = (): TerminalView | null => {
+      const open = [...this.lastFocusTimes.keys()],
+        lookedAt = open.find((view) => view.isLookedAt);
+      if (lookedAt) {
+        return lookedAt;
+      }
+      const active = workspace.getActiveViewOfType(TerminalView),
+        since = active ? this.lastFocusTimes.get(active) : void 0;
+      return since !== void 0 &&
+        open.every(
+          (view) => view === active || (terminalFocuses.get(view) ?? 0) < since,
+        )
+        ? active
+        : null;
+    };
+    const withTerminalInUse =
+      (
+        callback: (checking: boolean, view: TerminalView) => boolean,
+      ): ((checking: boolean) => boolean) =>
+      (checking) => {
+        const view = terminalInUse();
+        return view !== null && callback(checking, view);
+      };
     addCommand(context, () => i18n.t("commands.focus-on-last-terminal"), {
       checkCallback: withLastFocusedView(
         (checking, view) => {
@@ -1198,7 +1222,7 @@ export class TerminalView extends ItemView {
       contentEl,
       "focusin",
       () => {
-        TerminalView.lastFocusTimes.set(this, Date.now());
+        TerminalView.lastFocusTimes.set(this, recordTerminalFocus(this));
         recordTerminalUse(this);
         if (settings.value.interceptKeysWhenFocused) {
           keymap.pushScope(focusedScope);
@@ -1223,7 +1247,7 @@ export class TerminalView extends ItemView {
         },
       ),
     );
-    TerminalView.lastFocusTimes.set(this, Date.now());
+    TerminalView.lastFocusTimes.set(this, ++terminalUseSequence);
     if (this.isFocused && settings.value.interceptKeysWhenFocused) {
       keymap.pushScope(focusedScope);
     }
