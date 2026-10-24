@@ -98,6 +98,20 @@ describe("PluginLocales", () => {
       expect(text).not.toContain("generic.");
     });
 
+    // Words the library leaves in English must not reach a translated text.
+    it.each([
+      ["ko", ["command", "list"]],
+      ["ja", ["command", "list"]],
+    ] as const)(
+      "keeps the %s text free of the English words %j",
+      async (language, words) => {
+        const text = await profileListDescription(language);
+        for (const word of words) {
+          expect(text).not.toMatch(new RegExp(`\\b${word}\\b`, "u"));
+        }
+      },
+    );
+
     it("names the default profile first in English", async () => {
       expect(await profileListDescription("en")).toBe(
         "A command for one terminal type opens the default profile when it has that type, otherwise the first compatible profile of that type in the list.",
