@@ -1774,7 +1774,7 @@ export namespace Settings {
         }
         // eslint-disable-next-line @typescript-eslint/no-base-to-string -- Intended conversion.
         const rp = String(raw);
-        if (rp && fixedProfiles[rp] !== undefined) {
+        if (rp && Object.hasOwn(fixedProfiles, rp)) {
           return rp as Settings.DefaultProfile;
         }
         return null;
