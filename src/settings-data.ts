@@ -101,7 +101,9 @@ export namespace LocalSettings {
         ? {
             defaultProfile:
               typeof unc.defaultProfile === "string" && unc.defaultProfile
-                ? (unc.defaultProfile as Settings.DefaultProfile)
+                ? // Cast: the opaque type only marks a profile id. This store
+                  // cannot see the profiles, so readers check that it names one.
+                  (unc.defaultProfile as Settings.DefaultProfile)
                 : null,
           }
         : {}),
