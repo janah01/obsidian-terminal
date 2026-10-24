@@ -632,6 +632,192 @@ describe("ConHost command line", () => {
       fixture.cleanup();
     }
   });
+
+  it.each<readonly [string, string, number, number]>([
+    // cmd prints a status such as STATUS_CONTROL_C_EXIT as a signed number.
+    [
+      "a negative code",
+      "require('node:fs').writeFileSync(process.argv[1], '-1073741510\\r\\n');",
+      0,
+      -1073741510,
+    ],
+    // The batch text starts with `@echo off`, never with a number.
+    ["conhost's code when the batch never wrote one", "", 5, 5],
+    [
+      "conhost's code when the file is empty",
+      "require('node:fs').writeFileSync(process.argv[1], '');",
+      6,
+      6,
+    ],
+  ])("reads %s", async (_label, write, conhostCode, expected) => {
+    const fixture = conhostLaunchFixture(
+      { args: ["/d"], executable: "cmd.exe" },
+      `${write} setTimeout(() => process.exit(${String(conhostCode)}), 50);`,
+    );
+    try {
+      await fixture.pty.shell;
+      await expect(fixture.pty.onExit).resolves.toBe(expected);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("keeps its launch values through the Windows environment, whatever case the profile uses", async () => {
+    const executable = "C:\\Windows\\System32\\cmd.exe",
+      fixture = conhostLaunchFixture({
+        args: ["/d", "/c", "exit"],
+        environment: [
+          ["obsidian_terminal_conhost_arguments", "& calc"],
+          ["Obsidian_Terminal_Conhost_Exit_Code_File", "C:\\elsewhere.txt"],
+          ["OBSIDIAN_TERMINAL_CONHOST_program", "calc.exe"],
+        ],
+        executable,
+      });
+    try {
+      const launch = await onlyConHostLaunch(fixture),
+        passed = new Map<string, string | undefined>();
+      // Node on Windows sorts the keys and passes only the first of the names
+      // that differ in case alone. An all-uppercase name sorts before every
+      // other spelling of it, so the launch values win.
+      for (const name of [
+        CONHOST_LAUNCH_VARIABLES.arguments,
+        CONHOST_LAUNCH_VARIABLES.exitCodeFile,
+        CONHOST_LAUNCH_VARIABLES.program,
+      ])
+        expect(name).toBe(name.toUpperCase());
+      for (const key of Object.keys(launch.env).sort()) {
+        const upper = key.toUpperCase();
+        if (!passed.has(upper)) passed.set(upper, launch.env[key]);
+      }
+      expect(
+        Object.fromEntries(
+          [...passed].filter(([key]) =>
+            key.startsWith("OBSIDIAN_TERMINAL_CONHOST_"),
+          ),
+        ),
+      ).toEqual({
+        OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS: "/d /c exit",
+        OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE: launch.batch,
+        OBSIDIAN_TERMINAL_CONHOST_PROGRAM: executable,
+      });
+    } finally {
+      fixture.cleanup();
+      await fixture.pty.onExit;
+    }
+  });
+
+  /** A plugin context whose `t` records the options of each message. */
+  function recordingContext(): {
+    readonly context: TerminalPlugin;
+    readonly t: ReturnType<typeof vi.fn>;
+  } {
+    const t = vi.fn((key: string) => key);
+    return {
+      context: {
+        language: {
+          onChangeLanguage: { listen: vi.fn(() => vi.fn()) },
+          value: { t },
+        },
+        resourceSampler: {
+          trackResource: vi.fn(() => ({ close: vi.fn() })),
+        },
+        settings: { value: { errorNoticeTimeout: 0 } },
+      } as unknown as TerminalPlugin,
+      t,
+    };
+  }
+
+  it.each<readonly [string, string, readonly string[], string, object]>([
+    [
+      "a command too long for cmd",
+      "cmd.exe",
+      ["x".repeat(CONHOST_LINE_LIMIT)],
+      "errors.conhost-cannot-pass",
+      {
+        interpolation: { escapeValue: false },
+        limit: CONHOST_LINE_LIMIT,
+      },
+    ],
+    [
+      "a carriage return in the program",
+      "cmd\r.exe",
+      [],
+      "errors.conhost-cannot-pass",
+      {
+        interpolation: { escapeValue: false },
+        limit: CONHOST_LINE_LIMIT,
+      },
+    ],
+  ])(
+    "refuses %s with the line limit in its message",
+    async (_label, executable, args, key, options) => {
+      const spawn = vi.spyOn(childProcess, "spawn"),
+        { context, t } = recordingContext(),
+        pty = new WindowsPseudoterminal(context, { args, executable }),
+        onExit = pty.onExit.catch((error: unknown) => error);
+      await expect(pty.shell).rejects.toThrow(key);
+      await expect(onExit).resolves.toBeInstanceOf(Error);
+      expect(t).toHaveBeenCalledWith(key, options);
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("removes the batch file and stops the resizer when conhost cannot start", async () => {
+    const nativeSpawn = childProcess.spawn.bind(childProcess),
+      batches: string[] = [],
+      processes: { resizer?: ChildProcess } = {},
+      unhandled = vi.fn();
+    vi.spyOn(childProcess, "spawn").mockImplementation(
+      (executable, args, spawnOptions) => {
+        if (executable === "test-python") {
+          processes.resizer = nativeSpawn(
+            process.execPath,
+            ["-e", KEEPALIVE_SCRIPT],
+            spawnOptions,
+          );
+          return processes.resizer;
+        }
+        if (executable === WINDOWS_CONHOST_PATH) {
+          batches.push(args[0] ?? "");
+          // As a missing or blocked conhost.exe fails: an `error` event.
+          return nativeSpawn(
+            join(tmpdir(), `missing-conhost-${randomUUID()}`),
+            [],
+            spawnOptions,
+          );
+        }
+        return nativeSpawn(executable, args, spawnOptions);
+      },
+    );
+    process.on("unhandledRejection", unhandled);
+    try {
+      const pty = new WindowsPseudoterminal(recordingContext().context, {
+          args: ["/d"],
+          executable: "cmd.exe",
+          pythonExecutable: "test-python",
+        }),
+        onExit = pty.onExit.catch((error: unknown) => error);
+      await expect(pty.shell).rejects.toThrow(/ENOENT/u);
+      await expect(onExit).resolves.toBeInstanceOf(Error);
+      expect(batches).toHaveLength(1);
+      await expect(fsPromises.access(batches[0] ?? "")).rejects.toThrow(
+        /ENOENT/u,
+      );
+      await vi.waitFor(() => {
+        const { resizer } = processes;
+        expect(resizer?.exitCode ?? resizer?.signalCode ?? null).not.toBe(null);
+      });
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 10);
+      });
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      const { resizer } = processes;
+      if (resizer?.exitCode === null && resizer.signalCode === null)
+        resizer.kill();
+    }
+  });
 });
 
 /**
