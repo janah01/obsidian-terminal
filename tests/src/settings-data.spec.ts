@@ -875,6 +875,21 @@ describe("src/settings-data.ts", () => {
           isEqual(options, Settings.Profile.fixTerminalOptions(options).value),
         ).toBe(true);
       });
+
+      it("loads a profile of an unknown type however deep its data is", async () => {
+        // The profile fixer keeps a profile of type "invalid" as it is, so
+        // 3.29.0 loaded this data.json without a report.
+        const deep: unknown = JSON.parse(
+            `${'{"deep":'.repeat(2000)}1${"}".repeat(2000)}`,
+          ),
+          data = cloneAsWritable(released329);
+        Object.assign(data.profiles, { kept: { deep, type: "invalid" } });
+
+        expect(Settings.fix(data).valid).toBe(true);
+        const loaded = await loadSettings(data);
+        expect(loaded.errors).toEqual([]);
+        expect(loaded.value.profiles).toHaveProperty("kept");
+      });
     });
   });
 
