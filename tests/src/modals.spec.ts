@@ -1435,6 +1435,106 @@ describe("keymapping editor argument", () => {
     editor.modal.close();
   });
 
+  it("takes an action it does not know as Ignore without an argument", async () => {
+    const editor = await openEditor({
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 3,
+    });
+    // A value from a newer version, or none at all.
+    await editor.choose("components.keymappings.action", "unknownAction");
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "ignore",
+      actionArg: null,
+    });
+    expect(row("").settingEl.style.display).toBe("none");
+    editor.modal.close();
+  });
+
+  it("edits a mapping 3.29.0 saved with the old argument once loaded", async () => {
+    // What the 3.29.0 editor wrote to data.json after an action change.
+    const stored = [
+        { ...seeded, action: "sendText", actionArg: null },
+        { ...seeded, action: "sendText", actionArg: 5 },
+        { ...seeded, action: "scrollLines", actionArg: "abc" },
+        { ...seeded, action: "ignore", actionArg: 3 },
+      ],
+      { keymappings } = Settings.fix({ keymappings: stored }).value;
+    expect(keymappings).toStrictEqual([
+      { ...seeded, action: "sendText", actionArg: "" },
+      { ...seeded, action: "sendText", actionArg: "" },
+      { ...seeded, action: "scrollLines", actionArg: 1 },
+      { ...seeded, action: "ignore", actionArg: null },
+    ]);
+    for (const mapping of keymappings.slice(0, 2)) {
+      const editor = await openEditor(mapping);
+      editor.typeText("hello");
+      expect(editor.saved()).toStrictEqual({ ...mapping, actionArg: "hello" });
+      editor.modal.close();
+    }
+    const scroll = keymappings[2];
+    if (!scroll) throw new Error("Mapping missing");
+    const editor = await openEditor(scroll);
+    expect(editor.numberField().value).toBe("1");
+    editor.typeNumber("5");
+    expect(editor.saved()).toStrictEqual({ ...scroll, actionArg: 5 });
+    editor.modal.close();
+  });
+
+  it("keeps the argument while a held chord with modifiers is recorded", async () => {
+    const editor = await openEditor({
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 3,
+    });
+    editor.typeNumber("7");
+    row("components.keymappings.record").buttons[0]?.buttonEl.click();
+    const keymap = new Keymap();
+    keymap.onKeyEvent(
+      new KeyboardEvent("keydown", { ctrlKey: true, key: "Control" }),
+    );
+    for (const repeat of [false, true, true]) {
+      keymap.onKeyEvent(
+        new KeyboardEvent("keydown", {
+          ctrlKey: true,
+          key: "K",
+          repeat,
+          shiftKey: true,
+        }),
+      );
+    }
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "scrollLines",
+      actionArg: 7,
+      key: "K",
+      shift: true,
+    });
+    expect(editor.numberField().value).toBe("7");
+    editor.typeNumber("-4");
+    expect(editor.saved()).toMatchObject({ actionArg: -4, key: "K" });
+    editor.modal.close();
+  });
+
+  it("keeps the argument for every platform chosen after the action", async () => {
+    const editor = await openEditor(seeded);
+    await editor.chooseAction("sendHexCode");
+    editor.typeText("1b 5b 41");
+    for (const platform of Settings.KEY_MAPPING_PLATFORMS) {
+      await editor.choose("components.keymappings.platform", platform ?? "");
+      expect(editor.saved()).toStrictEqual({
+        ...seeded,
+        action: "sendHexCode",
+        actionArg: "1b 5b 41",
+        platform,
+      });
+    }
+    editor.typeText("03");
+    expect(editor.saved()).toMatchObject({ actionArg: "03" });
+    editor.modal.close();
+  });
+
   describe("scroll amount while it is typed", () => {
     const scrollLines = {
       ...seeded,
