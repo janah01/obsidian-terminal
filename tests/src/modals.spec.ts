@@ -1220,7 +1220,7 @@ describe("keymapping editor argument", () => {
         if (!text) throw new Error("Number field missing");
         return text.inputEl;
       },
-      textArea = (): HTMLTextAreaElement => {
+      textField = (): HTMLTextAreaElement => {
         const area = row("").textAreas[0];
         if (!area) throw new Error("Text field missing");
         return area.inputEl;
@@ -1238,10 +1238,10 @@ describe("keymapping editor argument", () => {
       modal,
       numberField,
       saved: () => callback.mock.lastCall?.[0],
-      textField: textArea,
+      textField,
       typeNumber: (value) => typePythonValue(row("").texts[0], value),
       typeText: (value) => {
-        const area = textArea();
+        const area = textField();
         area.value = value;
         area.dispatchEvent(new Event("input"));
         return area;
