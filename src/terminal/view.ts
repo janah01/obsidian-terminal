@@ -944,9 +944,22 @@ export class TerminalView extends ItemView {
           .setTitle(i18n.t("components.terminal.menus.edit"))
           .setIcon(i18n.t("asset:components.terminal.menus.edit-icon"))
           .onClick(() => {
-            new EditTerminalModal(context, this.state, async (state) =>
-              TerminalView.spawn(context, state, leaf, this.getViewType()),
-            ).open();
+            new EditTerminalModal(context, this.state, async (state) => {
+              // A program that opens in its own window replaces this terminal.
+              // The tab closes with this terminal's state, so Undo close tab
+              // brings the terminal back and does not start the program again.
+              if (!PROFILE_PROPERTIES[state.profile.type].integratable) {
+                await TerminalView.spawn(context, state);
+                leaf.detach();
+                return;
+              }
+              await TerminalView.spawn(
+                context,
+                state,
+                leaf,
+                this.getViewType(),
+              );
+            }).open();
           }),
       )
       .addItem((item) =>

@@ -2335,6 +2335,65 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
   });
 });
 
+describe("closing the tab of a program that opens outside Obsidian", () => {
+  it("leaves no closed tab that starts the program again after the pane menu's Edit", async () => {
+    const { context, workspace } = makeTerminalContext(),
+      { leaf, view, setViewState } = makeTerminalLeaf(context),
+      type = TerminalView.type.namespaced(context),
+      external = {
+        ...Settings.Profile.DEFAULTS.external,
+        executable: "/usr/bin/true",
+      },
+      // What Obsidian keeps for Undo close tab: the view's state at the close.
+      closed: unknown[] = [],
+      confirmations: Promise<void>[] = [];
+    vi.spyOn(library, "notice2").mockImplementation(vi.fn());
+    const open = vi
+        .spyOn(profileProperties, "openProfile")
+        .mockResolvedValue(null),
+      leaves = vi.spyOn(workspace, "getLeavesOfType").mockReturnValue([leaf]);
+    Object.assign(workspace, { requestUpdateLayout: vi.fn() });
+    Object.assign(leaf, {
+      detach: vi.fn(() => {
+        closed.push(readStateCollaboratively(type, view.getState()));
+        leaves.mockReturnValue([]);
+      }),
+      updateHeader: vi.fn(),
+    });
+    // Obsidian hands a state of the leaf's own view type to that view.
+    setViewState.mockImplementation(async ({ state }) =>
+      view.setState(state, { history: false }),
+    );
+    // The terminal the user edits runs an integrated shell.
+    view["state"] = {
+      ...TerminalView.State.DEFAULT,
+      cwd: "/vault",
+      profile: Settings.Profile.DEFAULTS.integrated,
+    };
+    vi.spyOn(EditTerminalModal.prototype, "open").mockImplementation(function (
+      this: EditTerminalModal,
+    ) {
+      // The user picks the external profile in the dialog and confirms.
+      Object.assign(this["state"], { profile: external });
+      confirmations.push(this["confirm"](vi.fn()));
+    });
+
+    terminalPaneActions(view).get("components.terminal.menus.edit")?.();
+    await Promise.all(confirmations);
+    await tick();
+
+    expect(open).toHaveBeenCalledExactlyOnceWith(context, external, {
+      cwd: "/vault",
+    });
+    // Undo close tab must not run the external program a second time.
+    expect(closed).not.toContainEqual(
+      expect.objectContaining({
+        profile: expect.objectContaining({ type: "external" }) as unknown,
+      }),
+    );
+  });
+});
+
 describe("TerminalView reveal flash", () => {
   const FLASH = "is-flashing";
 
