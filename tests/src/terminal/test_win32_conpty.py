@@ -304,6 +304,32 @@ def test_sweep_survives_a_parent_cycle() -> None:
     assert _MODULE.select_descendants_to_end(records, _consoles(10, 20)) == [10, 20]
 
 
+def test_sweep_counts_a_parent_from_the_same_clock_tick_as_an_ancestor() -> None:
+    """A GUI parent created in the same clock tick as its console child covers it.
+
+    Creation times are only as fine as the system clock, so a GUI program and
+    a console program it starts at once can share one. Only a parent created
+    after its child is a recycled PID.
+    """
+    records = [_record(30, 1, "gui", created=7), _record(40, 30, "console", created=7)]
+    assert _MODULE.select_descendants_to_end(records, _consoles(40)) == []
+
+
+def test_sweep_ends_only_candidates_the_console_check_confirms() -> None:
+    """An answer about a process that is no candidate ends nothing.
+
+    A probe that also reports a console for a GUI program, or for a console
+    program under one, must not get either of them ended.
+    """
+    records = [
+        _record(10, 1, "console"),
+        _record(20, 1, "gui"),
+        _record(30, 20, "console"),
+    ]
+    answers = {10: True, 20: True, 30: True}
+    assert _MODULE.select_descendants_to_end(records, lambda _pids: answers) == [10]
+
+
 def _pe_header(magic: int, subsystem: int, signature_offset: int = 0x80) -> bytes:
     """Build the start of a PE image with the given optional-header fields."""
     header = bytearray(signature_offset + 24 + 70)
@@ -345,6 +371,15 @@ def test_image_subsystem_rejects_images_it_cannot_read() -> None:
     far_signature = bytearray(_pe_header(0x10B, 3))
     struct.pack_into("<I", far_signature, 0x3C, 1 << 24)
     assert _MODULE.image_subsystem(bytes(far_signature)) == "unknown"
+
+
+def test_image_subsystem_needs_the_whole_subsystem_field() -> None:
+    """A header ending right after ``Subsystem`` is read; one byte less is unknown."""
+    for magic in (0x10B, 0x20B):
+        header = _pe_header(magic, 3)
+        assert len(header) == 0x80 + 24 + 70
+        assert _MODULE.image_subsystem(header) == "console"
+        assert _MODULE.image_subsystem(header[:-1]) == "unknown"
 
 
 def test_read_image_header_reads_through_the_subsystem_field(tmp_path: Path) -> None:
