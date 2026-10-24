@@ -4255,6 +4255,67 @@ def test_session_end_ends_more_programs_than_one_list_read_holds(
         assert b"did not end" not in result.stderr, result.stderr
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_session_end_classifies_programs_at_non_ascii_paths(tmp_path: Path) -> None:
+    """A hidden-console program whose image path is not ASCII ends too.
+
+    The sweep reads each image's header from the path Windows reports. A user
+    folder named Jürgen, or a project named in Japanese, must not leave the
+    program unclassified and running.
+    """
+    base = Path(getattr(sys, "_base_executable", sys.executable))
+    folder = tmp_path / "Jürgen ünïcödé 日本語"
+    folder.mkdir()
+    copy = folder / "python.exe"
+    shutil.copy2(base, copy)
+    for library in base.parent.glob("*.dll"):
+        shutil.copy2(library, folder / library.name)
+    ready_file = tmp_path / "helper.json"
+    exit_gate = tmp_path / "shell-exit"
+    code = (
+        "import json, os, subprocess, sys, time\n"
+        "helper = subprocess.Popen(\n"
+        f"    [{str(copy)!r}, '-c', 'import time; time.sleep(120)'],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    env={**os.environ, 'PYTHONHOME': sys.base_prefix},\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': helper.pid}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    pinned: list[int] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the helper, and see that the helper runs."""
+            pid = _pin_shell_and_published_pid(watch, ready, ready_file, 45.0)
+            pinned.append(pid)
+            # Still running a second later: the copy found its libraries.
+            time.sleep(1.0)
+            assert watch.survivors(0.0) == [ready["childPid"], pid]
+            exit_gate.touch()
+
+        result = _run_host(
+            [str(base), "-c", code],
+            close_stdin=False,
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        assert len(pinned) == 1, result
+        assert result.code == 42, result
+        assert watch.survivors(15.0) == [], result.stderr
+        assert b"could not classify" not in result.stderr, result.stderr
+
+
 """Creation flag of a child with a hidden console of its own."""
 _CREATE_NO_WINDOW = 0x08000000
 """Creation flag of a child with no console at all."""
