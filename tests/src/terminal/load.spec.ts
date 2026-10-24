@@ -1061,6 +1061,10 @@ describe("profiles as this device chose them", () => {
       },
     };
 
+  // What each listener saw when it last ran, which the managers keep for it.
+  // Keyed by accessor: listeners may share a callback.
+  const seen = new Map<unknown, unknown>();
+
   /** Loads the plugin with this device's store `local`. */
   async function load(local: unknown) {
     vi.mocked(addCommand).mockImplementation((_context, name, command) => ({
@@ -1085,6 +1089,12 @@ describe("profiles as this device chose them", () => {
     });
     Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
     loadTerminal(context);
+    seen.clear();
+    for (const [accessor] of vi.mocked(context.settings).onMutate.mock.calls)
+      seen.set(accessor, accessor(context.settings.value));
+    for (const [accessor] of vi.mocked(context.localSettings).onMutate.mock
+      .calls)
+      seen.set(accessor, accessor(context.localSettings.value));
     const ribbon = vi.mocked(addRibbonIcon).mock.results.at(-1),
       title = vi.mocked(addRibbonIcon).mock.calls.at(-1)?.[3];
     if (ribbon?.type !== "return" || !title)
@@ -1104,7 +1114,10 @@ describe("profiles as this device chose them", () => {
     };
   }
 
-  /** Runs the listeners of `store` whose part changed, as the managers do. */
+  /**
+   * Runs the listeners of `store` whose part changed since they last ran, as
+   * the managers do.
+   */
   async function mutate<T>(
     store: {
       value: T;
@@ -1115,11 +1128,11 @@ describe("profiles as this device chose them", () => {
     },
     value: T,
   ): Promise<void> {
-    const prev = store.value;
     store.value = value;
     for (const [accessor, callback] of vi.mocked(store.onMutate).mock.calls) {
-      const before = accessor(prev),
+      const before = seen.get(accessor),
         after = accessor(value);
+      seen.set(accessor, after);
       if (!isEqual(before, after)) await callback(after, before, value);
     }
   }
@@ -1252,7 +1265,57 @@ describe("profiles as this device chose them", () => {
     expect(icon.reload).toHaveBeenCalledTimes(1);
   });
 
-  it("redraws the ribbon button once when both stores report the same new default", async () => {
+  it("redraws the ribbon button when data.json gives this device's new default the name shown before", async () => {
+    const { context, icon, title } = await load({ defaultProfile: "second" });
+    await mutate(
+      context.localSettings,
+      LocalSettings.fix({
+        ...context.localSettings.value,
+        defaultProfile: "first",
+      }).value,
+    );
+    expect(icon.reload).toHaveBeenCalledTimes(1);
+    // Edit under All settings, or Import, renames the new default.
+    await mutate(
+      context.settings,
+      Settings.fix({
+        ...context.settings.value,
+        profiles: {
+          ...context.settings.value.profiles,
+          first: { ...synced.profiles.first, name: "Second" },
+        },
+      }).value,
+    );
+    expect(title()).toBe("Open terminal: Second");
+    expect(icon.reload).toHaveBeenCalledTimes(2);
+  });
+
+  it("redraws the ribbon button when this device's new default has the name shown before data.json renamed the old one", async () => {
+    const { context, icon, title } = await load({ defaultProfile: "second" });
+    await mutate(
+      context.settings,
+      Settings.fix({
+        ...context.settings.value,
+        profiles: {
+          ...context.settings.value.profiles,
+          first: { ...synced.profiles.first, name: "Second" },
+          second: { ...synced.profiles.second, name: "Renamed" },
+        },
+      }).value,
+    );
+    expect(icon.reload).toHaveBeenCalledTimes(1);
+    await mutate(
+      context.localSettings,
+      LocalSettings.fix({
+        ...context.localSettings.value,
+        defaultProfile: "first",
+      }).value,
+    );
+    expect(title()).toBe("Open terminal: Second");
+    expect(icon.reload).toHaveBeenCalledTimes(2);
+  });
+
+  it("redraws the ribbon button once when data.json changes after this device's default", async () => {
     const { context, icon } = await load({ defaultProfile: "second" });
     await mutate(
       context.localSettings,
@@ -1261,17 +1324,17 @@ describe("profiles as this device chose them", () => {
         defaultProfile: "first",
       }).value,
     );
-    // Each store's listener compares with what it saw last, so the other one
-    // reports the same change at its next save.
-    const ribbonListeners = vi
-      .mocked(context.settings)
-      .onMutate.mock.calls.filter(
-        ([accessor]) => accessor(context.settings.value) === "First",
-      );
-    expect(ribbonListeners).toHaveLength(1);
-    for (const [, callback] of ribbonListeners) {
-      await callback("First", "Second", context.settings.value);
-    }
+    // Another profile changes; the name the ribbon shows stays.
+    await mutate(
+      context.settings,
+      Settings.fix({
+        ...context.settings.value,
+        profiles: {
+          ...context.settings.value.profiles,
+          second: { ...synced.profiles.second, name: "Renamed" },
+        },
+      }).value,
+    );
     expect(icon.reload).toHaveBeenCalledTimes(1);
   });
 

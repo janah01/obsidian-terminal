@@ -344,7 +344,9 @@ export function loadTerminal(context: TerminalPlugin): void {
   );
 
   // The ribbon names this device's default. Redraw when that name changes in
-  // either store, as when data.json loses or renames the profile.
+  // either store, as when data.json loses or renames the profile. Each
+  // listener watches a part of its own store only: a manager compares with
+  // what the listener saw last, which goes stale for the other store.
   const ribbonName = (
     profiles: Settings.Profiles,
     id: Settings.DefaultProfile | undefined,
@@ -364,18 +366,20 @@ export function loadTerminal(context: TerminalPlugin): void {
   };
   context.register(
     settings.onMutate(
-      (settings0) =>
-        ribbonName(
-          settings0.profiles,
-          context.localSettings.value.defaultProfile,
-        ),
-      redrawRibbon,
+      (settings0) => settings0.profiles,
+      (profiles) => {
+        redrawRibbon(
+          ribbonName(profiles, context.localSettings.value.defaultProfile),
+        );
+      },
     ),
   );
   context.register(
     context.localSettings.onMutate(
-      (local) => ribbonName(settings.value.profiles, local.defaultProfile),
-      redrawRibbon,
+      (local) => local.defaultProfile ?? null,
+      (id) => {
+        redrawRibbon(ribbonName(settings.value.profiles, id));
+      },
     ),
   );
 
