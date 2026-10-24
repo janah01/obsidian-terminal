@@ -810,6 +810,30 @@ describe("profiles as this device chose them", () => {
     );
     expect(icon.reload).toHaveBeenCalledTimes(1);
   });
+
+  it("opens this device's default from the default command, not the one in data.json", async () => {
+    const { context, run } = await load({ defaultProfile: "second" });
+    expect(run("open-terminal.default.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["second"],
+      { cwd: "C:\\Vault", profileSourceId: "second" },
+    );
+    expect(notice2).not.toHaveBeenCalled();
+  });
+
+  it("opens the first profile of a type in this device's order when this device's default does not run here", async () => {
+    const { context, run } = await load({
+      defaultProfile: "mac",
+      profileOrder: ["mac", "second", "first"],
+    });
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["second"],
+      { cwd: "C:\\Vault", profileSourceId: "second" },
+    );
+  });
 });
 
 describe("opening commands while a terminal has focus", () => {
