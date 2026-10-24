@@ -228,6 +228,43 @@ describe("src/settings-data.ts", () => {
         }
       }
     });
+
+    it("keep the marker when data.json is malformed on the same start", async () => {
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => {}),
+        warn = vi.spyOn(console, "warn").mockImplementation(() => {}),
+        errors = vi.spyOn(console, "error").mockImplementation(() => {}),
+        { manager: localSettings } = failingLocalSettings(),
+        // As `main.ts` makes it, over a data.json with a wrong value.
+        settings = new SettingsManager(
+          {
+            language: {
+              onLoaded: Promise.resolve(),
+              value: { t: (key: string): string => key },
+            },
+            loadData: vi.fn().mockResolvedValue({ noticeTimeout: "5" }),
+            localSettings,
+            saveData: vi.fn(),
+          } as unknown as PluginContext,
+          Settings.fix,
+        );
+      localSettings.load();
+      settings.load();
+      try {
+        // `main.ts` waits for both before the changelog check.
+        await Promise.all([localSettings.onLoaded, settings.onLoaded]);
+
+        expect(errors.mock.calls[0]?.[0]).toBe("errors.malformed-data");
+        expect(StorageSettingsManager.hasFailed(localSettings.value)).toBe(
+          true,
+        );
+      } finally {
+        settings.unload();
+        localSettings.unload();
+        for (const spy of [debug, warn, errors]) {
+          spy.mockRestore();
+        }
+      }
+    });
   });
 
   it("LocalSettings.fix ensures lastReadChangelogVersion exists and is a string", () => {
