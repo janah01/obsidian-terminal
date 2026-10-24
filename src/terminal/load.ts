@@ -18,6 +18,10 @@ import {
 } from "obsidian";
 import { tileIconId } from "../icons.js";
 import type { TerminalPlugin } from "../main.js";
+import {
+  deviceDefaultProfile,
+  deviceProfileEntries,
+} from "../profile-choice.js";
 import { TERMINAL_CONPTY_PREWARM_DELAY } from "../magic.js";
 import { warmSystemPath } from "./environment.js";
 import { Settings } from "../settings-data.js";
@@ -53,19 +57,8 @@ export function loadTerminal(context: TerminalPlugin): void {
       language: { value: i18n },
       settings,
     } = context,
-    getDefaultProfile = (): readonly [string, Settings.Profile] | null => {
-      const { defaultProfile, profiles } = settings.value;
-      if (defaultProfile) {
-        const profile = profiles[defaultProfile];
-        if (
-          profile &&
-          Settings.Profile.isCompatible(profile, Platform.CURRENT)
-        ) {
-          return [defaultProfile, profile];
-        }
-      }
-      return null;
-    },
+    getDefaultProfile = (): readonly [string, Settings.Profile] | null =>
+      deviceDefaultProfile(context),
     getPrewarmProfile = (): Settings.Profile | null => {
       const isCandidate = (profile: Settings.Profile): boolean =>
         profile.type === "integrated" &&
@@ -76,7 +69,11 @@ export function loadTerminal(context: TerminalPlugin): void {
       if (fromDefault && isCandidate(fromDefault)) {
         return fromDefault;
       }
-      return Object.values(settings.value.profiles).find(isCandidate) ?? null;
+      return (
+        deviceProfileEntries(context).find(([, profile]) =>
+          isCandidate(profile),
+        )?.[1] ?? null
+      );
     },
     // The default profile when it has this type, else the first one that has.
     getDefaultProfileOfType = (
@@ -90,6 +87,7 @@ export function loadTerminal(context: TerminalPlugin): void {
         type,
         settings.value.profiles,
         Platform.CURRENT,
+        context.localSettings.value.profileOrder ?? [],
       );
     },
     adapter = vault.adapter instanceof FileSystemAdapter ? vault.adapter : null,
@@ -270,7 +268,7 @@ export function loadTerminal(context: TerminalPlugin): void {
       const menu = new Menu(),
         cwd = adapter?.getBasePath();
       let hasProfileItems = false;
-      for (const [id, profile] of Object.entries(settings.value.profiles)) {
+      for (const [id, profile] of deviceProfileEntries(context)) {
         if (!Settings.Profile.isCompatible(profile, Platform.CURRENT)) {
           continue;
         }
@@ -345,8 +343,8 @@ export function loadTerminal(context: TerminalPlugin): void {
   );
 
   context.register(
-    settings.onMutate(
-      (settings) => settings.defaultProfile,
+    context.localSettings.onMutate(
+      (local) => local.defaultProfile,
       openTerminal.reload,
     ),
   );

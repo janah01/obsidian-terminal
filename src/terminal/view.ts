@@ -69,6 +69,7 @@ import {
 } from "../magic.js";
 import type { TerminalPlugin } from "../main.js";
 import { ProfileModal } from "../modals.js";
+import { deviceProfileEntries } from "../profile-choice.js";
 import { Settings } from "../settings-data.js";
 import {
   AltScreenExitAddon,
@@ -348,7 +349,7 @@ export class EditTerminalModal extends DialogModal {
                     )
                     .addOptions(
                       Object.fromEntries(
-                        Object.entries(profiles).map((entry) => [
+                        deviceProfileEntries(context).map((entry) => [
                           entry[0],
 
                           i18n.t(

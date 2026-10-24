@@ -5,6 +5,7 @@ import {
   createI18n,
   notice2,
 } from "@polyipseity/obsidian-plugin-library";
+import { isEqual } from "es-toolkit/predicate";
 import { FileSystemAdapter, Menu } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginLocales } from "../../../assets/locales.js";
@@ -133,6 +134,10 @@ const domCleanup: (() => void)[] = [];
 
 async function terminalContext(initial: unknown = {}) {
   const context = await pythonSettingsContext(initial);
+  // The default profile a test names is the one this device chose.
+  await context.localSettings.mutate((local) => {
+    local.defaultProfile = context.settings.value.defaultProfile;
+  });
   // The shared Python fixture has no DOM lifecycle; exercise real bubbling here.
   Object.assign(context, {
     registerDomEvent: vi.fn(
@@ -298,14 +303,17 @@ describe("terminal ribbon profile access", () => {
     const original = icon.elementRef;
     // Default-profile edits invoke the registered reload; language changes
     // invoke the same library reload and replace the element again.
-    for (const [accessor, callback] of vi.mocked(context.settings).onMutate.mock
-      .calls) {
-      const previous = accessor(context.settings.value);
+    for (const [accessor, callback] of vi.mocked(context.localSettings).onMutate
+      .mock.calls) {
+      const previous = accessor(context.localSettings.value);
       const next = accessor(
-        Settings.fix({ ...context.settings.value, defaultProfile: null }).value,
+        LocalSettings.fix({
+          ...context.localSettings.value,
+          defaultProfile: null,
+        }).value,
       );
       if (previous !== next && typeof previous === "string")
-        await callback(next, previous, context.settings.value);
+        await callback(next, previous, context.localSettings.value);
     }
     expect(icon.elementRef).not.toBe(original);
     icon.reload();
@@ -543,9 +551,9 @@ describe("commands and menu items of one profile type", () => {
         second: { ...integrated, name: "Second" },
       },
     });
-    // The settings fixer drops a dangling id; a running plugin can still hold one.
-    Object.assign(context.settings, {
-      value: { ...context.settings.value, defaultProfile: "gone" },
+    // This device's default can name a profile deleted on another device.
+    Object.assign(context.localSettings, {
+      value: { ...context.localSettings.value, defaultProfile: "gone" },
     });
     expect(run("open-terminal.integrated.root")).toBe(true);
     expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
@@ -622,6 +630,185 @@ describe("commands and menu items of one profile type", () => {
     expect(vi.mocked(notice2).mock.calls[0]?.[0]()).toBe(
       "No default profile for type 'Integrated'",
     );
+  });
+});
+
+describe("profiles as this device chose them", () => {
+  afterEach(() => {
+    vi.mocked(addCommand).mockReset();
+  });
+
+  const integrated = {
+      ...Settings.Profile.DEFAULTS.integrated,
+      platforms: { win32: true },
+    },
+    // data.json, whose default another device chose; this device runs Windows.
+    synced = {
+      defaultProfile: "first",
+      profiles: {
+        first: { ...integrated, name: "First" },
+        second: { ...integrated, name: "Second" },
+        mac: {
+          ...Settings.Profile.DEFAULTS.integrated,
+          name: "Mac",
+          platforms: { darwin: true },
+        },
+      },
+    };
+
+  /** Loads the plugin with this device's store `local`. */
+  async function load(local: unknown) {
+    vi.mocked(addCommand).mockImplementation((_context, name, command) => ({
+      ...command,
+      name: name(),
+    }));
+    const context = await terminalContext(synced);
+    Object.assign(context.localSettings, {
+      value: LocalSettings.fix(local).value,
+    });
+    Object.assign(context.language, {
+      value: await createI18n(
+        PluginLocales.RESOURCES,
+        PluginLocales.FORMATTERS,
+        { lng: "en", fallbackLng: "en" },
+      ),
+    });
+    Object.assign(context.app.vault, {
+      adapter: Object.assign(new FileSystemAdapter(), {
+        getBasePath: vi.fn().mockReturnValue("C:\\Vault"),
+      }),
+    });
+    Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
+    loadTerminal(context);
+    const ribbon = vi.mocked(addRibbonIcon).mock.results.at(-1),
+      title = vi.mocked(addRibbonIcon).mock.calls.at(-1)?.[3];
+    if (ribbon?.type !== "return" || !title)
+      throw new Error("Ribbon icon was not registered");
+    const commands = vi
+      .mocked(addCommand)
+      .mock.calls.map(([, , command]) => command);
+    return {
+      context,
+      icon: ribbon.value,
+      title,
+      run: (id: string): unknown => {
+        const command = commands.find((command0) => command0.id === id);
+        if (!command?.checkCallback) throw new Error(`No command: ${id}`);
+        return command.checkCallback(false);
+      },
+    };
+  }
+
+  /** Runs the listeners of `store` whose part changed, as the managers do. */
+  async function mutate<T>(
+    store: {
+      value: T;
+      readonly onMutate: (
+        accessor: (value: T) => unknown,
+        callback: (cur: unknown, prev: unknown, value: T) => unknown,
+      ) => unknown;
+    },
+    value: T,
+  ): Promise<void> {
+    const prev = store.value;
+    store.value = value;
+    for (const [accessor, callback] of vi.mocked(store.onMutate).mock.calls) {
+      const before = accessor(prev),
+        after = accessor(value);
+      if (!isEqual(before, after)) await callback(after, before, value);
+    }
+  }
+
+  it("opens this device's default from the ribbon, not the one in data.json", async () => {
+    const { context, icon, title } = await load({ defaultProfile: "second" });
+    expect(title()).toBe("Open terminal: Second");
+    icon.elementRef.dispatchEvent(new MouseEvent("click", { button: 0 }));
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["second"],
+      { cwd: "C:\\Vault", profileSourceId: "second" },
+    );
+    expect(SelectProfileModal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a store that 3.29.0 wrote", { lastReadChangelogVersion: "0.0.0" }],
+    ["an inherited property", { defaultProfile: "constructor" }],
+    ["a profile deleted on another device", { defaultProfile: "gone" }],
+    ["a profile that does not run here", { defaultProfile: "mac" }],
+  ])(
+    "shows the profile selector from the ribbon for %s",
+    async (_case, local) => {
+      const { icon, title } = await load(local);
+      expect(title()).toBe("Open terminal");
+      icon.elementRef.dispatchEvent(new MouseEvent("click", { button: 0 }));
+      expect(spawnTerminal).not.toHaveBeenCalled();
+      expect(SelectProfileModal).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        "C:\\Vault",
+      );
+    },
+  );
+
+  it("lists the ribbon menu in this device's order", async () => {
+    const { icon } = await load({
+      profileOrder: ["second", "mac", "constructor", "first"],
+    });
+    icon.elementRef.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+      }),
+    );
+    expect(
+      ribbonMenu.items.map((item) => item?.setTitle.mock.calls[0]?.[0] ?? null),
+    ).toEqual([
+      "Integrated: Second (second)",
+      "Integrated: First (first)",
+      null,
+      "Open in terminal: Select",
+    ]);
+  });
+
+  it("opens this device's default from a command of its type", async () => {
+    const { context, run } = await load({ defaultProfile: "second" });
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["second"],
+      { cwd: "C:\\Vault", profileSourceId: "second" },
+    );
+  });
+
+  it("opens the first profile of a type in this device's order", async () => {
+    const { context, run } = await load({
+      defaultProfile: null,
+      profileOrder: ["mac", "second", "first"],
+    });
+    expect(run("open-terminal.integrated.root")).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["second"],
+      { cwd: "C:\\Vault", profileSourceId: "second" },
+    );
+  });
+
+  it("redraws the ribbon button when this device's default changes, not data.json's", async () => {
+    const { context, icon } = await load({ defaultProfile: "second" });
+    await mutate(
+      context.settings,
+      Settings.fix({ ...context.settings.value, defaultProfile: null }).value,
+    );
+    expect(icon.reload).not.toHaveBeenCalled();
+    await mutate(
+      context.localSettings,
+      LocalSettings.fix({
+        ...context.localSettings.value,
+        defaultProfile: "first",
+      }).value,
+    );
+    expect(icon.reload).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -839,12 +1026,11 @@ describe("layout-ready automatic Python work", () => {
       });
     const onLayoutReady = vi.fn<(callback: () => unknown) => void>();
     Object.assign(context.app.workspace, { onLayoutReady });
-    Object.assign(context, {
-      localSettings: {
-        value: LocalSettings.fix({
-          hasUsedIntegratedTerminal: options.used ?? true,
-        }).value,
-      },
+    Object.assign(context.localSettings, {
+      value: LocalSettings.fix({
+        ...context.localSettings.value,
+        hasUsedIntegratedTerminal: options.used ?? true,
+      }).value,
     });
     loadTerminal(context);
     options.beforeLayout?.(context);
@@ -1173,10 +1359,13 @@ describe("ConPTY host settings invalidation", () => {
     Object.assign(context, {
       settings,
       loadData: vi.fn().mockResolvedValue(initial),
-      // A used plugin: a console host change prewarms only after first use.
-      localSettings: {
-        value: LocalSettings.fix({ hasUsedIntegratedTerminal: true }).value,
-      },
+    });
+    // A used plugin: a console host change prewarms only after first use.
+    Object.assign(context.localSettings, {
+      value: LocalSettings.fix({
+        ...context.localSettings.value,
+        hasUsedIntegratedTerminal: true,
+      }).value,
     });
     Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
     vi.spyOn(settings, "write").mockResolvedValue();
