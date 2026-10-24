@@ -42,6 +42,8 @@ import { ProgramStatusAddon } from "../../../src/terminal/emulator-addons.js";
 import * as environment from "../../../src/terminal/environment.js";
 import { mergeTerminalOptions } from "../../../src/terminal/options.js";
 import * as profileProperties from "../../../src/terminal/profile-properties.js";
+import { PROFILE_PRESETS } from "../../../src/terminal/profile-presets.js";
+import released328 from "../../fixtures/data-3.28.0.json" with { type: "json" };
 import { DETECTION_REPLY } from "../../../src/terminal/program-status.js";
 import { TabStatusPresenter } from "../../../src/terminal/tab-status.js";
 import {
@@ -2093,6 +2095,41 @@ describe("TerminalView.spawn of a profile that opens outside Obsidian", () => {
       expectNoLeaf(spies);
     },
   );
+
+  // On its way to the program, 3.29.0 sent the profile through the state's
+  // fix, which this path skips. Every external profile the settings can hold
+  // must therefore come out of that fix as it went in.
+  it("starts each external profile the settings can hold as they hold it", async () => {
+    const spies = bed(),
+      externalOf = (
+        profiles: readonly Settings.Profile[],
+      ): readonly Settings.Profile[] =>
+        profiles.filter(({ type }) => type === "external"),
+      held = (data: unknown): readonly Settings.Profile[] =>
+        externalOf(Object.values(Settings.fix(data).value.profiles)),
+      groups = [
+        externalOf(Object.values(PROFILE_PRESETS)),
+        // Saved by 3.28.0, and by 3.29.0 (its defaults, written and read back).
+        held(released328),
+        held(JSON.parse(JSON.stringify(Settings.DEFAULT))),
+      ],
+      profiles = groups.flat();
+    for (const group of groups) expect(group).not.toHaveLength(0);
+
+    for (const profile of profiles) {
+      expect(
+        TerminalView.State.fix({ ...TerminalView.State.DEFAULT, profile }).value
+          .profile,
+      ).toStrictEqual(profile);
+      spawnTerminal(spies.context, profile, { cwd: "/vault" });
+    }
+    await tick();
+
+    expect(spies.open.mock.calls.map(([, profile]) => profile)).toEqual(
+      profiles,
+    );
+    expectNoLeaf(spies);
+  });
 
   it("opens the program from a command without a leaf or a logged error", async () => {
     const spies = bed(),
