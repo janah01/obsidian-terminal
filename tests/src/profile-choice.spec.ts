@@ -9,6 +9,7 @@ import {
   deviceDefaultProfileId,
   deviceProfileEntries,
   migrateProfileChoice,
+  saveProfileList,
 } from "../../src/profile-choice.js";
 import { LocalSettings, Settings } from "../../src/settings-data.js";
 import { pythonSettingsContext } from "../fixtures/python-settings-ui.js";
@@ -234,4 +235,37 @@ describe("this device's default profile and order", () => {
       expect(deviceDefaultProfile(context)).toBeNull();
     },
   );
+});
+
+describe("saving the profile list", () => {
+  it("keeps a profile stored under the id __proto__ as a profile", async () => {
+    const stored = JSON.parse(
+        `{"a":${JSON.stringify(integrated)},"__proto__":${JSON.stringify(integrated)}}`,
+      ) as unknown,
+      { context, writeSettings } = await deviceContext(
+        { profiles: stored },
+        released3290,
+      );
+    expect(Object.keys(context.settings.value.profiles)).toEqual([
+      "a",
+      "__proto__",
+    ]);
+    const entries = deviceProfileEntries(context);
+    await saveProfileList(context, {
+      defaultProfile: null,
+      entries: [...entries, ["b", { ...integrated, name: "b" }]],
+    });
+    expect(writeSettings).toHaveBeenCalledTimes(1);
+    expect(Object.keys(context.settings.value.profiles)).toEqual([
+      "a",
+      "__proto__",
+      "b",
+    ]);
+    expect(Object.getPrototypeOf(context.settings.value.profiles)).toBe(
+      Object.prototype,
+    );
+    expect(
+      Settings.fix(JSON.parse(JSON.stringify(context.settings.value))).valid,
+    ).toBe(true);
+  });
 });
