@@ -505,7 +505,7 @@ describe("ConHost command line", () => {
   });
 
   it("hands conhost the program, arguments and exit-code file in its environment, not in the batch text", async () => {
-    const executable = "C:\\Windows\\System32\\cmd.exe",
+    const executable = "C:\\Tools\\cmd.exe",
       fixture = conhostLaunchFixture({
         args: ["/d", "/k", "prompt CMD$G$S"],
         executable,
@@ -517,7 +517,7 @@ describe("ConHost command line", () => {
         OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE: launch.batch,
         OBSIDIAN_TERMINAL_CONHOST_PROGRAM: executable,
       });
-      for (const text of ["cmd.exe", "prompt", "CMD$G$S", launch.batch])
+      for (const text of [executable, "prompt", "CMD$G$S", launch.batch])
         expect(launch.text).not.toContain(text);
     } finally {
       fixture.cleanup();
@@ -622,7 +622,7 @@ describe("ConHost command line", () => {
   it("reads the exit code the batch file writes", async () => {
     const fixture = conhostLaunchFixture(
       { executable: "cmd.exe" },
-      // The text `call echo` writes: the code, then CR LF.
+      // The text the batch file writes: the code, then CR LF.
       "require('node:fs').writeFileSync(process.argv[1], '7\\r\\n'); setTimeout(() => process.exit(0), 50);",
     );
     try {
@@ -1033,7 +1033,7 @@ describe("ConHost launch", () => {
       [
         "@echo off",
         "setlocal DisableDelayedExpansion",
-        'set "OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS=" & set "OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE=" & set "OBSIDIAN_TERMINAL_CONHOST_PROGRAM=" & "%OBSIDIAN_TERMINAL_CONHOST_PROGRAM%" %OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS%& >"%OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE%" call echo %%ERRORLEVEL%%',
+        'set "ERRORLEVEL=" & set "OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS=" & set "OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE=" & set "OBSIDIAN_TERMINAL_CONHOST_PROGRAM=" & "%OBSIDIAN_TERMINAL_CONHOST_PROGRAM%" %OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS%& >"%OBSIDIAN_TERMINAL_CONHOST_EXIT_CODE_FILE%" call "C:\\Windows\\System32\\cmd.exe" /d /c echo %%ERRORLEVEL%%',
       ].join("\r\n"),
     );
     // Without arguments, nothing at all follows the program.
@@ -1170,7 +1170,7 @@ describe("ConHost launch", () => {
     return ret;
   }
 
-  it("gives cmd five commands and the program the ConPTY arguments, whatever the arguments hold", () => {
+  it("gives cmd six commands and the program the ConPTY arguments, whatever the arguments hold", () => {
     // A seeded walk over the characters that cmd or the argv rules treat
     // specially, in every position and combination.
     const alphabet = Array.from(
@@ -1190,12 +1190,12 @@ describe("ConHost launch", () => {
         ),
         { batch, environment } = acceptedLaunch(program, args),
         commands = cmdCommands(expandedBatchLine(batch, environment)),
-        command = commands[3]?.text.trimStart() ?? "",
+        command = commands[4]?.text.trimStart() ?? "",
         tail = command.slice(`"${program}"`.length);
       expect(
         commands.map(({ specials }) => specials),
         tail,
-      ).toEqual(["", "", "", "", ">"]);
+      ).toEqual(["", "", "", "", "", ">"]);
       expect(command.startsWith(`"${program}"`)).toBe(true);
       expect(tail).toBe(
         args.length > 0 ? ` ${args.map(quoteWindowsArgument).join(" ")}` : "",

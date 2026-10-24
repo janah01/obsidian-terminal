@@ -900,7 +900,7 @@ describe.skipIf(process.platform !== "win32")(
     );
 
     it(
-      "records the exit code with the built-in echo, not an echo.cmd",
+      "records the exit code without running an echo.cmd",
       async () => {
         const trap = await mkdtemp(win32.join(work, "echo-")),
           marker = win32.join(trap, "marker.txt");
@@ -1130,6 +1130,54 @@ describe.skipIf(process.platform !== "win32")(
             { cwd },
           ),
         ).resolves.toMatchObject({ code: 15 });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    // A file named echo.cmd or echo.bat in the terminal's working folder, such
+    // as a vault root, or on PATH must not run when the program exits.
+    it.each([
+      ["echo.cmd", "the working folder"],
+      ["echo.bat", "the working folder"],
+      ["echo.cmd", "PATH"],
+    ])(
+      "records the exit code without running a file named %s in %s",
+      async (name, where) => {
+        const trap = await mkdtemp(win32.join(work, "echo-")),
+          marker = win32.join(trap, "marker.txt");
+        await writeFile(
+          win32.join(trap, name),
+          `@type nul > "${marker}"\r\n@exit /b 0\r\n`,
+          "utf8",
+        );
+        const run = await probe(
+            [],
+            where === "PATH"
+              ? {
+                  code: 12,
+                  environment: [["PATH", `${trap};${process.env.PATH ?? ""}`]],
+                }
+              : { code: 12, cwd: trap },
+          ),
+          ran = await access(marker).then(
+            () => true,
+            () => false,
+          );
+        expect({ code: run.code, ran }).toEqual({ code: 12, ran: false });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    // cmd expands a variable named ERRORLEVEL instead of the exit code.
+    it(
+      "reports the program's exit code when the profile sets ERRORLEVEL",
+      async () => {
+        const run = await probe([], {
+          code: 3,
+          environment: [["ERRORLEVEL", "42"]],
+        });
+        expect(run.probe?.argv).toEqual([]);
+        expect(run.code).toBe(3);
       },
       CONHOST_TIMEOUT_MS * 2,
     );

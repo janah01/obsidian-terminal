@@ -45,6 +45,7 @@ import {
   TERMINAL_RESIZER_WATCHDOG_WAIT,
   WIN32_EXIT_COMMAND_NOT_FOUND,
   WIN32_EXIT_SHELL_START_FAILED,
+  WINDOWS_CMD_PATH,
   WINDOWS_CONHOST_PATH,
 } from "../magic.js";
 import { spawnPromise, writePromise } from "../utils.js";
@@ -1133,11 +1134,14 @@ export type ConHostLaunch =
  * the `&` after them: a space there would reach the program. The program
  * path stays in quotes, so cmd never takes it for a built-in command.
  *
- * The exit code is written by `call echo %%ERRORLEVEL%%`, which reads the
- * code after the program ends. With it cmd records the code of a `.cmd`
- * program and, after Ctrl+C in the console, exits without asking
- * "Terminate batch job (Y/N)?"; the `echo !ERRORLEVEL!` it replaces did
- * neither (Windows CI runs 40038658462 and 40039342122).
+ * The exit code is written by a second cmd that `call` starts by its full
+ * path. `call` expands `%%ERRORLEVEL%%` once more, after the program has
+ * ended, and with it cmd records the code of a `.cmd` program and, after
+ * Ctrl+C in the console, exits without asking "Terminate batch job (Y/N)?".
+ * A line of its own, or `exit /b`, would ask. `call echo` would first look for
+ * an `echo.cmd` or `echo.bat` in the working folder and on `PATH`, and run it.
+ * A variable named `ERRORLEVEL` would hide the exit code, so the line clears
+ * it too.
  *
  * A `.cmd` or `.bat` program is the exception to ConPTY parity: it parses its
  * own arguments again, which ConPTY's `cmd /c` start does differently.
@@ -1176,10 +1180,11 @@ export function conhostLaunch(
       [programName]: program,
     },
     line = [
-      `set "${argumentsName}=" & set "${exitCodeFileName}=" & `,
-      `set "${programName}=" & "%${programName}%"`,
+      `set "ERRORLEVEL=" & set "${argumentsName}=" & `,
+      `set "${exitCodeFileName}=" & set "${programName}=" & `,
+      `"%${programName}%"`,
       args.length > 0 ? ` %${argumentsName}%` : "",
-      `& >"%${exitCodeFileName}%" call echo %%ERRORLEVEL%%`,
+      `& >"%${exitCodeFileName}%" call "${WINDOWS_CMD_PATH}" /d /c echo %%ERRORLEVEL%%`,
     ].join(""),
     expanded = line.replace(
       /%%|%([^%]+)%/gu,
