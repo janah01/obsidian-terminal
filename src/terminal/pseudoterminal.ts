@@ -1303,9 +1303,16 @@ export class WindowsPseudoterminal implements Pseudoterminal {
               fsPromises,
               tmpPromise,
             ]),
+            /*
+             * Windows starts the batch file through cmd, which takes `^`, `&`
+             * and parentheses in an unquoted path as syntax, and the
+             * temporary folder holds the user name. conhost quotes a path
+             * only when it holds a space, so the name has one.
+             */
             inOutTmp = await tmpPromise2.file({
               discardDescriptor: true,
               postfix: ".bat",
+              prefix: "obsidian-terminal conhost",
             });
           try {
             /*
