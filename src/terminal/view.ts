@@ -721,16 +721,16 @@ export class TerminalView extends ItemView {
       };
     /*
      * The terminal used last, while the user works in it: it has the keyboard
-     * or its tab is the active one. A ribbon click or the command palette
-     * takes the keyboard but leaves the active tab as it was. A note is
-     * neither.
+     * in the window in front, or its tab is the active one. A ribbon click or
+     * the command palette takes the keyboard but leaves the active tab as it
+     * was. A note, also one in another window, is neither.
      */
     const withTerminalInUse = (
       callback: (checking: boolean, view: TerminalView) => boolean,
     ): ((checking: boolean) => boolean) =>
       withLastFocusedView(
         (checking, view) =>
-          (view.isFocused ||
+          (view.isLookedAt ||
             workspace.getActiveViewOfType(TerminalView) === view) &&
           callback(checking, view),
         [false, true],

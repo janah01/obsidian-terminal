@@ -1818,6 +1818,22 @@ describe("TerminalView focus", () => {
         command("clear-terminal")(false);
         expect(terminal.clear).toHaveBeenCalledOnce();
       });
+
+      it.each(ACTING)(
+        "neither offers nor runs %s from a note in the main window",
+        async (id) => {
+          const { command, context } = loadCommands();
+          const terminal = await openTerminal(context, popOut());
+          terminal.use();
+          clickIntoNote(context);
+          // The pop-out still remembers its focused element.
+          expect(terminal.view["isFocused"]).toBe(true);
+
+          expect(command(id)(true)).toBe(false);
+          command(id)(false);
+          expect(terminal.acted()).toBe(0);
+        },
+      );
     });
   });
 });
