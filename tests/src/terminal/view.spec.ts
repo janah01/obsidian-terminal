@@ -1556,9 +1556,11 @@ describe("TerminalView focus", () => {
       await view["onOpen"]();
       const clear = vi.fn(),
         detach = vi.fn(),
-        startFind = vi.spyOn(view, "startFind").mockImplementation(vi.fn()),
+        startFind = vi.fn(),
         textarea = into.createElement("textarea");
       Object.assign(leaf, { detach });
+      // `startFind` is protected, so `vi.spyOn` cannot name it.
+      view["startFind"] = startFind;
       view["emulator"] = {
         close: vi.fn().mockResolvedValue(undefined),
         terminal: { clear, focus: vi.fn() },
