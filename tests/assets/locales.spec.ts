@@ -316,6 +316,24 @@ describe("PluginLocales", () => {
     }
   });
 
+  it("renders a refused ConHost command's message with its limit and its nested words in every locale", async () => {
+    for (const language of PluginLocales.LANGUAGES) {
+      const translation = await PluginLocales.RESOURCES[language].translation(),
+        i18n = createInstance();
+      await i18n.init({
+        lng: language,
+        fallbackLng: false,
+        resources: { [language]: { translation } },
+      });
+      const message = i18n.t("errors.conhost-cannot-pass", {
+        interpolation: { escapeValue: false },
+        limit: 8191,
+      });
+      expect(message, language).toContain("8191");
+      expect(message, language).not.toMatch(/\{\{|\$t\(|generic\./u);
+    }
+  });
+
   it("provides the Windows backend selector and ConPTY failure messages", async () => {
     const translations = await Promise.all(
       Array.from(PluginLocales.LANGUAGES, async (language) => {
