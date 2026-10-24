@@ -21,6 +21,7 @@ import {
   fixExperiments,
 } from "../../src/experiments.js";
 import { LocalSettings, Settings } from "../../src/settings-data.js";
+import type { ProfileListModal } from "../../src/modals.js";
 import {
   capturePythonRows,
   pythonSettingsContext,
@@ -41,7 +42,29 @@ import {
   win32PythonConfigurationKey,
 } from "../../src/terminal/win32-doctor.js";
 
-vi.mock("../../src/modals.js", () => ({}));
+// What the settings tab opened each profile list with; a test answers for it.
+const profileLists = vi.hoisted(
+  (): {
+    readonly data: ProfileListModal.Data;
+    readonly callback: NonNullable<ProfileListModal.Options["callback"]>;
+  }[] => [],
+);
+// The modals the settings tab opens, one member each.
+const modalMocks = vi.hoisted(() => ({
+  ProfileListModal: class {
+    public constructor(
+      _context: unknown,
+      data: ProfileListModal.Data,
+      options: ProfileListModal.Options,
+    ) {
+      profileLists.push({ data, callback: options.callback ?? vi.fn() });
+    }
+    public open(): void {
+      // Nothing to show; the test calls the callback.
+    }
+  },
+}));
+vi.mock("../../src/modals.js", () => ({ ...modalMocks }));
 
 // The device platform. `null` keeps the real one; tests that set it reset it.
 const platform = vi.hoisted((): { current: Platform.All | null } => ({
@@ -1690,6 +1713,178 @@ describe("settings tab descriptions", () => {
       }
     },
   );
+});
+
+describe("default profile after profile list edits", () => {
+  afterEach(() => {
+    profileLists.length = 0;
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  // data.json with one of the user's own profiles as the default.
+  const custom = {
+    defaultProfile: "mine",
+    profiles: {
+      mine: { ...Settings.Profile.DEFAULTS.integrated, name: "Mine" },
+      other: { ...Settings.Profile.DEFAULTS.integrated, name: "Other" },
+    },
+  };
+
+  /** The whole settings tab; `edit` presses the Edit button of Profiles. */
+  async function drawProfiles(initial: unknown) {
+    const i18n = createInstance();
+    await i18n.init({
+      lng: "en",
+      resources: { en: { asset, translation: en } },
+    });
+    const rows = captureMainWindowRows(),
+      context = await pythonSettingsContext(initial);
+    Object.assign(context, {
+      localSettings: {
+        value: LocalSettings.fix({ lastReadChangelogVersion: "0.0.0" }).value,
+      },
+      version: null,
+    });
+    Object.assign(context.language, {
+      onChangeLanguage: { listen: vi.fn().mockReturnValue(vi.fn()) },
+      value: i18n,
+    });
+    // The value is stored as given; the next start's fixer is the test's.
+    vi.spyOn(context.settings, "mutate").mockImplementation(async (mutate) => {
+      const value = cloneAsWritable(context.settings.value);
+      await mutate(value);
+      Object.assign(context.settings, { value });
+    });
+    // Profiles, terminal options and keymappings each have an Edit button,
+    // drawn in that order.
+    const edits: ((evt: MouseEvent) => unknown)[] = [];
+    vi.spyOn(ButtonComponent.prototype, "onClick").mockImplementation(function (
+      this: ButtonComponent,
+      callback,
+    ) {
+      // The mock's tooltip getter; Obsidian's button has none.
+      const mock = this as ButtonComponent & { getTooltip: () => string };
+      if (mock.getTooltip() === i18n.t("settings.profiles-edit")) {
+        edits.push(callback);
+      }
+      return this;
+    });
+    const tab = new LoadedSettingTab(context, loadDocumentations(context));
+    document.body.append(tab.containerEl);
+    tab.load();
+    const reset = rows.get(i18n.t("settings.profiles"))?.reset;
+    if (!reset) throw new Error("Missing profiles reset button");
+    return {
+      context,
+      reset,
+      tab,
+      edit: () => {
+        void edits[0]?.(new MouseEvent("click"));
+        const opened = profileLists.at(-1);
+        if (!opened) throw new Error("Profile list did not open");
+        return {
+          data: opened.data,
+          // As the list modal: each edit sends copies of its profiles.
+          send: async (data: ProfileListModal.Data) =>
+            opened.callback(cloneAsWritable(data)),
+        };
+      },
+      /** data.json as the next start reads it. */
+      nextStart: () =>
+        Settings.fix(JSON.parse(JSON.stringify(context.settings.value))),
+    };
+  }
+
+  it("clears the default profile when the profile list deletes it", async () => {
+    const { context, edit, nextStart, tab } = await drawProfiles(custom);
+    try {
+      const { data, send } = edit();
+      await send({
+        defaultProfile: data.defaultProfile,
+        entries: data.entries.filter(([id]) => id !== "mine"),
+      });
+      expect(context.settings.value.defaultProfile).toBeNull();
+      expect(nextStart().valid).toBe(true);
+    } finally {
+      tab.dispose();
+    }
+  });
+
+  it("keeps it cleared when the same list sends its next edit", async () => {
+    const { context, edit, nextStart, tab } = await drawProfiles(custom);
+    try {
+      const { data, send } = edit();
+      // The list modal keeps sending the default it was opened with.
+      const [, other] = data.entries.find(([id]) => id === "other") ?? [];
+      if (!other) throw new Error("Missing profile other");
+      await send({
+        defaultProfile: data.defaultProfile,
+        entries: [["other", other]],
+      });
+      await send({
+        defaultProfile: data.defaultProfile,
+        entries: [["other", { ...other, name: "Renamed" }]],
+      });
+      expect(context.settings.value.profiles["other"]?.name).toBe("Renamed");
+      expect(context.settings.value.defaultProfile).toBeNull();
+      expect(nextStart().valid).toBe(true);
+    } finally {
+      tab.dispose();
+    }
+  });
+
+  it("keeps the default profile when the list deletes another one", async () => {
+    const { context, edit, nextStart, tab } = await drawProfiles(custom);
+    try {
+      const { data, send } = edit();
+      await send({
+        defaultProfile: data.defaultProfile,
+        entries: data.entries.filter(([id]) => id !== "other"),
+      });
+      expect(context.settings.value.defaultProfile).toBe("mine");
+      expect(nextStart().valid).toBe(true);
+    } finally {
+      tab.dispose();
+    }
+  });
+
+  it("clears the default profile when Reset removes it", async () => {
+    const { context, nextStart, reset, tab } = await drawProfiles(custom);
+    try {
+      reset.extraSettingsEl.click();
+      await vi.waitFor(() => {
+        expect(context.settings.value.profiles).not.toHaveProperty("mine");
+      });
+      expect(context.settings.value.defaultProfile).toBeNull();
+      expect(nextStart().valid).toBe(true);
+    } finally {
+      tab.dispose();
+    }
+  });
+
+  it("keeps a preset default that Reset brings back", async () => {
+    const { context, nextStart, reset, tab } = await drawProfiles({
+      defaultProfile: "linuxIntegratedDefault",
+      profiles: {
+        ...custom.profiles,
+        linuxIntegratedDefault:
+          Settings.DEFAULT.profiles["linuxIntegratedDefault"],
+      },
+    });
+    try {
+      reset.extraSettingsEl.click();
+      await vi.waitFor(() => {
+        expect(context.settings.value.profiles).not.toHaveProperty("mine");
+      });
+      expect(context.settings.value.defaultProfile).toBe(
+        "linuxIntegratedDefault",
+      );
+      expect(nextStart().valid).toBe(true);
+    } finally {
+      tab.dispose();
+    }
+  });
 });
 
 describe("program status row", () => {
