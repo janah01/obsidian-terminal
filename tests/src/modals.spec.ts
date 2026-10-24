@@ -1584,6 +1584,98 @@ describe("keymapping editor argument", () => {
       editor.modal.close();
     });
 
+    it("shows a number typed just before the field is left while it saves", async () => {
+      const editor = await openEditor(scrollLines),
+        field = focus(editor.numberField());
+      editor.typeNumber("7");
+      // Leaving at once: the editor is still awaiting the save of the key.
+      field.blur();
+      expect(field.value).toBe("7");
+      expect(editor.saved()).toMatchObject({ actionArg: 7 });
+      editor.modal.close();
+    });
+
+    it("stores no text that is not a whole number it can hold", async () => {
+      const editor = await openEditor(scrollLines),
+        field = focus(editor.numberField());
+      for (const text of [
+        "+5",
+        "1e3",
+        "1.",
+        "-",
+        "--1",
+        "1-",
+        "0x10",
+        `1${"0".repeat(400)}`,
+      ]) {
+        editor.typeNumber(text);
+        expect(editor.callback, text).not.toHaveBeenCalled();
+      }
+      field.blur();
+      expect(field.value).toBe("3");
+      editor.modal.close();
+    });
+
+    it("saves only numbers that load unchanged from data.json", async () => {
+      const editor = await openEditor(scrollLines);
+      focus(editor.numberField());
+      for (const [text, stored] of [
+        ["-0", -0],
+        ["007", 7],
+        ["-007", -7],
+        ["12345678901234567890", Number("12345678901234567890")],
+      ] as const) {
+        editor.typeNumber(text);
+        const saved = editor.saved();
+        expect(saved?.actionArg, text).toBe(stored);
+        // As a device on 3.29.0 or this release reads the synced file.
+        const json: unknown = JSON.parse(JSON.stringify(saved)),
+          loaded = Settings.Keymapping.fix(json);
+        expect(loaded.valid, text).toBe(true);
+        expect(loaded.value, text).toStrictEqual(json);
+      }
+      editor.modal.close();
+    });
+
+    it("reads the focus from the field's own window, as in a pop-out", async () => {
+      const editor = await openEditor(scrollLines),
+        field = editor.numberField();
+      // A second window cannot be made here: its globals clash with the
+      // test's. The field reports a document of its own whose focus it has,
+      // while the main document's focus is elsewhere.
+      const popOut = { activeElement: field };
+      Object.defineProperty(field, "ownerDocument", { get: () => popOut });
+      expect(document.activeElement).not.toBe(field);
+      editor.typeNumber("05");
+      expect(editor.saved()).toMatchObject({ actionArg: 5 });
+      expect(field.value).toBe("05");
+      editor.modal.close();
+    });
+
+    it("keeps a hidden scroll amount out of a text action", async () => {
+      const editor = await openEditor(scrollLines),
+        field = focus(editor.numberField());
+      editor.typeNumber("");
+      // Choosing in the dropdown takes the focus from the field first.
+      field.blur();
+      await editor.chooseAction("sendText");
+      expect(editor.saved()).toMatchObject({
+        action: "sendText",
+        actionArg: "",
+      });
+      editor.callback.mockClear();
+      field.dispatchEvent(new FocusEvent("blur"));
+      expect(field.style.display).toBe("none");
+      expect(editor.textField().value).toBe("");
+      expect(editor.callback).not.toHaveBeenCalled();
+      editor.typeText("x");
+      expect(editor.saved()).toMatchObject({
+        action: "sendText",
+        actionArg: "x",
+      });
+      editor.modal.close();
+    });
+
     it("keeps a decimal in the field while the whole number stays saved", async () => {
       const editor = await openEditor(scrollLines),
         field = focus(editor.numberField());
