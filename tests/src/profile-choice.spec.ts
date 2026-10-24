@@ -331,6 +331,37 @@ describe("this device's store as the plugin saves it", () => {
     expect(malformed).not.toHaveBeenCalled();
   });
 
+  it("saves every edit of this device's choice so that the next start reads it as it is", async () => {
+    const malformed = vi.spyOn(console, "error");
+    items.set(key, JSON.stringify(released3290));
+    const context = await start();
+    await migrateProfileChoice(context);
+    // The store takes the writers' values as given; only a start fixes them.
+    const fish = { ...integrated, name: "fish", platforms: { darwin: true } },
+      added: Settings.Profile.Entry[] = [
+        ["fish", fish],
+        ...deviceProfileEntries(context),
+      ];
+    await saveProfileList(context, {
+      defaultProfile: "fish" as Settings.DefaultProfile,
+      entries: added.reverse(),
+    });
+    await context.localSettings.write();
+    expect((await start()).localSettings.value).toEqual(stored());
+    await saveProfileList(context, {
+      defaultProfile: "fish" as Settings.DefaultProfile,
+      entries: deviceProfileEntries(context).filter(([id]) => id !== "fish"),
+    });
+    await context.localSettings.write();
+    expect((await start()).localSettings.value).toEqual(stored());
+    await resetProfiles(context);
+    await context.localSettings.write();
+    const next = await start();
+    expect(next.localSettings.value).toEqual(stored());
+    expect(stored()).toMatchObject({ defaultProfile: null, profileOrder: [] });
+    expect(malformed).not.toHaveBeenCalled();
+  });
+
   it("keeps a separate choice for each vault on this device", async () => {
     items.set(key, JSON.stringify(released3290));
     const upgraded = await start(),
