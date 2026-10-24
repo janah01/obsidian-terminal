@@ -609,6 +609,81 @@ describe("hotkeys while a terminal has focus", () => {
       ]);
       expect(other.check).not.toHaveBeenCalled();
     });
+
+    it("runs a hotkey that Obsidian has for the key by default", () => {
+      const { context, executeCommand, press } = loadView({
+          keymappings: [ctrlP],
+        }),
+        // A core command: its key is a default one, which the user kept.
+        command = library.addCommand(context, () => "palette", {
+          callback: vi.fn(),
+          hotkeys: [{ key: "p", modifiers: ["Mod"] }],
+          id: "command-palette:open",
+        });
+
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+      expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+    });
+
+    it("runs a terminal command whose key it takes once", () => {
+      const { executeCommand, press } = loadView({
+        keymappings: [{ ...ctrlP, key: "K", shift: true }],
+      });
+
+      expect(
+        press(["Mod", "Shift"], "k", {
+          ctrlKey: true,
+          key: "K",
+          shiftKey: true,
+        }),
+      ).toBe(false);
+      expect(executeCommand).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: "terminal:clear-terminal" }),
+      );
+    });
+
+    it("keeps the key from the terminal when its command throws", () => {
+      const { addBoundCommand, executeCommand, press } = loadView({
+          keymappings: [ctrlP],
+        }),
+        warn = vi.spyOn(self.console, "warn").mockImplementation(() => {});
+      vi.spyOn(self.console, "debug").mockImplementation(() => {});
+      addBoundCommand("command-palette:open", palette);
+      executeCommand.mockImplementation(() => {
+        throw new Error("the command failed");
+      });
+
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+      expect(executeCommand).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("takes both of its changes off Obsidian's hotkey table at unload", () => {
+      const { addBoundCommand, context, hotkeys, press } = loadView({
+        keymappings: [ctrlP],
+      });
+      addBoundCommand("command-palette:open", palette);
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+
+      // The bed's `register` is a mock already, which spying hands back.
+      for (const [dispose] of vi.spyOn(context, "register").mock.calls) {
+        dispose();
+      }
+      // A stale table bakes once, as Obsidian's own, without hiding the
+      // user's keys of the commands outside the focused list.
+      const { command } = addBoundCommand("command-palette:toggle", {
+          key: "y",
+          modifiers: ["Mod"],
+        }),
+        removed = vi.spyOn(hotkeys, "removeHotkeys"),
+        baked = vi.spyOn(HotkeyTable.prototype, "bake");
+      hotkeys.bake();
+
+      expect(removed).not.toHaveBeenCalled();
+      expect(baked).toHaveBeenCalledOnce();
+      expect(Object.hasOwn(hotkeys, "bake")).toBe(false);
+      expect(hotkeys.bakedIds).toContain(command.id);
+    });
   });
 
   describe("the built-in palette keys", () => {
@@ -673,6 +748,46 @@ describe("hotkeys while a terminal has focus", () => {
       expect(listener.press({ metaKey: true })).toBeUndefined();
       expect(listener.executeCommand).not.toHaveBeenCalled();
     });
+
+    it.each(["android", "ios", "unknown"])(
+      "send no key to Obsidian on %s",
+      (platform0) => {
+        const listener = listenerOn(platform0);
+
+        expect(listener.press({ ctrlKey: true })).toBeUndefined();
+        expect(listener.press({ metaKey: true })).toBeUndefined();
+        expect(listener.executeCommand).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["win32", { ctrlKey: true }],
+      ["darwin", { metaKey: true }],
+    ] as const)(
+      "take the palette key on %s with exactly its modifier",
+      (platform0, palette) => {
+        const listener = listenerOn(platform0);
+
+        for (const init of [
+          { ...palette, key: "P", shiftKey: true },
+          { ...palette, shiftKey: true },
+          { ...palette, altKey: true },
+          { ...palette, ctrlKey: true, metaKey: true },
+          // Caps Lock
+          { ...palette, key: "P" },
+        ]) {
+          expect(listener.press(init)).toBeUndefined();
+        }
+        expect(listener.executeCommand).not.toHaveBeenCalled();
+
+        // Held: the palette opens once, and no repeat reaches the shell.
+        expect(listener.press(palette)).toBe(false);
+        expect(listener.press({ ...palette, repeat: true })).toBe(false);
+        expect(listener.executeCommand).toHaveBeenCalledExactlyOnceWith(
+          listener.palette,
+        );
+      },
+    );
   });
 });
 
