@@ -1343,6 +1343,52 @@ describe("CustomKeyEventHandlerAddon", () => {
       expect(handler(ctrlF9())).toBe(false);
       expect(inputSpy).toHaveBeenCalledExactlyOnceWith("x");
     });
+
+    describe("in the built-in keymappings", () => {
+      const defaults = (): readonly Settings.Keymapping[] =>
+          Settings.DEFAULT.keymappings,
+        p = (
+          init: Partial<KeyboardEvent> = {},
+          type: "keydown" | "keyup" = "keydown",
+        ): KeyboardEvent =>
+          fakeKeyEvent({ code: "KeyP", key: "p", type, ...init });
+
+      it("keeps Ctrl+P on Windows from the shell", () => {
+        setup(false, defaults, "win32");
+
+        expect(handler(p({ ctrlKey: true }))).toBe(false);
+        expect(handler(p({ ctrlKey: true }, "keyup"))).toBe(false);
+        expect(inputSpy).not.toHaveBeenCalled();
+      });
+
+      it("sends no Win32 key record for Ctrl+P, and one for P alone", () => {
+        setupWin32InputMode(defaults);
+        triggerCsi("?", "h", [9001]);
+
+        expect(handler(p({ ctrlKey: true }))).toBe(false);
+        expect(handler(p({ ctrlKey: true }, "keyup"))).toBe(false);
+        expect(inputSpy).not.toHaveBeenCalled();
+
+        expect(handler(p())).toBe(false);
+        expect(inputSpy).toHaveBeenCalledOnce();
+      });
+
+      it("keeps Command+P on macOS from xterm.js and leaves Ctrl+P to the shell", () => {
+        setup(false, defaults, "darwin");
+
+        expect(handler(p({ metaKey: true }))).toBe(false);
+        expect(handler(p({ metaKey: true }, "keyup"))).toBe(false);
+        expect(handler(p({ ctrlKey: true }))).toBe(true);
+        expect(inputSpy).not.toHaveBeenCalled();
+      });
+
+      it("leaves Ctrl+P on Linux to the shell", () => {
+        setup(false, defaults, "linux");
+
+        expect(handler(p({ ctrlKey: true }))).toBe(true);
+        expect(handler(p({ metaKey: true }))).toBe(true);
+      });
+    });
   });
 
   describe("the rule that matches a key to a mapping", () => {

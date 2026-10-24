@@ -106,6 +106,12 @@ export interface Settings extends PluginContext.Settings {
   readonly rightClickAction: RightClickActionAddon.Action;
   readonly interceptKeysWhenFocused: boolean;
   readonly keymappings: readonly Settings.Keymapping[];
+  /**
+   * The version of the built-in keymappings `keymappings` was offered, see
+   * {@link Settings.addKeymappingDefaults}. None in a data.json from before
+   * there were versions.
+   */
+  readonly keymappingDefaultsVersion?: number;
   readonly macOSOptionKeyPassthrough: boolean;
 
   readonly openChangelogOnUpdate: boolean;
@@ -138,6 +144,43 @@ export namespace Settings {
     keyof Profiles,
     (typeof PluginUUIDs)["UUID0"]
   > | null;
+
+  /**
+   * The built-in keymappings by the version that brought them: version `n` is
+   * the entry at `n - 1`. {@link addKeymappingDefaults} offers a list the
+   * versions it has not been offered.
+   */
+  export const KEYMAPPING_DEFAULTS_BY_VERSION: readonly (readonly Keymapping[])[] =
+    deepFreeze([
+      [
+        // Ctrl+P → the command palette on Windows, where PowerShell and cmd.exe
+        // do not use the key. bash in WSL and Git Bash lose its history key.
+        {
+          action: "sendToObsidian",
+          actionArg: null,
+          alt: false,
+          ctrl: true,
+          key: "p",
+          meta: false,
+          platform: "win32",
+          shift: false,
+        },
+        // Command+P → the command palette on macOS. No shell gets Command.
+        {
+          action: "sendToObsidian",
+          actionArg: null,
+          alt: false,
+          ctrl: false,
+          key: "p",
+          meta: true,
+          platform: "darwin",
+          shift: false,
+        },
+      ],
+    ]);
+  /** The version of the built-in keymappings. */
+  export const KEYMAPPING_DEFAULTS_VERSION =
+    KEYMAPPING_DEFAULTS_BY_VERSION.length;
 
   export const DEFAULT: Settings = deepFreeze({
     addToCommand: true,
@@ -286,7 +329,9 @@ export namespace Settings {
         platform: "darwin",
         shift: false,
       },
+      ...KEYMAPPING_DEFAULTS_BY_VERSION.flat(),
     ],
+    keymappingDefaultsVersion: KEYMAPPING_DEFAULTS_VERSION,
     language: "",
     macOSOptionKeyPassthrough: true,
     newInstanceBehavior: "newHorizontalSplit",
@@ -563,6 +608,54 @@ export namespace Settings {
           a.platform === b.platform)
       );
     }
+  }
+
+  /**
+   * Offers `settings.keymappings` the built-in keymappings of the versions it
+   * was not offered yet, then records the current version.
+   *
+   * A built-in keymapping goes to the end of the list, so that the user's
+   * entries keep coming first, unless the list maps its key already, for an
+   * overlapping platform and with any action. An entry that is the built-in
+   * one with the action Ignore, which is how a device on 3.29.0 saves an
+   * action it does not know, gets the built-in action back in its place.
+   *
+   * @param settings the settings to change
+   * @returns whether the list changed
+   */
+  export function addKeymappingDefaults(
+    settings: DeepWritable<Settings>,
+  ): boolean {
+    const offered = settings.keymappingDefaultsVersion ?? 0;
+    if (offered >= KEYMAPPING_DEFAULTS_VERSION) {
+      return false;
+    }
+    const keymappings = [...settings.keymappings];
+    let changed = false;
+    for (const mapping of KEYMAPPING_DEFAULTS_BY_VERSION.slice(
+      offered,
+    ).flat()) {
+      const ignored = keymappings.findIndex(
+        (entry) =>
+          entry.action === "ignore" &&
+          entry.platform === mapping.platform &&
+          Keymapping.conflictsKey(entry, mapping),
+      );
+      if (ignored !== -1) {
+        keymappings[ignored] = cloneAsWritable(mapping);
+        changed = true;
+      } else if (
+        !keymappings.some((entry) => Keymapping.conflictsKey(entry, mapping))
+      ) {
+        keymappings.push(cloneAsWritable(mapping));
+        changed = true;
+      }
+    }
+    if (changed) {
+      settings.keymappings = keymappings;
+    }
+    settings.keymappingDefaultsVersion = KEYMAPPING_DEFAULTS_VERSION;
+    return changed;
   }
 
   export type Profile =
@@ -1659,6 +1752,34 @@ export namespace Settings {
     return own;
   }
 
+  /**
+   * The version of the built-in keymappings, as {@link Settings.fix} keeps
+   * it. A data.json from before there were versions has none and keeps none,
+   * so that it loads unchanged, also on a device that has not updated; the
+   * built-in keymappings it lacks are added outside the fixer, by
+   * {@link addKeymappingDefaults}. Without a list of its own, the list is the
+   * default one, which has every built-in keymapping.
+   *
+   * @param unc the settings read
+   * @returns the version, or nothing
+   */
+  function fixKeymappingDefaultsVersion(
+    unc: Unchecked<Settings>,
+  ): Pick<Settings, "keymappingDefaultsVersion"> {
+    const { keymappingDefaultsVersion: version, keymappings } = unc;
+    if (
+      typeof version === "number" &&
+      Number.isSafeInteger(version) &&
+      version >= 0
+    ) {
+      return { keymappingDefaultsVersion: version };
+    }
+    if (!Array.isArray(keymappings)) {
+      return { keymappingDefaultsVersion: KEYMAPPING_DEFAULTS_VERSION };
+    }
+    return version === undefined ? {} : { keymappingDefaultsVersion: 0 };
+  }
+
   export function fix(self0: unknown): Fixed<Settings> {
     const unc = launderUnchecked<Settings>(self0);
 
@@ -1722,6 +1843,7 @@ export namespace Settings {
         }
         return cloneAsWritable(DEFAULT.keymappings);
       })(),
+      ...fixKeymappingDefaultsVersion(unc),
       language: fixInSet(DEFAULT, unc, "language", DEFAULTABLE_LANGUAGES),
       macOSOptionKeyPassthrough: fixTyped(
         DEFAULT,

@@ -410,7 +410,14 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
       .newSetting(containerEl, (setting) => {
         setting
           .setName(i18n.t("settings.intercept-keys-when-focused"))
-          .setDesc(i18n.t("settings.intercept-keys-when-focused-description"))
+          .setDesc(
+            [
+              i18n.t("settings.intercept-keys-when-focused-description"),
+              i18n.t(
+                "settings.intercept-keys-when-focused-description-send-to-obsidian",
+              ),
+            ].join(" "),
+          )
           .addToggle(
             linkSetting(
               () => settings.value.interceptKeysWhenFocused,
@@ -442,10 +449,13 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
         setting
           .setName(i18n.t("settings.keymappings"))
           .setDesc(
-            i18n.t("settings.keymappings-description", {
-              count: settings.value.keymappings.length,
-              interpolation: { escapeValue: false },
-            }),
+            [
+              i18n.t("settings.keymappings-description", {
+                count: settings.value.keymappings.length,
+                interpolation: { escapeValue: false },
+              }),
+              i18n.t("settings.keymappings-description-send-to-obsidian"),
+            ].join(" "),
           )
           .addButton((button) =>
             button

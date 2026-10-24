@@ -1593,6 +1593,38 @@ describe("settings tab descriptions", () => {
     document.body.replaceChildren();
   });
 
+  it("says which keys reach Obsidian while a terminal is focused", async () => {
+    const i18n = createInstance();
+    await i18n.init({ lng: "en", resources: { en: { translation: en } } });
+    const rows = captureMainWindowRows(),
+      context = await pythonSettingsContext();
+    Object.assign(context, {
+      localSettings: {
+        value: LocalSettings.fix({ lastReadChangelogVersion: "0.0.0" }).value,
+      },
+      version: null,
+    });
+    Object.assign(context.language, {
+      onChangeLanguage: { listen: vi.fn().mockReturnValue(vi.fn()) },
+      value: i18n,
+    });
+    const tab = new LoadedSettingTab(context, loadDocumentations(context)),
+      description = (name: string): string | undefined =>
+        rows.get(name)?.descEl.textContent;
+    document.body.append(tab.containerEl);
+    try {
+      tab.load();
+      expect(description(i18n.t("settings.intercept-keys-when-focused"))).toBe(
+        `${i18n.t("settings.intercept-keys-when-focused-description")} Keys whose keymapping is 'Send to Obsidian' are the exception: Obsidian runs their hotkeys.`,
+      );
+      expect(description(i18n.t("settings.keymappings"))).toMatch(
+        / The action 'Send to Obsidian' leaves the key to Obsidian, which runs its hotkey for it\. With it, the built-in Ctrl\+P on Windows and Command\+P on macOS open the command palette\.$/u,
+      );
+    } finally {
+      tab.dispose();
+    }
+  });
+
   it.each(["main", "Settings"])(
     "renders the internal modules description in the %s window",
     async (where) => {

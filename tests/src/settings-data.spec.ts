@@ -408,6 +408,223 @@ describe("src/settings-data.ts", () => {
     });
   });
 
+  describe("the built-in keymappings for the command palette", () => {
+    const windows = {
+        action: "sendToObsidian",
+        actionArg: null,
+        alt: false,
+        ctrl: true,
+        key: "p",
+        meta: false,
+        platform: "win32",
+        shift: false,
+      } as const satisfies Settings.Keymapping,
+      macOS = {
+        ...windows,
+        ctrl: false,
+        meta: true,
+        platform: "darwin",
+      } as const satisfies Settings.Keymapping,
+      // A user's own entry, which 3.29.0 kept first.
+      own = {
+        action: "sendText",
+        actionArg: "ls\\n",
+        alt: true,
+        ctrl: false,
+        key: "l",
+        meta: false,
+        platform: null,
+        shift: false,
+      } as const satisfies Settings.Keymapping,
+      // The list 3.29.0 saves for a user with one entry of their own.
+      list329: readonly Settings.Keymapping[] = [
+        own,
+        ...Settings.DEFAULT.keymappings.filter(
+          ({ action }) => action !== "sendToObsidian",
+        ),
+      ];
+
+    // What 3.29.0 writes to data.json: no version and no palette entries.
+    function released329(
+      keymappings: readonly Settings.Keymapping[] = list329,
+      extra: object = {},
+    ): object {
+      const { keymappingDefaultsVersion: _version, ...rest } = cloneAsWritable(
+        Settings.DEFAULT,
+      );
+      return { ...rest, keymappings: cloneAsWritable(keymappings), ...extra };
+    }
+
+    // A load of `stored`, then the migration at the start of the plugin.
+    function upgrade(stored: unknown): {
+      readonly changed: boolean;
+      readonly settings: Settings;
+    } {
+      const settings = cloneAsWritable(Settings.fix(stored).value);
+      return {
+        changed: Settings.addKeymappingDefaults(settings),
+        settings,
+      };
+    }
+
+    it("are the last default keymappings, for Windows and macOS only", () => {
+      expect(Settings.DEFAULT.keymappings.slice(-2)).toStrictEqual([
+        windows,
+        macOS,
+      ]);
+      expect(Settings.KEYMAPPING_DEFAULTS_BY_VERSION.flat()).toStrictEqual([
+        windows,
+        macOS,
+      ]);
+      expect(
+        Settings.DEFAULT.keymappings.filter(
+          ({ action }) => action === "sendToObsidian",
+        ),
+      ).toHaveLength(2);
+      expect(Settings.KEYMAPPING_DEFAULTS_VERSION).toBe(1);
+      expect(Settings.DEFAULT.keymappingDefaultsVersion).toBe(1);
+    });
+
+    it("leave a data.json of 3.29.0 valid as it is, without a version", () => {
+      const stored: unknown = JSON.parse(JSON.stringify(released329())),
+        fixed = Settings.fix(stored);
+      expect(fixed.valid).toBe(true);
+      expect(fixed.value).not.toHaveProperty("keymappingDefaultsVersion");
+      expect(fixed.value).toStrictEqual(stored);
+    });
+
+    it.each([
+      ["a fresh install", null],
+      ["no data", undefined],
+      ["data without keymappings", {}],
+    ])("count as offered for %s", (_name, stored) => {
+      expect(Settings.fix(stored).value.keymappingDefaultsVersion).toBe(1);
+    });
+
+    it.each([0, 1, 7])("keep a stored version %j", (version) => {
+      const fixed = Settings.fix(
+        released329(list329, { keymappingDefaultsVersion: version }),
+      );
+      expect(fixed.valid).toBe(true);
+      expect(fixed.value.keymappingDefaultsVersion).toBe(version);
+    });
+
+    it.each(["1", -1, 1.5, 2 ** 53, null, Infinity, true])(
+      "take a malformed version %j as none offered",
+      (version) => {
+        const fixed = Settings.fix(
+          released329(list329, { keymappingDefaultsVersion: version }),
+        );
+        expect(fixed.valid).toBe(false);
+        expect(fixed.value.keymappingDefaultsVersion).toBe(0);
+      },
+    );
+
+    it("converge through a save and a load, before and after the upgrade", () => {
+      for (const stored of [released329(), upgrade(released329()).settings]) {
+        const first = Settings.fix(stored).value,
+          second = Settings.fix(JSON.parse(JSON.stringify(first)));
+        expect(second.valid).toBe(true);
+        expect(JSON.stringify(second.value)).toBe(JSON.stringify(first));
+      }
+    });
+
+    it("are added once to a list from 3.29.0, after the user's entries", () => {
+      const { changed, settings } = upgrade(released329());
+      expect(changed).toBe(true);
+      expect(settings.keymappings).toStrictEqual([...list329, windows, macOS]);
+      expect(settings.keymappingDefaultsVersion).toBe(1);
+
+      const again = cloneAsWritable(settings);
+      expect(Settings.addKeymappingDefaults(again)).toBe(false);
+      expect(again).toStrictEqual(settings);
+    });
+
+    it("are added to an empty list", () => {
+      const { changed, settings } = upgrade(released329([]));
+      expect(changed).toBe(true);
+      expect(settings.keymappings).toStrictEqual([windows, macOS]);
+    });
+
+    it.each([
+      ["all platforms", null, [macOS]],
+      ["Windows", "win32", [macOS]],
+      ["Linux", "linux", [windows, macOS]],
+    ] as const)(
+      "skip Ctrl+P where the user maps it for %s already, whatever the action",
+      (_name, platform, added) => {
+        const taken = { ...own, alt: false, ctrl: true, key: "p", platform },
+          { settings } = upgrade(released329([taken]));
+        expect(settings.keymappings).toStrictEqual([taken, ...added]);
+        expect(settings.keymappingDefaultsVersion).toBe(1);
+      },
+    );
+
+    it("skip Command+P where the user maps it on macOS already", () => {
+      const taken = {
+          ...macOS,
+          action: "sendHexCode",
+          actionArg: "10",
+        } as const,
+        { settings } = upgrade(released329([taken, own]));
+      expect(settings.keymappings).toStrictEqual([taken, own, windows]);
+    });
+
+    it("take an Ignore saved before the update for exactly a built-in key as one 3.29.0 made", () => {
+      // The two look the same in data.json. The user's choice is lost once.
+      const ignore = { ...macOS, action: "ignore" } as const,
+        { settings } = upgrade(released329([ignore, own]));
+      expect(settings.keymappings).toStrictEqual([macOS, own, windows]);
+    });
+
+    it("come back in place where a device on 3.29.0 made them Ignore", () => {
+      // 3.29.0 does not know the action, saves it as Ignore and drops the
+      // version, so the next start of 3.29.1 finds the list not offered.
+      const later = { ...own, key: "m" } as const,
+        upgraded = upgrade(released329()).settings.keymappings,
+        rewritten = upgraded.map((mapping) =>
+          mapping.action === "sendToObsidian"
+            ? { ...mapping, action: "ignore" as const }
+            : mapping,
+        ),
+        { changed, settings } = upgrade(
+          released329([
+            ...rewritten.slice(0, -1),
+            later,
+            ...rewritten.slice(-1),
+          ]),
+        );
+      expect(changed).toBe(true);
+      expect(settings.keymappings).toStrictEqual([
+        ...list329,
+        windows,
+        later,
+        macOS,
+      ]);
+      expect(settings.keymappingDefaultsVersion).toBe(1);
+    });
+
+    it("leave an Ignore that is not exactly one of them", () => {
+      // For every platform: the user's own, not a rewritten Windows entry.
+      const ignore = { ...windows, action: "ignore", platform: null } as const,
+        { settings } = upgrade(released329([ignore]));
+      expect(settings.keymappings).toStrictEqual([ignore, macOS]);
+    });
+
+    it.each([1, 7])(
+      "leave every entry alone once version %j was offered",
+      (version) => {
+        const ignore = { ...windows, action: "ignore" } as const,
+          { changed, settings } = upgrade(
+            released329([ignore], { keymappingDefaultsVersion: version }),
+          );
+        expect(changed).toBe(false);
+        expect(settings.keymappings).toStrictEqual([ignore]);
+        expect(settings.keymappingDefaultsVersion).toBe(version);
+      },
+    );
+  });
+
   describe("fixer convergence across persistence", () => {
     /*
      * A fixer key that does not round-trip stably appends one recovery

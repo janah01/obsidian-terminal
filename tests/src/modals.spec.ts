@@ -1553,6 +1553,29 @@ describe("keymapping editor argument", () => {
     editor.modal.close();
   });
 
+  it("offers Send to Obsidian, which takes no argument", async () => {
+    const offered = vi.spyOn(DropdownComponent.prototype, "addOption"),
+      editor = await openEditor({
+        ...seeded,
+        action: "sendText",
+        actionArg: "abc",
+      });
+    expect(offered).toHaveBeenCalledWith(
+      "sendToObsidian",
+      "components.keymappings.actions.sendToObsidian",
+    );
+
+    await editor.chooseAction("sendToObsidian");
+
+    expect(editor.saved()).toStrictEqual({
+      ...seeded,
+      action: "sendToObsidian",
+      actionArg: null,
+    });
+    expect(row("").settingEl.style.display).toBe("none");
+    editor.modal.close();
+  });
+
   describe("scroll amount while it is typed", () => {
     const scrollLines = {
       ...seeded,

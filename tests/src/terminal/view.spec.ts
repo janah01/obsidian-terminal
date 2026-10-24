@@ -60,6 +60,7 @@ import {
   EditTerminalModal,
   TerminalView,
   fittedSize,
+  newFocusedKeyListener,
   settleTerminalBackendOptions,
 } from "../../../src/terminal/view.js";
 import { microtasks, pseudoterminal, tick } from "../../support/helpers.js";
@@ -606,6 +607,80 @@ describe("hotkeys while a terminal has focus", () => {
         [command],
       ]);
       expect(other.check).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the built-in palette keys", () => {
+    afterEach(() => {
+      platform.windows = false;
+    });
+
+    it("open the palette from a focused terminal on Windows", () => {
+      platform.windows = true;
+      const { addBoundCommand, executeCommand, press } = loadView(),
+        { command } = addBoundCommand("command-palette:open", {
+          key: "p",
+          modifiers: ["Mod"],
+        });
+
+      expect(press(["Mod"], "p", { ctrlKey: true })).toBe(false);
+      expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+    });
+
+    // The listener as `TerminalView.load` makes it, for any platform: the
+    // test runs on one only.
+    function listenerOn(platform0: string) {
+      const { context } = makeTerminalContext(),
+        hotkeys = new HotkeyTable(),
+        palette = { callback: vi.fn(), id: "command-palette:open" },
+        executeCommand = vi.fn((_command: unknown): boolean => true);
+      hotkeys.setHotkeys(palette.id, [{ key: "p", modifiers: ["Mod"] }]);
+      Object.assign(context.app, {
+        commands: {
+          executeCommand,
+          findCommand: (id: string): unknown =>
+            id === palette.id ? palette : undefined,
+        },
+        hotkeyManager: hotkeys,
+        keymap: { constructor: { isMatch } },
+      });
+      Object.assign(context, { register: vi.fn() });
+      const listener = newFocusedKeyListener(context, new Set(), platform0);
+      return {
+        executeCommand,
+        palette,
+        press: (init: KeyboardEventInit): unknown =>
+          listener(new KeyboardEvent("keydown", { key: "p", ...init }), {
+            key: "p",
+            modifiers: compile(["Mod"]),
+            vkey: "p",
+          }),
+      };
+    }
+
+    it.each([
+      ["win32", { ctrlKey: true }, { metaKey: true }],
+      ["darwin", { metaKey: true }, { ctrlKey: true }],
+    ] as const)(
+      "send the palette key on %s to Obsidian and no other",
+      (platform0, palette, other) => {
+        const listener = listenerOn(platform0);
+
+        expect(listener.press(other)).toBeUndefined();
+        expect(listener.executeCommand).not.toHaveBeenCalled();
+        expect(listener.press(palette)).toBe(false);
+        expect(listener.executeCommand).toHaveBeenCalledExactlyOnceWith(
+          listener.palette,
+        );
+      },
+    );
+
+    it("send no key to Obsidian on Linux", () => {
+      const listener = listenerOn("linux");
+
+      expect(listener.press({ ctrlKey: true })).toBeUndefined();
+      expect(listener.press({ metaKey: true })).toBeUndefined();
+      expect(listener.executeCommand).not.toHaveBeenCalled();
     });
   });
 });

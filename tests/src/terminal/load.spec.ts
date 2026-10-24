@@ -33,6 +33,7 @@ import {
   getSystemPathGeneration,
   warmSystemPath,
 } from "../../../src/terminal/environment.js";
+import { tick } from "../../support/helpers.js";
 
 const ribbonMenu = vi.hoisted(() => {
   class Item {
@@ -905,6 +906,175 @@ describe("layout-ready automatic Python work", () => {
     expect(runPluginPythonCheck).toHaveBeenCalledTimes(1);
     expect(checkWindowsPython).not.toHaveBeenCalled();
     expect(ensureSpare).not.toHaveBeenCalled();
+  });
+});
+
+describe("built-in keymappings at the start of the plugin", () => {
+  const windows = {
+      action: "sendToObsidian",
+      actionArg: null,
+      alt: false,
+      ctrl: true,
+      key: "p",
+      meta: false,
+      platform: "win32",
+      shift: false,
+    } as const satisfies Settings.Keymapping,
+    macOS = {
+      ...windows,
+      ctrl: false,
+      meta: true,
+      platform: "darwin",
+    } as const satisfies Settings.Keymapping,
+    own = {
+      action: "sendText",
+      actionArg: "ls\\n",
+      alt: true,
+      ctrl: false,
+      key: "l",
+      meta: false,
+      platform: null,
+      shift: false,
+    } as const satisfies Settings.Keymapping,
+    // The list 3.29.0 saves for a user with one entry of their own.
+    list329: readonly Settings.Keymapping[] = [
+      own,
+      ...Settings.DEFAULT.keymappings.filter(
+        ({ action }) => action !== "sendToObsidian",
+      ),
+    ];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  // A data.json as 3.29.0 writes it: no version and no palette keys.
+  function released329(
+    keymappings: readonly Settings.Keymapping[] = list329,
+    extra: object = {},
+  ): unknown {
+    const { keymappingDefaultsVersion: _version, ...rest } = Settings.DEFAULT,
+      stored: unknown = JSON.parse(
+        JSON.stringify({ ...rest, keymappings, ...extra }),
+      );
+    return stored;
+  }
+
+  // Loads `stored` through the real settings manager, then the terminal.
+  async function start(stored: unknown) {
+    // The local settings below log their missing changelog version.
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    const context = await terminalContext(),
+      settings = new SettingsManager(context, Settings.fix),
+      // Takes the copy of data.json the manager keeps when it is malformed.
+      recovery = vi.fn();
+    Object.assign(context, {
+      settings,
+      loadData: vi.fn().mockResolvedValue(stored),
+      localSettings: {
+        mutate: recovery,
+        onMutate: vi.fn().mockReturnValue(vi.fn()),
+        value: LocalSettings.fix({}).value,
+        write: vi.fn(),
+      },
+    });
+    Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
+    const write = vi.spyOn(settings, "write").mockResolvedValue();
+    settings.load();
+    await settings.onLoaded;
+    await tick();
+    write.mockClear();
+    const mutate = vi.spyOn(settings, "mutate");
+    loadTerminal(context);
+    await tick();
+    return { context, mutate, recovery, settings, write };
+  }
+
+  it("adds the palette keys to a data.json of 3.29.0 once, after the user's entries", async () => {
+    const first = await start(released329());
+    expect(first.recovery).not.toHaveBeenCalled();
+    expect(first.settings.value.keymappings).toStrictEqual([
+      ...list329,
+      windows,
+      macOS,
+    ]);
+    expect(first.settings.value.keymappingDefaultsVersion).toBe(1);
+    expect(first.mutate).toHaveBeenCalledOnce();
+    expect(first.write).toHaveBeenCalledOnce();
+
+    const saved: unknown = JSON.parse(JSON.stringify(first.settings.value)),
+      second = await start(saved);
+    expect(second.settings.value).toStrictEqual(first.settings.value);
+    expect(second.mutate).not.toHaveBeenCalled();
+    expect(second.write).not.toHaveBeenCalled();
+  });
+
+  it("puts back the palette keys a device on 3.29.0 made Ignore", async () => {
+    const { settings } = await start(
+      released329([
+        ...list329,
+        { ...windows, action: "ignore" },
+        { ...macOS, action: "ignore" },
+      ]),
+    );
+    expect(settings.value.keymappings).toStrictEqual([
+      ...list329,
+      windows,
+      macOS,
+    ]);
+    expect(settings.value.keymappingDefaultsVersion).toBe(1);
+  });
+
+  it("adds no palette key twice to a list that has them, at this start or the next", async () => {
+    const { context, mutate, settings, write } = await start(
+      released329(Settings.DEFAULT.keymappings, {
+        keymappingDefaultsVersion: 0,
+      }),
+    );
+    expect(settings.value.keymappings).toStrictEqual(
+      Settings.DEFAULT.keymappings,
+    );
+    expect(settings.value.keymappingDefaultsVersion).toBe(1);
+    expect(write).toHaveBeenCalledOnce();
+
+    loadTerminal(context);
+    await tick();
+    expect(settings.value.keymappings).toStrictEqual(
+      Settings.DEFAULT.keymappings,
+    );
+    expect(mutate).toHaveBeenCalledOnce();
+  });
+
+  it("changes nothing once the palette keys were offered", async () => {
+    const stored: unknown = JSON.parse(
+        JSON.stringify({ ...Settings.DEFAULT, keymappings: [own] }),
+      ),
+      { mutate, settings, write } = await start(stored);
+    expect(settings.value.keymappings).toStrictEqual([own]);
+    expect(mutate).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("logs a failed update and loads on", async () => {
+    const error = new Error("mutate failed"),
+      logged = vi.spyOn(console, "error").mockImplementation(() => {}),
+      context = await terminalContext({ keymappingDefaultsVersion: 0 });
+    Object.assign(context.app.workspace, { onLayoutReady: vi.fn() });
+    // The context's settings are mocks already, which spying hands back.
+    const mutate = vi.spyOn(context.settings, "mutate"),
+      write = vi.spyOn(context.settings, "write");
+    mutate.mockClear().mockRejectedValueOnce(error);
+    write.mockClear();
+
+    expect(() => {
+      loadTerminal(context);
+    }).not.toThrow();
+    await tick();
+
+    expect(mutate).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(error);
+    expect(write).not.toHaveBeenCalled();
   });
 });
 
