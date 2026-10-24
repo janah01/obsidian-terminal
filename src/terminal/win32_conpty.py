@@ -1170,12 +1170,15 @@ class _PseudoConsole(NamedTuple):
     host means nothing to the other. ``exited`` waits up to the given
     milliseconds for an ``OpenConsole.exe`` to exit and returns its exit code,
     or ``None`` while it runs; the built-in console host never reports one.
+    ``host`` is the PID of the console host process serving the pseudoconsole,
+    which its clients report as their console host, or 0 when it is not known.
     """
 
     handle: int
     resize: Callable[[int, int], int]
     close: Callable[[], None]
     exited: Callable[[int], int | None] = _never_exited
+    host: int = 0
 
 
 class _ConsoleHostUnsupported(OSError):
@@ -1886,7 +1889,9 @@ if sys.platform == "win32":
 
         ``winconpty.h`` calls this layout "an ABI shared with the rest of the
         operating system": ``CreateProcessW`` reads it to attach the shell to
-        the console host that ``_launch_console_host`` started.
+        the console host that ``_launch_console_host`` started, and this host
+        reads ``hConPtyProcess`` from the built-in pseudoconsole to name the
+        console host serving it (``_pseudoconsole_console_host``).
         """
 
         _fields_ = (
@@ -1986,6 +1991,8 @@ if sys.platform == "win32":
     )
     """Return a pseudo-handle for the current process."""
     _GetCurrentProcess = _bind("GetCurrentProcess", (), _HANDLE)
+    """Return the PID of an open process, or 0 for a handle that is not one."""
+    _GetProcessId = _bind("GetProcessId", (_HANDLE,), _DWORD)
     """Locate the host executable used by the default Windows search."""
     _GetModuleFileNameW = _bind(
         "GetModuleFileNameW", (_HANDLE, _LPWSTR, _DWORD), _DWORD
@@ -2204,6 +2211,16 @@ if sys.platform == "win32":
             raise _last_error()
         return _as_handle(read.value), _as_handle(write.value)
 
+    def _pseudoconsole_console_host(pseudoconsole: int) -> int:
+        """Return the PID of the console host serving an ``HPCON``, or 0.
+
+        The struct the handle points to (``_PSEUDOCONSOLE``) holds a handle to
+        that process. A handle Windows cannot name leaves the host unknown,
+        and the sweep then treats every console as a program's own.
+        """
+        struct = ctypes.cast(pseudoconsole, ctypes.POINTER(_PSEUDOCONSOLE)).contents
+        return int(_GetProcessId(_as_handle(struct.hConPtyProcess)))
+
     def _create_pseudoconsole(
         columns: int, rows: int, input_read: int, output_write: int
     ) -> _PseudoConsole:
@@ -2228,6 +2245,7 @@ if sys.platform == "win32":
                 _ResizePseudoConsole(value, _COORD(width, height))
             ),
             lambda: _ClosePseudoConsole(value),
+            host=_pseudoconsole_console_host(value),
         )
 
     def _open_console_driver(
@@ -2426,7 +2444,13 @@ if sys.platform == "win32":
             return _exit_code(process)
 
         # The closures keep the struct, which the HPCON points to, alive.
-        return _PseudoConsole(ctypes.addressof(pseudoconsole), resize, close, exited)
+        return _PseudoConsole(
+            ctypes.addressof(pseudoconsole),
+            resize,
+            close,
+            exited,
+            int(_GetProcessId(process)),
+        )
 
     def _native_architecture() -> str | None:
         """Return the package architecture of the machine Windows runs on.
@@ -3102,8 +3126,9 @@ if sys.platform == "win32":
             self._tracking_job = 0
             self._breakaway_job = 0
             self._sweep_thread: threading.Thread | None = None
-            # The console host serving the pseudoconsole, once the shell has
-            # connected to it; the sweep leaves that host's clients to it.
+            # The PID of the console host serving the pseudoconsole, noted
+            # with the pseudoconsole; the sweep leaves that host's clients to
+            # it, and it stays known after the pseudoconsole is let go of.
             self._pseudoconsole_host = 0
             self._process = 0
             self._thread = 0
@@ -3261,7 +3286,7 @@ if sys.platform == "win32":
                 built_in = _create_pseudoconsole(
                     columns, rows, input_read, output_write
                 )
-                self._pseudoconsole = built_in
+                self._adopt_pseudoconsole(built_in)
                 return built_in
 
             def create_session() -> tuple[
@@ -3281,7 +3306,7 @@ if sys.platform == "win32":
                     ),
                     create_built_in,
                 )
-                self._pseudoconsole = pseudoconsole
+                self._adopt_pseudoconsole(pseudoconsole)
                 self._job = _create_job()
                 self._tracking_job, self._breakaway_job = _create_tracking_jobs()
                 environment = self._child_environment
@@ -3396,25 +3421,20 @@ if sys.platform == "win32":
             self._process = self._thread = self._process_id = 0
             _discard_child(child[0], child[1])
 
-        def _note_pseudoconsole_host(self) -> None:
-            """Record the pseudoconsole's console host once the shell has connected.
+        def _adopt_pseudoconsole(self, pseudoconsole: _PseudoConsole) -> None:
+            """Hold the session's pseudoconsole; note the console host serving it.
 
-            A process reports its creator's console host until it has
-            connected to a console of its own, so the shell's answer counts
-            only once it differs from this host's own. The sweep then tells
-            the programs attached to the pseudoconsole from the ones in
-            consoles of their own.
+            The sweep tells the programs attached to the pseudoconsole from
+            the ones in consoles of their own by that host, so it is kept
+            apart from the pseudoconsole, which ``_close_pseudoconsole`` lets
+            go of while the sweep may still run.
             """
-            host = _console_host_of(self._process)
-            if host and host != _console_host_of(_GetCurrentProcess()):
-                with self._handles:
-                    self._pseudoconsole_host = host
+            self._pseudoconsole = pseudoconsole
+            self._pseudoconsole_host = pseudoconsole.host
 
         def _supervise(self) -> int:
             """Wait for the child to exit, or terminate it when asked to."""
             while not self._stopping.is_set():
-                if not self._pseudoconsole_host:
-                    self._note_pseudoconsole_host()
                 if (
                     _WaitForSingleObject(self._process, _POLL_MILLISECONDS)
                     == _WAIT_OBJECT_0
@@ -3489,7 +3509,7 @@ if sys.platform == "win32":
             console programs left in consoles of their own without waiting,
             and the second, once the drain ends or when one round's worth of
             the deadline is left, catches what a program started while it
-            answered. When the pseudoconsole's host never became known, the
+            answered. When the pseudoconsole named no console host, the
             attached programs cannot be told apart, so one sweep runs after
             the drain and ends them with the others: a sweep before the close
             would take their close event away. Once the sweep is over, the
@@ -3508,7 +3528,7 @@ if sys.platform == "win32":
                 _sweep_descendants(job, deadline, pseudoconsole_host)
             else:
                 diagnose(
-                    "the pseudoconsole's console host is not known;"
+                    "the pseudoconsole named no console host;"
                     " programs attached to it are swept with the others"
                 )
             drained.wait(max(0.0, deadline - _SWEEP_LAST_ROUND - time.monotonic()))

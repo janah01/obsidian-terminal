@@ -4735,28 +4735,31 @@ _CHILD_IN_JOBS = (
 )
 
 
+"""Code of a sleeper that writes ``up`` to the file named by its argument first."""
+_UP_SLEEPER = (
+    "import sys, time\n"
+    "with open(sys.argv[1], 'w', encoding='utf-8') as stream:\n"
+    "    stream.write('up')\n"
+    "time.sleep(60)\n"
+)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 def test_console_check_tells_consoles_apart(tmp_path: Path) -> None:
     """A program with a hidden console of its own has a console host; a detached one has none.
 
-    Asked before a child has finished starting, the check still sees the
-    console host it inherited from its creator, so both children report that
-    they are up before the question is put. Named as the pseudoconsole's
+    Asked before a child has finished starting, the check sees the stand-in
+    its creator left, not the child's own console, so both children report
+    that they are up before the question is put. Named as the pseudoconsole's
     host, a console makes its client an attached one.
     """
     started = (tmp_path / "own", tmp_path / "detached")
-    sleeper = (
-        "import sys, time\n"
-        "with open(sys.argv[1], 'w', encoding='utf-8') as stream:\n"
-        "    stream.write('up')\n"
-        "time.sleep(60)\n"
-    )
     own = subprocess.Popen(
-        [sys.executable, "-c", sleeper, str(started[0])],
+        [sys.executable, "-c", _UP_SLEEPER, str(started[0])],
         creationflags=_CREATE_NO_WINDOW,
     )
     detached = subprocess.Popen(
-        [sys.executable, "-c", sleeper, str(started[1])],
+        [sys.executable, "-c", _UP_SLEEPER, str(started[1])],
         creationflags=_DETACHED_PROCESS,
     )
     handles = {
@@ -4786,52 +4789,85 @@ def test_console_check_tells_consoles_apart(tmp_path: Path) -> None:
         detached.wait(timeout=15.0)
 
 
+"""Code of a pseudoconsole client that starts a plain and a hidden child.
+
+Each child writes ``up`` to the marker named for it once it runs; the client
+then publishes both PIDs and sleeps.
+"""
+_PSEUDOCONSOLE_CLIENT = (
+    "import json, os, subprocess, sys, time\n"
+    "out, plain_up, hidden_up = sys.argv[1:4]\n"
+    f"plain = subprocess.Popen([sys.executable, '-c', {_UP_SLEEPER!r}, plain_up]).pid\n"
+    "hidden = subprocess.Popen(\n"
+    f"    [sys.executable, '-c', {_UP_SLEEPER!r}, hidden_up],\n"
+    f"    creationflags={_CREATE_NO_WINDOW},\n"
+    ").pid\n"
+    "with open(out + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump({'plain': plain, 'hidden': hidden}, stream)\n"
+    "os.replace(out + '.tmp', out)\n"
+    "time.sleep(60)\n"
+)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_console_check_sees_a_pseudoconsole_client_by_its_host() -> None:
-    """A shell attached to the pseudoconsole reports its host, not this host's own.
+def test_pseudoconsole_names_the_console_host_its_clients_report(
+    tmp_path: Path,
+) -> None:
+    """The console host a pseudoconsole names is the one its clients report.
 
-    The host records the pseudoconsole's console host the same way, once the
-    shell has connected and its answer differs from the host's own, and the
-    sweep tells the attached programs apart by it.
+    The shell started on the pseudoconsole and a child that inherits its
+    console both report that host, so the check reads them as attached; a
+    child with a hidden console of its own does not.
     """
-    answers: list[tuple[int, int | None, int | None, dict[int, str]]] = []
-
-    def probe(ready: Mapping[str, object]) -> None:
-        """Ask about the shell and the host while the session is live."""
-        shell_pid, host_pid = ready["childPid"], ready["hostPid"]
-        assert isinstance(shell_pid, int) and isinstance(host_pid, int), ready
-        handles = {
-            pid: _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
-            for pid in (shell_pid, host_pid)
-        }
-        assert all(handles.values()), _MODULE._last_error()
-        try:
-            # Until it has connected, the shell reports its creator's host.
-            deadline = time.monotonic() + 10.0
-            while True:
-                shell = _MODULE._console_host_of(handles[shell_pid])
-                host = _MODULE._console_host_of(handles[host_pid])
-                if (shell and shell != host) or time.monotonic() >= deadline:
-                    break
-                time.sleep(0.05)
-            kinds = _MODULE._console_kinds({shell_pid: handles[shell_pid]}, shell or 0)
-            answers.append((shell_pid, shell, host, kinds))
-        finally:
-            for handle in handles.values():
+    out = tmp_path / "children.json"
+    markers = (tmp_path / "plain", tmp_path / "hidden")
+    input_read, input_write = _MODULE._create_pipe()
+    output_read, output_write = _MODULE._create_pipe()
+    pseudoconsole = _MODULE._create_pseudoconsole(80, 24, input_read, output_write)
+    handles: dict[int, int] = {}
+    thread = 0
+    try:
+        host = pseudoconsole.host
+        assert host not in (0, os.getpid()), host
+        process, thread, pid = _MODULE._create_child(
+            subprocess.list2cmdline(
+                [sys.executable, "-c", _PSEUDOCONSOLE_CLIENT, str(out)]
+                + [str(marker) for marker in markers]
+            ),
+            pseudoconsole.handle,
+        )
+        handles[pid] = process
+        assert _MODULE._ResumeThread(thread) == 1, _MODULE._last_error()
+        record: object = json.loads(_read_when_published(out, 30.0))
+        assert isinstance(record, dict), record
+        for marker in markers:
+            assert _read_when_published(marker, 30.0) == "up"
+        plain, hidden = record.get("plain"), record.get("hidden")
+        assert isinstance(plain, int) and isinstance(hidden, int), record
+        for child in (plain, hidden):
+            handles[child] = _MODULE._as_handle(
+                _MODULE._OpenProcess(_MODULE._PROCESS_SWEEP_ACCESS, False, child)
+            )
+        assert all(handles.values()), (handles, _MODULE._last_error())
+        kinds = _MODULE._console_kinds(handles, host)
+        assert kinds == {pid: "attached", plain: "attached", hidden: "own"}, (
+            kinds,
+            host,
+            {child: _MODULE._console_host_of(h) for child, h in handles.items()},
+        )
+    finally:
+        for handle in handles.values():
+            if handle:
+                _MODULE._TerminateProcess(handle, 1)
+                _MODULE._WaitForSingleObject(handle, 15000)
                 _MODULE._close(handle)
-
-    result = _run_host(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        close_stdin=False,
-        replies=({"op": "kill"},),
-        ready_probe=probe,
-        timeout=60.0,
-    )
-    assert result.messages[-1] == {"event": "exit", "code": result.code}
-    assert len(answers) == 1, result
-    shell_pid, shell, host, kinds = answers[0]
-    assert shell and shell != host, (answers, result.stderr)
-    assert kinds == {shell_pid: "attached"}, (answers, result.stderr)
+        if thread:
+            _MODULE._close(thread)
+        # The read end breaks first: the built-in close waits for a drain.
+        _MODULE._close(output_read)
+        pseudoconsole.close()
+        for handle in (input_read, input_write, output_write):
+            _MODULE._close(handle)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
