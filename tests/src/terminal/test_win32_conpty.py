@@ -3175,7 +3175,19 @@ def _spawn_grandchild(
 
 
 """Kinds of descendant ``_spawn_breakaway_descendants`` publishes, in order."""
-_DESCENDANT_KINDS = ("newConsole", "noWindow", "gui", "guiChild", "breakaway")
+_DESCENDANT_KINDS = (
+    "newConsole",
+    "noWindow",
+    "gui",
+    "guiChild",
+    "guiOrphan",
+    "breakaway",
+    "grandBreakaway",
+    "detached",
+)
+
+"""The kinds a session end leaves running, in ``_DESCENDANT_KINDS`` order."""
+_DESCENDANTS_KEPT = ("gui", "guiChild", "detached")
 
 
 def _spawn_breakaway_descendants(ready_file: Path, exit_gate: Path) -> list[str]:
@@ -3184,22 +3196,30 @@ def _spawn_breakaway_descendants(ready_file: Path, exit_gate: Path) -> list[str]
     ``newConsole`` and ``noWindow`` are console programs left in a hidden
     console by a launcher that has exited: the ``Start-Process -WindowStyle
     Hidden`` shape and the console a Node helper gets. ``gui`` is a program of
-    the GUI subsystem, ``guiChild`` a console program it runs, and
-    ``breakaway`` a console program created with ``CREATE_BREAKAWAY_FROM_JOB``.
-    The shell publishes the PIDs, or an ``error``, then waits for ``exit_gate``
-    and exits 42.
+    the GUI subsystem, ``guiChild`` a console program it runs itself, and
+    ``guiOrphan`` one it ran through a launcher that has exited. ``breakaway``
+    is a console program the shell created with ``CREATE_BREAKAWAY_FROM_JOB``
+    and ``grandBreakaway`` one that a launcher of the shell created that way:
+    that creation must not be refused. ``detached`` is a console program with
+    no console at all. The shell publishes the PIDs, or an ``error``, then
+    waits for ``exit_gate`` and exits 42.
     """
     sleeper = "import time; time.sleep(120)"
-    launcher_code = (
-        "import subprocess, sys\n"
-        "child = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', {sleeper!r}],\n"
-        "    stdin=subprocess.DEVNULL,\n"
-        "    stdout=subprocess.DEVNULL,\n"
-        "    stderr=subprocess.DEVNULL,\n"
-        ")\n"
-        "print(child.pid)\n"
-    )
+
+    def launcher(flags: str) -> str:
+        """Return code that starts a sleeper with ``flags``, prints its PID, exits."""
+        return (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen(\n"
+            f"    [sys.executable, '-c', {sleeper!r}],\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            f"    creationflags={flags},\n"
+            ")\n"
+            "print(child.pid)\n"
+        )
+
     gui_code = (
         "import json, os, subprocess, sys, time\n"
         "child = subprocess.Popen(\n"
@@ -3209,16 +3229,28 @@ def _spawn_breakaway_descendants(ready_file: Path, exit_gate: Path) -> list[str]
         "    stderr=subprocess.DEVNULL,\n"
         "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
         ")\n"
+        "done = subprocess.run(\n"
+        f"    [sys.argv[1], '-c', {launcher('0')!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    capture_output=True,\n"
+        "    check=True,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        "record = {'pid': os.getpid(), 'child': child.pid, 'orphan': int(done.stdout)}\n"
         "with open(sys.argv[2] + '.tmp', 'w', encoding='utf-8') as stream:\n"
-        "    json.dump({'pid': os.getpid(), 'child': child.pid}, stream)\n"
+        "    json.dump(record, stream)\n"
         "os.replace(sys.argv[2] + '.tmp', sys.argv[2])\n"
         "time.sleep(120)\n"
     )
     gui_file = str(ready_file) + ".gui"
+    breakaway_flags = (
+        "subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.CREATE_NO_WINDOW"
+    )
     code = (
         "import json, os, subprocess, sys, time\n"
         f"sleeper = {sleeper!r}\n"
-        f"launcher = {launcher_code!r}\n"
+        f"launcher = {launcher('0')!r}\n"
+        f"breakaway_launcher = {launcher(breakaway_flags)!r}\n"
         f"gui_code = {gui_code!r}\n"
         "def hidden():\n"
         "    info = subprocess.STARTUPINFO()\n"
@@ -3233,15 +3265,16 @@ def _spawn_breakaway_descendants(ready_file: Path, exit_gate: Path) -> list[str]
         "        stderr=subprocess.DEVNULL,\n"
         "        **kwargs,\n"
         "    )\n"
-        "def launch(flags):\n"
+        "def launch(flags, code=launcher):\n"
         "    done = subprocess.run(\n"
-        "        [sys.executable, '-c', launcher],\n"
+        "        [sys.executable, '-c', code],\n"
         "        stdin=subprocess.DEVNULL,\n"
         "        capture_output=True,\n"
-        "        check=True,\n"
         "        creationflags=flags,\n"
         "        startupinfo=hidden(),\n"
         "    )\n"
+        "    if done.returncode != 0:\n"
+        "        raise RuntimeError(done.stderr.decode('utf-8', 'replace'))\n"
         "    return int(done.stdout)\n"
         "def start():\n"
         "    pythonw = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe')\n"
@@ -3260,10 +3293,15 @@ def _spawn_breakaway_descendants(ready_file: Path, exit_gate: Path) -> list[str]
         "        published = json.load(stream)\n"
         "    record['gui'] = gui.pid\n"
         "    record['guiChild'] = published['child']\n"
-        "    record['breakaway'] = quiet(\n"
+        "    record['guiOrphan'] = published['orphan']\n"
+        f"    record['breakaway'] = quiet([sys.executable, '-c', sleeper], "
+        f"creationflags={breakaway_flags}).pid\n"
+        "    record['grandBreakaway'] = launch(\n"
+        "        subprocess.CREATE_NO_WINDOW, breakaway_launcher\n"
+        "    )\n"
+        "    record['detached'] = quiet(\n"
         "        [sys.executable, '-c', sleeper],\n"
-        "        creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB\n"
-        "        | subprocess.CREATE_NO_WINDOW,\n"
+        "        creationflags=subprocess.DETACHED_PROCESS,\n"
         "    ).pid\n"
         "    return record\n"
         "try:\n"
@@ -3774,14 +3812,18 @@ def test_descendant_lifetime_follows_console_attachment(
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 @pytest.mark.parametrize("shutdown", ("natural-exit", "kill", "host-death"))
+@pytest.mark.parametrize("deferred", (False, True), ids=("immediate", "deferred"))
 def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
-    tmp_path: Path, shutdown: str
+    tmp_path: Path, shutdown: str, deferred: bool
 ) -> None:
-    """Console programs left in a hidden console end with the session.
+    """Console programs that run in a console of their own end with the session.
 
-    A GUI program, the console program it runs, and a program that asked to
-    break away from the job keep running. A host that is killed cannot act,
-    so everything it tracked survives that, as before.
+    That holds for the ones a launcher left behind, for one that asked to
+    break away from the job, and for one under a GUI program whose launcher
+    has exited. A GUI program, the console program it runs itself, and a
+    console program with no console at all keep running. A host that is
+    killed cannot act, so everything it tracked survives that, as before. A
+    launcher of the shell is still allowed to ask for a breakaway.
     """
     ready_file = tmp_path / "descendants.json"
     exit_gate = tmp_path / "shell-exit"
@@ -3820,6 +3862,7 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
             replies=({"op": "kill"},) if shutdown == "kill" else (),
             ready_probe=pin_before_shutdown,
             timeout=90.0,
+            deferred=deferred,
         )
         # A startup failure must not pass the host-death case with no handles.
         assert len(records) == 1, result
@@ -3831,10 +3874,271 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
             assert result.messages[-1] == {"event": "exit", "code": result.code}
             if shutdown == "natural-exit":
                 assert result.code == 42, result
-            kept = ("gui", "guiChild", "breakaway")
+            kept = _DESCENDANTS_KEPT
         # Assert through pinned handles before closing the watch kills survivors.
         survivors = [pids[kind] for kind in kept]
         assert watch.survivors(15.0, expected=survivors) == survivors
+
+
+"""Git for Windows' native bash launcher, where its installer puts it."""
+_GIT_BASH_LAUNCHER = Path(r"C:\Program Files\Git\bin\bash.exe")
+"""The MSYS ``bash.exe`` that the launcher starts."""
+_MSYS_BASH = Path(r"C:\Program Files\Git\usr\bin\bash.exe")
+"""Seconds a session end may take once an attached program ignores the close.
+
+The plugin kills the host ``TERMINAL_EXIT_CLEANUP_WAIT`` (5 s) after it asks
+for the kill; the console host alone keeps such a program for its own 5 s
+timeout, so the bound sits between the host's budget and that timeout.
+"""
+_IGNORED_CLOSE_BOUND = 4.0
+
+
+def _write_hidden_sleeper_launcher(
+    script: Path, ready_file: Path, exit_gate: Path
+) -> None:
+    """Write a program that leaves a sleeper in a hidden console, then waits.
+
+    It publishes the sleeper's PID to ``ready_file``, waits for ``exit_gate``
+    and exits 42, so the shell that runs it as its last command exits 42 too.
+    """
+    script.write_text(
+        "import json, os, subprocess, sys, time\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(120)'],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    creationflags=subprocess.CREATE_NO_WINDOW,\n"
+        ")\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': child.pid}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n",
+        encoding="utf-8",
+    )
+
+
+def _msys_shell(shape: str, launcher: Path) -> list[str]:
+    """Return a shell that runs ``launcher`` through MSYS bash in one shape.
+
+    ``gitBash`` is the plugin's Git Bash preset: the native launcher in
+    ``bin`` starts the MSYS ``bash.exe``. ``libuvLike`` is a Node-style
+    program: it puts itself in a job with libuv's limits, then starts the MSYS
+    ``bash.exe`` itself. MSYS rewrites arguments that look like POSIX paths,
+    so the Windows paths keep their drive letter and use forward slashes.
+    """
+    python = getattr(sys, "_base_executable", sys.executable)
+    command = f'"{Path(python).as_posix()}" "{launcher.as_posix()}"'
+    if shape == "gitBash":
+        return [str(_GIT_BASH_LAUNCHER), "-c", command]
+    code = (
+        "import ctypes, subprocess, sys\n"
+        "from ctypes import wintypes\n"
+        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "kernel32.CreateJobObjectW.restype = ctypes.c_void_p\n"
+        "kernel32.GetCurrentProcess.restype = ctypes.c_void_p\n"
+        "kernel32.SetInformationJobObject.argtypes = (\n"
+        "    ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD\n"
+        ")\n"
+        "kernel32.AssignProcessToJobObject.argtypes = (ctypes.c_void_p, ctypes.c_void_p)\n"
+        "class Limits(ctypes.Structure):\n"
+        "    _fields_ = (\n"
+        "        ('times', ctypes.c_int64 * 2),\n"
+        "        ('LimitFlags', wintypes.DWORD),\n"
+        "        ('working_set', ctypes.c_size_t * 2),\n"
+        "        ('ActiveProcessLimit', wintypes.DWORD),\n"
+        "        ('Affinity', ctypes.c_size_t),\n"
+        "        ('classes', wintypes.DWORD * 2),\n"
+        "        ('io_counters', ctypes.c_uint64 * 6),\n"
+        "        ('memory', ctypes.c_size_t * 4),\n"
+        "    )\n"
+        "job = kernel32.CreateJobObjectW(None, None)\n"
+        "assert job, ctypes.get_last_error()\n"
+        "limits = Limits()\n"
+        "# KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK | BREAKAWAY_OK, as libuv sets.\n"
+        "limits.LimitFlags = 0x2000 | 0x1000 | 0x800\n"
+        "assert kernel32.SetInformationJobObject(\n"
+        "    job, 9, ctypes.byref(limits), ctypes.sizeof(limits)\n"
+        "), ctypes.get_last_error()\n"
+        "assert kernel32.AssignProcessToJobObject(\n"
+        "    job, kernel32.GetCurrentProcess()\n"
+        "), ctypes.get_last_error()\n"
+        f"sys.exit(subprocess.run([{str(_MSYS_BASH)!r}, '-c', {command!r}]).returncode)\n"
+    )
+    return [python, "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.skipif(
+    not (_GIT_BASH_LAUNCHER.is_file() and _MSYS_BASH.is_file()),
+    reason="Git for Windows is not installed at its default path",
+)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+@pytest.mark.parametrize("shape", ("gitBash", "libuvLike"))
+def test_session_end_ends_programs_left_behind_through_msys_bash(
+    tmp_path: Path, shutdown: str, shape: str
+) -> None:
+    """A hidden-console program started under MSYS bash ends with the session.
+
+    MSYS asks for ``CREATE_BREAKAWAY_FROM_JOB`` whenever the job it runs in
+    permits a breakaway, so a job layout that permits one at the wrong level
+    loses everything that Git Bash, or an agent's Bash tool, runs.
+    """
+    ready_file = tmp_path / "sleeper.json"
+    exit_gate = tmp_path / "shell-exit"
+    launcher = tmp_path / "launcher.py"
+    _write_hidden_sleeper_launcher(launcher, ready_file, exit_gate)
+    sleeper_pids: list[int] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the sleeper before the shutdown starts."""
+            assert isinstance(ready["childPid"], int)
+            watch.pin(ready["childPid"])
+            record: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            sleeper_pids.append(pid)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+
+        result = _run_host(
+            _msys_shell(shape, launcher),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=90.0,
+        )
+        assert len(sleeper_pids) == 1, result
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        if shutdown == "natural-exit":
+            assert result.code == 42, result
+        assert watch.survivors(15.0) == []
+
+
+def _spawn_closing_grandchild(
+    ready_file: Path, marker: Path, exit_gate: Path, handler_seconds: float
+) -> list[str]:
+    """Publish an attached grandchild that marks ``CTRL_CLOSE_EVENT``; gate exit.
+
+    The grandchild shares the shell's pseudoconsole. Its control handler
+    writes ``marker`` and then keeps running for ``handler_seconds`` before it
+    lets the process end.
+    """
+    grandchild_code = (
+        "import ctypes, json, os, sys, time\n"
+        "from ctypes import wintypes\n"
+        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "HANDLER = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)\n"
+        f"marker = {str(marker)!r}\n"
+        "def handle(event):\n"
+        "    if event == 2:  # CTRL_CLOSE_EVENT\n"
+        "        with open(marker + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "            stream.write(str(event))\n"
+        "        os.replace(marker + '.tmp', marker)\n"
+        f"        time.sleep({handler_seconds!r})\n"
+        "    return True\n"
+        "routine = HANDLER(handle)\n"
+        "kernel32.SetConsoleCtrlHandler.argtypes = (HANDLER, wintypes.BOOL)\n"
+        "assert kernel32.SetConsoleCtrlHandler(routine, True), ctypes.get_last_error()\n"
+        f"path = {str(ready_file)!r}\n"
+        "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'pid': os.getpid()}, stream)\n"
+        "os.replace(path + '.tmp', path)\n"
+        "time.sleep(120)\n"
+    )
+    code = (
+        "import os, subprocess, sys, time\n"
+        "grandchild = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {grandchild_code!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "deadline = time.monotonic() + 120\n"
+        f"while not os.path.exists({str(exit_gate)!r}):\n"
+        "    assert time.monotonic() < deadline, 'shell exit gate was not released'\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(42)\n"
+    )
+    return [getattr(sys, "_base_executable", sys.executable), "-c", code]
+
+
+def _run_closing_grandchild(
+    tmp_path: Path, shutdown: str, handler_seconds: float
+) -> tuple[_HostResult, Path, float]:
+    """Run a session with an attached grandchild; return the result, marker, time.
+
+    The time is what passed between the shutdown request and the host's exit.
+    """
+    ready_file = tmp_path / "grandchild.json"
+    marker = tmp_path / "close-event"
+    exit_gate = tmp_path / "shell-exit"
+    started: list[float] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_shutdown(ready: Mapping[str, object]) -> None:
+            """Pin the shell and the grandchild before the shutdown starts."""
+            assert isinstance(ready["childPid"], int)
+            watch.pin(ready["childPid"])
+            record: object = json.loads(_read_when_published(ready_file, 30.0))
+            assert isinstance(record, dict), record
+            pid = record.get("pid")
+            assert isinstance(pid, int), record
+            watch.pin(pid)
+            if shutdown == "natural-exit":
+                exit_gate.touch()
+            started.append(time.monotonic())
+
+        result = _run_host(
+            _spawn_closing_grandchild(ready_file, marker, exit_gate, handler_seconds),
+            close_stdin=False,
+            replies=({"op": "kill"},) if shutdown == "kill" else (),
+            ready_probe=pin_before_shutdown,
+            timeout=60.0,
+        )
+        elapsed = time.monotonic() - started[0]
+        assert result.messages[-1] == {"event": "exit", "code": result.code}
+        assert watch.survivors(15.0) == []
+    return result, marker, elapsed
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_attached_programs_get_the_console_close_event_at_session_end(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A program attached to the pseudoconsole sees ``CTRL_CLOSE_EVENT`` and ends.
+
+    The event is how an agent CLI, a REPL or an editor saves its state when
+    the terminal closes, so nothing may end such a program before it arrives.
+    """
+    result, marker, _elapsed = _run_closing_grandchild(tmp_path, shutdown, 0.0)
+    if shutdown == "natural-exit":
+        assert result.code == 42, result
+    assert marker.is_file(), result
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_session_end_is_bounded_when_an_attached_program_ignores_the_close(
+    tmp_path: Path,
+) -> None:
+    """A program whose close handler never returns is ended within the budget.
+
+    The plugin kills the host five seconds after it asks for the kill. Left to
+    the console host, such a program lives through its own five-second
+    timeout, and the plugin's kill wins the race before ``exit`` is reported.
+    """
+    _result, marker, elapsed = _run_closing_grandchild(tmp_path, "kill", 30.0)
+    assert marker.is_file()
+    assert elapsed < _IGNORED_CLOSE_BOUND, elapsed
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
