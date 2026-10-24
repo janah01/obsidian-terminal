@@ -297,8 +297,8 @@ describe("hotkeys while a terminal has focus", () => {
 
   // Runs the real `TerminalView.load` and the library's real hotkey listener
   // against the Obsidian parts both of them reach for.
-  function loadView() {
-    const { context } = makeTerminalContext(),
+  function loadView(overrides: Partial<Settings> = {}) {
+    const { context } = makeTerminalContext(overrides),
       hotkeys = new HotkeyTable(),
       registry = new Map<string, Command>(),
       // Obsidian runs the check with `false` and reports success unless it throws.
@@ -353,12 +353,17 @@ describe("hotkeys while a terminal has focus", () => {
       },
       // Hands back what the listener answers Obsidian: after `false` Obsidian
       // consumes the key, after `undefined` the key goes on to the terminal.
-      press: (modifiers: readonly string[], key: string): unknown =>
-        listener(new KeyboardEvent("keydown", { key }), {
+      press: (
+        modifiers: readonly string[],
+        key: string,
+        init: KeyboardEventInit = {},
+      ): unknown =>
+        listener(new KeyboardEvent("keydown", { key, ...init }), {
           key,
           modifiers: compile(modifiers),
           vkey: key,
         }),
+      hotkeys,
     };
   }
 
@@ -451,6 +456,157 @@ describe("hotkeys while a terminal has focus", () => {
     addBoundCommand("command-palette", { key: "p", modifiers: ["Mod"] });
     press(["Ctrl", "Alt"], "t");
     expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+  });
+
+  describe("a key mapped to Send to Obsidian", () => {
+    // For every platform, so that the tests do not depend on the one they
+    // run on. `Mod` is Ctrl outside macOS.
+    const ctrlP = {
+        action: "sendToObsidian",
+        actionArg: null,
+        alt: false,
+        ctrl: true,
+        key: "p",
+        meta: false,
+        platform: null,
+        shift: false,
+      } as const satisfies Settings.Keymapping,
+      ctrl = { ctrlKey: true } as const,
+      palette = { key: "p", modifiers: ["Mod"] } as const;
+
+    it("runs the Obsidian hotkey of the key and keeps the key from the terminal", () => {
+      const { addBoundCommand, executeCommand, press } = loadView({
+          keymappings: [ctrlP],
+        }),
+        { check, command } = addBoundCommand("command-palette:open", palette);
+
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+
+      expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+      expect(check).toHaveBeenCalledExactlyOnceWith(false);
+    });
+
+    it("leaves the key to the terminal when no mapping sends it", () => {
+      const { addBoundCommand, executeCommand, press } = loadView({
+        keymappings: [],
+      });
+      addBoundCommand("command-palette:open", palette);
+
+      expect(press(["Mod"], "p", ctrl)).toBeUndefined();
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("keeps a key that no Obsidian hotkey takes from the terminal", () => {
+      const { executeCommand, press } = loadView({
+        keymappings: [{ ...ctrlP, key: "F9" }],
+      });
+
+      expect(press(["Mod"], "F9", ctrl)).toBe(false);
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("keeps the key from the terminal when Obsidian runs nothing for it", () => {
+      const { addBoundCommand, executeCommand, press } = loadView({
+          keymappings: [ctrlP],
+        }),
+        { command } = addBoundCommand("command-palette:open", palette);
+      executeCommand.mockReturnValue(false);
+
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+      expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+    });
+
+    it("keeps the repeats of a held key from the terminal without running the command again", () => {
+      const { addBoundCommand, executeCommand, press } = loadView({
+        keymappings: [ctrlP],
+      });
+      addBoundCommand("command-palette:open", palette);
+
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+      expect(press(["Mod"], "p", { ...ctrl, repeat: true })).toBe(false);
+      expect(press(["Mod"], "p", { ...ctrl, repeat: true })).toBe(false);
+      expect(executeCommand).toHaveBeenCalledOnce();
+    });
+
+    it("leaves the key to an earlier mapping of it", () => {
+      const { addBoundCommand, executeCommand, press } = loadView({
+        keymappings: [{ ...ctrlP, action: "sendText", actionArg: "x" }, ctrlP],
+      });
+      addBoundCommand("command-palette:open", palette);
+
+      expect(press(["Mod"], "p", ctrl)).toBeUndefined();
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("skips a mapping for another platform, as the terminal does", () => {
+      const other = library.Platform.CURRENT === "win32" ? "darwin" : "win32",
+        { addBoundCommand, executeCommand, press } = loadView({
+          keymappings: [{ ...ctrlP, platform: other }],
+        });
+      addBoundCommand("command-palette:open", palette);
+
+      expect(press(["Mod"], "p", ctrl)).toBeUndefined();
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("leaves a key typed with Caps Lock to the terminal's own hotkeys", () => {
+      const { addBoundCommand, executeCommand, press } = loadView({
+        keymappings: [ctrlP],
+      });
+      addBoundCommand("command-palette:open", palette);
+
+      // Obsidian matches its hotkey by the key's code; the mapping takes the
+      // character, which Caps Lock makes "P". As in 3.29.0, the palette's
+      // hotkey does not run.
+      expect(press(["Mod"], "p", { ...ctrl, key: "P" })).toBeUndefined();
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("follows the keymappings as they are when the key is pressed", () => {
+      const keymappings: Settings.Keymapping[] = [],
+        { addBoundCommand, executeCommand, press } = loadView({ keymappings });
+      addBoundCommand("command-palette:open", palette);
+      expect(press(["Mod"], "p", ctrl)).toBeUndefined();
+
+      keymappings.push(ctrlP);
+
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+      expect(executeCommand).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the terminal's own hotkeys and its list of other commands", () => {
+      const { addBoundCommand, executeCommand, hotkeys, press } = loadView({
+          keymappings: [ctrlP],
+        }),
+        { command } = addBoundCommand("command-palette:open", palette),
+        other = addBoundCommand("open-terminal.external.root", {
+          key: "t",
+          modifiers: ["Alt", "Ctrl"],
+        });
+
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+      expect(press(["Ctrl", "Alt"], "t")).toBeUndefined();
+      expect(press(["Mod", "Shift"], "k")).toBe(false);
+      // Obsidian's own table still holds every hotkey, also once a change
+      // made it stale and both listeners baked it again.
+      expect(hotkeys.bakedIds).toContain(other.command.id);
+      addBoundCommand("command-palette:toggle", {
+        key: "y",
+        modifiers: ["Mod"],
+      });
+      expect(press(["Mod"], "p", ctrl)).toBe(false);
+      expect(press(["Ctrl", "Alt"], "t")).toBeUndefined();
+      expect(hotkeys.bakedIds).toEqual(
+        expect.arrayContaining([command.id, other.command.id]),
+      );
+
+      expect(executeCommand.mock.calls).toEqual([
+        [command],
+        [expect.objectContaining({ id: "terminal:clear-terminal" })],
+        [command],
+      ]);
+      expect(other.check).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -27,7 +27,8 @@
         "scrollToTop": "Scroll to top",
         "sendEscapeSequence": "Send escape sequence",
         "sendHexCode": "Send hex code",
-        "sendText": "Send text"
+        "sendText": "Send text",
+        "sendToObsidian": "Send to Obsidian"
       },
       "edit": "$t(generic.edit, capitalize)",
       "placeholders": {
@@ -39,7 +40,8 @@
         "scrollToTop": "",
         "sendEscapeSequence": "e.g. b",
         "sendHexCode": "e.g. 01 0d",
-        "sendText": "e.g. hello"
+        "sendText": "e.g. hello",
+        "sendToObsidian": ""
       },
       "platform": "$t(generic.platform, capitalize)",
       "platform-options-": "All $t(generic.platform_other)",

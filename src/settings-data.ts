@@ -362,6 +362,8 @@ export namespace Settings {
    * - `"passthrough"` — yield to xterm.js; the event is processed as if no
    *   mapping matched. Useful for explicitly opting out of a default mapping
    *   for a specific key combination without deleting the default entry.
+   * - `"sendToObsidian"` — keep the key from the terminal; while key
+   *   interception is on, the focused terminal runs Obsidian's hotkey for it.
    * - `"scrollLines"` — scroll the terminal viewport by the number of lines
    *   given in {@link Keymapping.actionArg} (negative = up, positive = down).
    *   Defaults to 1 if the arg is absent or non-numeric.
@@ -379,6 +381,7 @@ export namespace Settings {
   export const KEY_MAPPING_ACTIONS = deepFreeze([
     "ignore",
     "passthrough",
+    "sendToObsidian",
     "scrollLines",
     "scrollPages",
     "scrollToBottom",
@@ -393,6 +396,7 @@ export namespace Settings {
   export const ACTION_ARG_TYPES = deepFreeze({
     ignore: null,
     passthrough: null,
+    sendToObsidian: null,
     scrollLines: "number",
     scrollPages: "number",
     scrollToBottom: null,
@@ -430,7 +434,11 @@ export namespace Settings {
   } & (
     | {
         readonly action:
-          "ignore" | "passthrough" | "scrollToBottom" | "scrollToTop";
+          | "ignore"
+          | "passthrough"
+          | "scrollToBottom"
+          | "scrollToTop"
+          | "sendToObsidian";
         readonly actionArg: null;
       }
     | {
@@ -486,7 +494,8 @@ export namespace Settings {
           case "ignore":
           case "passthrough":
           case "scrollToBottom":
-          case "scrollToTop": {
+          case "scrollToTop":
+          case "sendToObsidian": {
             ACTION_ARG_TYPES[action] satisfies null; // Assert correct type for `actionArg`
             let actionArg = fixTyped(DEFAULT, unc, "actionArg", ["null"]);
             if (!isValidActionArg(ACTION_ARG_TYPES[action], actionArg)) {

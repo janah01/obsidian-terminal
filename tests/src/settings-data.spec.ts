@@ -369,6 +369,45 @@ describe("src/settings-data.ts", () => {
     },
   );
 
+  describe("the Send to Obsidian keymapping action", () => {
+    const ctrlP = {
+      action: "sendToObsidian",
+      actionArg: null,
+      alt: false,
+      ctrl: true,
+      key: "p",
+      meta: false,
+      platform: null,
+      shift: false,
+    } as const satisfies Settings.Keymapping;
+
+    it("is a keymapping action that takes no argument", () => {
+      expect(Settings.isKeymappingAction("sendToObsidian")).toBe(true);
+      expect(Settings.ACTION_ARG_TYPES.sendToObsidian).toBeNull();
+    });
+
+    it("is listed with the actions that decide where a key goes", () => {
+      const actions: readonly string[] = Settings.KEY_MAPPING_ACTIONS;
+      expect(actions.slice(0, 3)).toStrictEqual([
+        "ignore",
+        "passthrough",
+        "sendToObsidian",
+      ]);
+    });
+
+    it("is kept by the keymapping fixer as saved", () => {
+      const fixed = Settings.Keymapping.fix(JSON.parse(JSON.stringify(ctrlP)));
+      expect(fixed.valid).toBe(true);
+      expect(fixed.value).toStrictEqual(ctrlP);
+    });
+
+    it("loses an argument it cannot take", () => {
+      const fixed = Settings.Keymapping.fix({ ...ctrlP, actionArg: "x" });
+      expect(fixed.valid).toBe(false);
+      expect(fixed.value).toStrictEqual(ctrlP);
+    });
+  });
+
   describe("fixer convergence across persistence", () => {
     /*
      * A fixer key that does not round-trip stably appends one recovery

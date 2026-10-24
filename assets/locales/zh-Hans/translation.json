@@ -27,7 +27,8 @@
         "scrollToTop": "滚动到顶部",
         "sendEscapeSequence": "发送转义序列",
         "sendHexCode": "发送十六进制代码",
-        "sendText": "发送文本"
+        "sendText": "发送文本",
+        "sendToObsidian": "Send to Obsidian"
       },
       "edit": "$t(generic.edit, capitalize)",
       "placeholders": {
@@ -39,7 +40,8 @@
         "scrollToTop": "",
         "sendEscapeSequence": "例如 b",
         "sendHexCode": "例如 01 0d",
-        "sendText": "例如 hello"
+        "sendText": "例如 hello",
+        "sendToObsidian": ""
       },
       "platform": "$t(generic.platform, capitalize)",
       "platform-options-": "所有平台",

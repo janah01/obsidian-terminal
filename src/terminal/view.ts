@@ -51,6 +51,7 @@ import {
   type Command,
   FileSystemAdapter,
   ItemView,
+  type KeymapEventListener,
   type Menu,
   Scope,
   View,
@@ -220,6 +221,40 @@ function recordTerminalUse(view: TerminalView): void {
 function terminalUseOf(leaf: WorkspaceLeaf | undefined): number {
   const view = leaf?.view;
   return view instanceof TerminalView ? (terminalUses.get(view) ?? 0) : 0;
+}
+
+/**
+ * The listener of the focused terminal's scope. A key that the keymappings
+ * send to Obsidian runs whatever hotkey Obsidian has for it and is consumed
+ * either way, so that it never reaches the shell. Every other key runs only
+ * the hotkeys of the commands allowed while a terminal has focus.
+ *
+ * @param context the plugin
+ * @param ids the commands allowed while a terminal has focus
+ * @param platform the platform the terminal runs on, as its key handler has it
+ * @returns the listener
+ */
+export function newFocusedKeyListener(
+  context: TerminalPlugin,
+  ids: ReadonlySet<string>,
+  platform: string,
+): KeymapEventListener {
+  const allowed = newHotkeyListener(context, ids),
+    all = newHotkeyListener(context);
+  return (evt, ctx) => {
+    if (
+      CustomKeyEventHandlerAddon.sendsToObsidian(
+        context.settings.value.keymappings,
+        evt,
+        platform,
+      )
+    ) {
+      all(evt, ctx);
+      return false;
+    }
+    const ret: unknown = allowed(evt, ctx);
+    return ret;
+  };
 }
 
 export class EditTerminalModal extends DialogModal {
@@ -838,7 +873,7 @@ export class TerminalView extends ItemView {
       handler = this.focusedScope.register(
         null,
         null,
-        newHotkeyListener(context, focusedScopeIDs),
+        newFocusedKeyListener(context, focusedScopeIDs, Platform.CURRENT),
       );
     TerminalView.#focusedScopeIDs = focusedScopeIDs;
     context.register(() => {
