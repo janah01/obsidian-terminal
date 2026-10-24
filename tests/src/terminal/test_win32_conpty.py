@@ -4549,6 +4549,54 @@ def test_session_end_keeps_a_program_that_freed_its_console(
     assert survivors == published, result.stderr
 
 
+"""A console program that shows a window, as ``start python app.py`` runs a Tk app.
+
+The window is a message box shown by another thread; the program publishes
+its PID once the window is visible.
+"""
+_WINDOWED_CONSOLE_PROGRAM = (
+    "import ctypes, json, os, sys, threading, time\n"
+    "user32 = ctypes.WinDLL('user32', use_last_error=True)\n"
+    "user32.FindWindowW.restype = ctypes.c_void_p\n"
+    "title = f'session-end window {os.getpid()}'\n"
+    "threading.Thread(\n"
+    "    target=lambda: user32.MessageBoxW(None, 'unsaved work', title, 0),\n"
+    "    daemon=True,\n"
+    ").start()\n"
+    "deadline = time.monotonic() + 30\n"
+    "window = None\n"
+    "while not window and time.monotonic() < deadline:\n"
+    "    time.sleep(0.05)\n"
+    "    window = user32.FindWindowW(None, title)\n"
+    "visible = bool(window) and bool(user32.IsWindowVisible(ctypes.c_void_p(window)))\n"
+    "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump({'pid': os.getpid(), 'visible': visible}, stream)\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(120)\n"
+)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_keeps_a_console_program_that_shows_a_window(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A console program with a window of its own keeps running, as on 3.29.0.
+
+    The changeset keeps programs with a window. A Tk or Qt app run as
+    ``start python app.py``, a Swing app run through ``java.exe`` and a GUI
+    app built as a console image all have one, in a console of their own.
+    """
+    result, published, survivors = _run_published_program(
+        tmp_path,
+        shutdown,
+        _WINDOWED_CONSOLE_PROGRAM,
+        "subprocess.CREATE_NEW_CONSOLE",
+        "visible",
+    )
+    assert survivors == published, result.stderr
+
+
 """Creation flag of a child with a hidden console of its own."""
 _CREATE_NO_WINDOW = 0x08000000
 """Creation flag of a child with no console at all."""
