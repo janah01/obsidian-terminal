@@ -417,6 +417,162 @@ describe("hotkeys while a terminal has focus", () => {
     );
   });
 
+  describe("while a key is held", () => {
+    // Windows sends 31 key repeats while a key is held for about 1.5 s.
+    const REPEATS = 31;
+
+    /**
+     * Hands the listener of the last `loadView` one key-down, as Obsidian does.
+     * Spying again hands back the spy that caught the listener.
+     */
+    function send(
+      modifiers: readonly string[],
+      key: string,
+      repeat: boolean,
+    ): unknown {
+      const listener = vi.spyOn(ScopeView.scope, "register").mock.lastCall?.[2];
+      if (!listener) throw new Error("Missing focused-scope listener");
+      return listener(new KeyboardEvent("keydown", { key, repeat }), {
+        key,
+        modifiers: compile(modifiers),
+        vkey: key,
+      });
+    }
+
+    // The first key-down, then one key-down with `repeat` set per key repeat.
+    function hold(modifiers: readonly string[], key: string): unknown[] {
+      return [
+        send(modifiers, key, false),
+        ...Array.from({ length: REPEATS }, () => send(modifiers, key, true)),
+      ];
+    }
+
+    const consumed = Array<unknown>(REPEATS + 1).fill(false),
+      passedOn = Array<unknown>(REPEATS + 1).fill(undefined);
+
+    it.each([
+      ["Clear terminal", "clear-terminal", ["Mod", "Shift"], "k"],
+      ["Close terminal", "close-terminal", ["Mod", "Shift"], "w"],
+      ["Find in terminal", "find-in-terminal", ["Mod", "Shift"], "f"],
+      [
+        "Toggle focus on last terminal",
+        "toggle-focus-on-last-terminal",
+        ["Ctrl", "Shift"],
+        "`",
+      ],
+    ] as const)(
+      "runs %s once and lets none of its repeats reach the shell",
+      (_name, id, modifiers, key) => {
+        const { executeCommand } = loadView();
+
+        expect(hold(modifiers, key)).toStrictEqual(consumed);
+
+        expect(executeCommand).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ id: `terminal:${id}` }),
+        );
+      },
+    );
+
+    it("runs an opening hotkey once and lets none of its repeats reach the shell", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check, command } = addBoundCommand("open-terminal.integrated.root", {
+          key: "H",
+          modifiers: ["Mod", "Shift"],
+        });
+      TerminalView.allowWhileFocused(command);
+
+      expect(hold(["Mod", "Shift"], "H")).toStrictEqual(consumed);
+
+      expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+      expect(check).toHaveBeenCalledExactlyOnceWith(false);
+    });
+
+    it("consumes repeats without their key-down, as in the terminal the key opened, and runs nothing", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check, command } = addBoundCommand("open-terminal.integrated.root", {
+          key: "H",
+          modifiers: ["Mod", "Shift"],
+        });
+      TerminalView.allowWhileFocused(command);
+
+      expect(
+        Array.from({ length: REPEATS }, () =>
+          send(["Mod", "Shift"], "H", true),
+        ),
+      ).toStrictEqual(consumed.slice(1));
+
+      expect(executeCommand).not.toHaveBeenCalled();
+      expect(check).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a letter", [], "x"],
+      ["Ctrl+H, a Backspace to the shell", ["Ctrl"], "h"],
+      ["Backspace", [], "Backspace"],
+    ] as const)(
+      "lets every repeat of %s reach the shell when no hotkey has it",
+      (_name, modifiers, key) => {
+        const { executeCommand } = loadView();
+
+        expect(hold(modifiers, key)).toStrictEqual(passedOn);
+
+        expect(executeCommand).not.toHaveBeenCalled();
+      },
+    );
+
+    it("lets every repeat of a hotkey outside the list reach the shell", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check } = addBoundCommand("editor:toggle-bold", {
+          key: "b",
+          modifiers: ["Mod"],
+        });
+
+      expect(hold(["Mod"], "b")).toStrictEqual(passedOn);
+
+      expect(executeCommand).not.toHaveBeenCalled();
+      expect(check).not.toHaveBeenCalled();
+    });
+
+    it("matches each repeat by its own modifiers", () => {
+      const { executeCommand } = loadView();
+
+      expect(send(["Mod", "Shift"], "k", false)).toBe(false);
+      // Shift comes up while K stays down: the repeats are Mod+K.
+      expect(send(["Mod"], "k", true)).toBeUndefined();
+      expect(send(["Mod"], "k", true)).toBeUndefined();
+
+      expect(executeCommand).toHaveBeenCalledOnce();
+    });
+
+    it("runs a repeatable command again on each repeat", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check, command } = addBoundCommand("open-terminal.external.root", {
+          key: "t",
+          modifiers: ["Alt", "Ctrl"],
+        });
+      Object.assign(command, { repeatable: true });
+      TerminalView.allowWhileFocused(command);
+
+      expect(hold(["Ctrl", "Alt"], "t")).toStrictEqual(consumed);
+
+      expect(executeCommand).toHaveBeenCalledTimes(REPEATS + 1);
+      expect(check).toHaveBeenCalledTimes(REPEATS + 1);
+    });
+
+    it("does not run a command that failed again on its repeats, nor pass them on", () => {
+      const { executeCommand } = loadView();
+      // Obsidian answers `false` when the command threw.
+      executeCommand.mockReturnValueOnce(false);
+
+      expect(hold(["Mod", "Shift"], "k")).toStrictEqual([
+        undefined,
+        ...consumed.slice(1),
+      ]);
+
+      expect(executeCommand).toHaveBeenCalledOnce();
+    });
+  });
+
   it("forgets the commands of an earlier load", () => {
     const hotkey = { key: "t", modifiers: ["Alt", "Ctrl"] },
       earlier = loadView();
@@ -1294,6 +1450,49 @@ describe("src/terminal/view.ts", () => {
         const fixed = TerminalView.State.fix(input);
         expect(fixed.value.cwd).toBe("/home/user");
         expect(fixed.value.userTitle).toBe("dev server");
+      });
+
+      it("restores a state saved before some of its keys existed without a report", () => {
+        // An older version's tab: no title, no profile source, no scroll
+        // line, and a profile without its Windows backend.
+        const profile: Record<string, unknown> = {
+          ...Settings.Profile.DEFAULTS.integrated,
+        };
+        Reflect.deleteProperty(profile, "win32Backend");
+        const fixed = TerminalView.State.fix({
+          cwd: "/home/user",
+          focus: false,
+          profile,
+          serial: { columns: 80, data: "$ ", rows: 24 },
+        });
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value).toMatchObject({
+          cwd: "/home/user",
+          profileSourceId: null,
+          serial: { columns: 80, data: "$ ", rows: 24 },
+          userTitle: "",
+        });
+      });
+
+      it("still reports a state value it replaces or drops", () => {
+        const state = {
+          cwd: null,
+          focus: false,
+          profile: Settings.Profile.DEFAULTS.integrated,
+          profileSourceId: null,
+          serial: null,
+          userTitle: "",
+        };
+        expect(TerminalView.State.fix(state).valid).toBe(true);
+        for (const change of [
+          { focus: "x" },
+          { serial: { columns: "80", data: "", rows: 1, scrollLine: -1 } },
+          { later: true },
+        ]) {
+          expect(TerminalView.State.fix({ ...state, ...change }).valid).toBe(
+            false,
+          );
+        }
       });
     });
   });

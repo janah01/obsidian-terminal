@@ -788,7 +788,7 @@ export namespace Settings {
           return ret2;
         };
 
-      return markFixed(
+      const fixed = markFixed(
         self0,
         ((): DeepWritable<Profile> => {
           const type = inSet(TYPES, unc.type) ? unc.type : "invalid";
@@ -960,6 +960,11 @@ export namespace Settings {
           }
         })(),
       );
+      // A value without a known type becomes an invalid profile that keeps
+      // every key it has. Only adding `type`, it would pass as unchanged.
+      return fixed.value.type === "invalid" && unc.type !== "invalid"
+        ? Object.freeze({ valid: false, value: fixed.value })
+        : fixed;
     }
 
     export type TerminalOptions = Omit<
