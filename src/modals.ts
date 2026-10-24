@@ -1995,8 +1995,14 @@ export class KeymappingEditModal extends Modal {
             await this.postMutate();
           });
         }
-        // Leaving the field shows the stored number again.
+        // Leaving the field shows the stored number again. A switch to
+        // another window blurs the field too, but it stays the focused
+        // element of its page and has the keyboard again on return.
         text.inputEl.onblur = (): void => {
+          const { inputEl } = text;
+          if (inputEl === inputEl.ownerDocument.activeElement) {
+            return;
+          }
           if (typeof data.actionArg === "number") {
             text.setValue(String(data.actionArg));
           }

@@ -1602,6 +1602,26 @@ describe("keymapping editor argument", () => {
       editor.modal.close();
     });
 
+    it("keeps a draft when the window loses the focus and gets it back", async () => {
+      const editor = await openEditor({
+          ...seeded,
+          action: "scrollPages",
+          actionArg: -1,
+        }),
+        field = focus(editor.numberField());
+      // The minus typed first.
+      editor.typeNumber("");
+      // Switching to another window blurs the field. It stays the focused
+      // element of its page and has the focus again on return. A number
+      // written into it now puts the caret after that number, so the "2"
+      // typed next makes "-12".
+      field.dispatchEvent(new FocusEvent("blur"));
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("");
+      expect(editor.callback).not.toHaveBeenCalled();
+      editor.modal.close();
+    });
+
     it("shows a number typed just before the field is left while it saves", async () => {
       const editor = await openEditor(scrollLines),
         field = focus(editor.numberField());
