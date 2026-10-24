@@ -4857,6 +4857,136 @@ def test_session_end_ends_programs_left_behind_through_msys_bash(
         assert watch.survivors(15.0) == [], result.stderr
 
 
+"""Code of a program that asks to leave its job, publishes the answer, then waits.
+
+The answer carries the limit flags of the job the program runs in, so that a
+refusal names the job that refused: the session's root job has none.
+"""
+_BREAKAWAY_PROBE = (
+    "import ctypes, json, os, subprocess, sys, time\n"
+    "from ctypes import wintypes\n"
+    "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+    "class Basic(ctypes.Structure):\n"
+    "    _fields_ = (\n"
+    "        ('times', ctypes.c_int64 * 2),\n"
+    "        ('LimitFlags', wintypes.DWORD),\n"
+    "        ('working_set', ctypes.c_size_t * 2),\n"
+    "        ('ActiveProcessLimit', wintypes.DWORD),\n"
+    "        ('Affinity', ctypes.c_size_t),\n"
+    "        ('classes', wintypes.DWORD * 2),\n"
+    "    )\n"
+    "kernel32.QueryInformationJobObject.argtypes = (\n"
+    "    ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p\n"
+    ")\n"
+    "basic = Basic()\n"
+    "# JobObjectBasicLimitInformation of the job this process is in.\n"
+    "known = kernel32.QueryInformationJobObject(\n"
+    "    None, 2, ctypes.byref(basic), ctypes.sizeof(basic), None\n"
+    ")\n"
+    "record = {'pid': os.getpid(), 'jobFlags': basic.LimitFlags if known else None}\n"
+    "try:\n"
+    "    record['away'] = subprocess.Popen(\n"
+    "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+    "        stdin=subprocess.DEVNULL,\n"
+    "        stdout=subprocess.DEVNULL,\n"
+    "        stderr=subprocess.DEVNULL,\n"
+    "        creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB\n"
+    "        | subprocess.CREATE_NO_WINDOW,\n"
+    "    ).pid\n"
+    "except OSError as error:\n"
+    "    record['refused'] = str(error)\n"
+    "path = sys.argv[1]\n"
+    "with open(path + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump(record, stream)\n"
+    "os.replace(path + '.tmp', path)\n"
+    "time.sleep(60)\n"
+)
+
+
+"""What the breakaway probe publishes."""
+_BREAKAWAY_RECORD_KEYS = ("pid", "jobFlags", "away", "refused")
+
+
+def _breakaway_probe_shell(shape: str, script: Path, ready_file: Path) -> list[str]:
+    """Return a shell that runs the breakaway probe one breakaway below the shell.
+
+    ``breakawayChild``: the shell starts the probe with
+    ``CREATE_BREAKAWAY_FROM_JOB``, as a launcher that means to outlive its
+    caller does. ``gitBash``: the Git Bash preset runs the probe as an
+    ordinary command, and MSYS asks for that breakaway itself.
+    """
+    python = getattr(sys, "_base_executable", sys.executable)
+    if shape == "gitBash":
+        command = (
+            f'"{Path(python).as_posix()}" "{script.as_posix()}" '
+            f'"{ready_file.as_posix()}"'
+        )
+        return [str(_GIT_BASH_LAUNCHER), "-c", command]
+    code = (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, {str(script)!r}, {str(ready_file)!r}],\n"
+        "    creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB,\n"
+        ")\n"
+        "time.sleep(120)\n"
+    )
+    return [python, "-c", code]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize(
+    "shape",
+    (
+        "breakawayChild",
+        pytest.param(
+            "gitBash",
+            marks=pytest.mark.skipif(
+                not (_GIT_BASH_LAUNCHER.is_file() and _MSYS_BASH.is_file()),
+                reason="Git for Windows is not installed at its default path",
+            ),
+        ),
+    ),
+)
+def test_a_program_that_broke_away_may_break_away_again(
+    tmp_path: Path, shape: str
+) -> None:
+    """A breakaway asked for anywhere under the shell is not refused.
+
+    Every program Git Bash runs has already broken away once, because MSYS
+    asks for it, so a program that asks again must not get
+    ``ERROR_ACCESS_DENIED`` from the session's own jobs.
+    """
+    script = tmp_path / "probe.py"
+    script.write_text(_BREAKAWAY_PROBE, encoding="utf-8")
+    ready_file = tmp_path / "probe.json"
+    records: list[dict[str, object]] = []
+    with closing(_ProcessWatch()) as watch:
+
+        def pin_before_kill(ready: Mapping[str, object]) -> None:
+            """Pin the probe and what it started, and keep its answer."""
+            shell = ready["childPid"]
+            assert isinstance(shell, int), ready
+            watch.pin(shell)
+            record: object = json.loads(_read_when_published(ready_file, 45.0))
+            assert isinstance(record, dict), record
+            for key in ("pid", "away"):
+                pid = record.get(key)
+                if isinstance(pid, int):
+                    watch.pin(pid)
+            records.append({key: record.get(key) for key in _BREAKAWAY_RECORD_KEYS})
+
+        result = _run_host(
+            _breakaway_probe_shell(shape, script, ready_file),
+            close_stdin=False,
+            replies=({"op": "kill"},),
+            ready_probe=pin_before_kill,
+            timeout=60.0,
+        )
+        assert len(records) == 1, result
+        assert records[0]["refused"] is None, records[0]
+        assert isinstance(records[0].get("away"), int), records[0]
+
+
 def _spawn_closing_grandchild(
     ready_file: Path, marker: Path, exit_gate: Path, handler_seconds: float
 ) -> list[str]:
