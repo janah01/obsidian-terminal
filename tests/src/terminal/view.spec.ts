@@ -1971,6 +1971,36 @@ describe("TerminalView focus", () => {
         },
       );
 
+      it("toggles the focus to it from a note in the main window", async () => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context, popOut());
+        terminal.use();
+        clickIntoNote(context);
+        // `focus` and `unfocus` are protected, so `vi.spyOn` cannot name them.
+        const focus = vi.fn(),
+          unfocus = vi.fn();
+        terminal.view["focus"] = focus;
+        terminal.view["unfocus"] = unfocus;
+
+        command("toggle-focus-on-last-terminal")(false);
+        expect({
+          focus: focus.mock.calls.length,
+          unfocus: unfocus.mock.calls.length,
+        }).toEqual({ focus: 1, unfocus: 0 });
+      });
+
+      it("offers Focus on last terminal, not Unfocus terminal, from a note in the main window", async () => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context, popOut());
+        terminal.use();
+        clickIntoNote(context);
+        // The pop-out still remembers its focused element.
+        expect(terminal.view["isFocused"]).toBe(true);
+
+        expect(command("focus-on-last-terminal")(true)).toBe(true);
+        expect(command("unfocus-terminal")(true)).toBe(false);
+      });
+
       it.each(ACTING)(
         "neither offers nor runs %s for a main-window terminal from a note in a pop-out window",
         async (id) => {

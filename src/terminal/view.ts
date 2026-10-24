@@ -723,7 +723,7 @@ export class TerminalView extends ItemView {
           lastFocusTime = time;
           lastFocus = view;
         }
-        if (!lastFocus || !focused.includes(lastFocus.isFocused)) {
+        if (!lastFocus || !focused.includes(lastFocus.isLookedAt)) {
           return false;
         }
         return callback(checking, lastFocus);
@@ -781,7 +781,7 @@ export class TerminalView extends ItemView {
             checkCallback: withLastFocusedView(
               (checking, view) => {
                 if (!checking) {
-                  if (view.isFocused) {
+                  if (view.isLookedAt) {
                     view.unfocus();
                   } else {
                     view.focus();
