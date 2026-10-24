@@ -1459,6 +1459,73 @@ describe("CustomKeyEventHandlerAddon", () => {
         sendsToObsidian([{ ...ctrlP, platform: "darwin" }], pressed, "linux"),
       ).toBe(false);
     });
+
+    it("finds the mapping the terminal takes, on every platform", () => {
+      const { sendsToObsidian } = CustomKeyEventHandlerAddon,
+        // Every other action that keeps the key types a marker, so that the
+        // terminal shows which mapping it took.
+        marked = (
+          mappings: readonly Settings.Keymapping[],
+        ): readonly Settings.Keymapping[] =>
+          mappings.map((mapping, index): Settings.Keymapping =>
+            mapping.action === "sendToObsidian" ||
+            mapping.action === "passthrough"
+              ? mapping
+              : {
+                  ...mapping,
+                  action: "sendText",
+                  actionArg: `#${String(index)}`,
+                },
+          ),
+        lists = [
+          Settings.DEFAULT.keymappings,
+          [
+            { ...ctrlP, action: "passthrough" },
+            ...Settings.DEFAULT.keymappings,
+          ],
+          [
+            { ...ctrlP, action: "ignore", platform: "darwin" },
+            { ...ctrlP, ctrl: false, meta: true, platform: "win32" },
+            ...Settings.DEFAULT.keymappings,
+          ],
+        ] as const,
+        events = [
+          key({ ctrlKey: true }),
+          key({ metaKey: true }),
+          key({ ctrlKey: true, key: "P" }),
+          key({ ctrlKey: true, key: "P", shiftKey: true }),
+          key({ altKey: true, ctrlKey: true }),
+          key({}),
+        ];
+      for (const [platform, win32InputMode] of [
+        ["android", false],
+        ["darwin", false],
+        ["ios", false],
+        ["linux", false],
+        ["unknown", false],
+        ["win32", false],
+        ["win32", true],
+      ] as const) {
+        for (const list of lists.map(marked)) {
+          if (win32InputMode) {
+            setupWin32InputMode(() => list);
+            triggerCsi("?", "h", [9001]);
+          } else {
+            setup(false, () => list, platform);
+          }
+          for (const event of events) {
+            inputSpy.mockClear();
+            const kept =
+              !handler(fakeKeyEvent({ ...event, code: "KeyP" })) &&
+              inputSpy.mock.calls.length === 0;
+            expect(
+              kept,
+              `${platform} ${String(win32InputMode)} ${JSON.stringify(event)}`,
+            ).toBe(sendsToObsidian(list, event, platform));
+          }
+        }
+      }
+    });
   });
 
   // === Shift+Enter (now provided via keymapping, not hardcoded) ===
