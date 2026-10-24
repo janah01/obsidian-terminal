@@ -3296,9 +3296,13 @@ def _spawn_breakaway_descendants(ready_file: Path, exit_gate: Path) -> list[str]
         "    record['guiOrphan'] = published['orphan']\n"
         f"    record['breakaway'] = quiet([sys.executable, '-c', sleeper], "
         f"creationflags={breakaway_flags}).pid\n"
-        "    record['grandBreakaway'] = launch(\n"
-        "        subprocess.CREATE_NO_WINDOW, breakaway_launcher\n"
-        "    )\n"
+        "    try:\n"
+        "        record['grandBreakaway'] = launch(\n"
+        "            subprocess.CREATE_NO_WINDOW, breakaway_launcher\n"
+        "        )\n"
+        "    except RuntimeError as error:\n"
+        "        # Reported, not fatal: the other kinds still tell their story.\n"
+        "        record['grandBreakawayRefused'] = str(error).strip().splitlines()[-1]\n"
         "    record['detached'] = quiet(\n"
         "        [sys.executable, '-c', sleeper],\n"
         "        creationflags=subprocess.DETACHED_PROCESS,\n"
@@ -3828,6 +3832,7 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
     ready_file = tmp_path / "descendants.json"
     exit_gate = tmp_path / "shell-exit"
     records: list[dict[str, int]] = []
+    refusals: list[object] = []
     with closing(_ProcessWatch()) as watch:
 
         def pin_before_shutdown(ready: Mapping[str, object]) -> None:
@@ -3837,6 +3842,7 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
             published: object = json.loads(_read_when_published(ready_file, 45.0))
             assert isinstance(published, dict), published
             assert "error" not in published, published
+            refusals.append(published.get("grandBreakawayRefused"))
             pids = {
                 kind: pid
                 for kind, pid in (
@@ -3844,7 +3850,9 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
                 )
                 if isinstance(pid, int)
             }
-            assert len(pids) == len(_DESCENDANT_KINDS), published
+            # A refused breakaway is asserted last; the lifetimes come first.
+            assert len(pids) >= len(_DESCENDANT_KINDS) - 1, published
+            assert pids.keys() >= set(_DESCENDANT_KINDS) - {"grandBreakaway"}
             for pid in pids.values():
                 watch.pin(pid)
             records.append(pids)
@@ -3876,8 +3884,11 @@ def test_session_end_ends_hidden_console_programs_and_keeps_gui_programs(
                 assert result.code == 42, result
             kept = _DESCENDANTS_KEPT
         # Assert through pinned handles before closing the watch kills survivors.
-        survivors = [pids[kind] for kind in kept]
+        survivors = [pids[kind] for kind in kept if kind in pids]
         assert watch.survivors(15.0, expected=survivors) == survivors
+    # Only now the guard: a refusal here is the regression the breakaway job
+    # must prevent, and the lifetimes above must not hide behind it.
+    assert refusals == [None], refusals
 
 
 """Git for Windows' native bash launcher, where its installer puts it."""
@@ -4136,9 +4147,9 @@ def test_session_end_is_bounded_when_an_attached_program_ignores_the_close(
     the console host, such a program lives through its own five-second
     timeout, and the plugin's kill wins the race before ``exit`` is reported.
     """
-    _result, marker, elapsed = _run_closing_grandchild(tmp_path, "kill", 30.0)
+    result, marker, elapsed = _run_closing_grandchild(tmp_path, "kill", 30.0)
     assert marker.is_file()
-    assert elapsed < _IGNORED_CLOSE_BOUND, elapsed
+    assert elapsed < _IGNORED_CLOSE_BOUND, (elapsed, result.stderr)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
