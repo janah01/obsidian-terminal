@@ -4152,6 +4152,8 @@ _DETACHED_PROCESS = 0x00000008
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 """Process access to assign a running child to jobs and to wait on it."""
 _ASSIGN_ACCESS = 0x0100 | 0x0001 | 0x0400 | 0x1000 | 0x00100000
+"""``PROCESS_QUERY_LIMITED_INFORMATION``: what the sweep opens a process with."""
+_QUERY_ACCESS = 0x1000
 """Code of a child that starts a plain and a breakaway grandchild once gated.
 
 It publishes both PIDs, or the error text of a refused breakaway, then sleeps.
@@ -4177,21 +4179,28 @@ _CHILD_IN_JOBS = (
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_console_probe_tells_consoles_apart() -> None:
-    """The probe reports a console for a program with one and none for one without."""
+def test_console_owner_check_tells_consoles_apart() -> None:
+    """A program with a hidden console of its own has a console host; a detached one has none."""
     sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
     own = subprocess.Popen(sleeper, creationflags=_CREATE_NO_WINDOW)
     detached = subprocess.Popen(sleeper, creationflags=_DETACHED_PROCESS)
+    handles = {
+        pid: _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
+        for pid in (own.pid, detached.pid, os.getpid())
+    }
     try:
-        codes = _MODULE._probe_consoles(
-            [own.pid, detached.pid, os.getpid()], time.monotonic() + 15.0
-        )
-        assert codes.get(own.pid) == 0, codes
-        assert codes.get(detached.pid) == _MODULE._ERROR_INVALID_HANDLE, codes
+        assert all(handles.values()), handles
+        owners = _MODULE._console_owners(handles)
+        assert owners.get(own.pid) is True, owners
+        assert owners.get(detached.pid) is False, owners
         # Whether this process has a console depends on the runner; either way
         # the answer is one the sweep understands.
-        assert codes.get(os.getpid()) in (0, _MODULE._ERROR_INVALID_HANDLE), codes
+        assert owners.get(os.getpid()) in (True, False), owners
+        host = _MODULE._console_host_of(handles[own.pid])
+        assert isinstance(host, int) and host not in (0, own.pid), host
     finally:
+        for handle in handles.values():
+            _MODULE._close(handle)
         own.kill()
         detached.kill()
         own.wait(timeout=15.0)
@@ -4199,16 +4208,20 @@ def test_console_probe_tells_consoles_apart() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_console_probe_sees_a_pseudoconsole_client() -> None:
-    """A shell attached to the pseudoconsole has a console in the probe's eyes."""
-    answers: list[dict[int, int]] = []
+def test_console_owner_check_sees_a_pseudoconsole_client() -> None:
+    """A shell attached to the pseudoconsole has a console host."""
+    answers: list[dict[int, bool]] = []
 
     def probe(ready: Mapping[str, object]) -> None:
         """Ask about the shell while the session is live."""
-        assert isinstance(ready["childPid"], int)
-        answers.append(
-            _MODULE._probe_consoles([ready["childPid"]], time.monotonic() + 15.0)
-        )
+        pid = ready["childPid"]
+        assert isinstance(pid, int)
+        handle = _MODULE._as_handle(_MODULE._OpenProcess(_QUERY_ACCESS, False, pid))
+        assert handle, _MODULE._last_error()
+        try:
+            answers.append(_MODULE._console_owners({pid: handle}))
+        finally:
+            _MODULE._close(handle)
 
     result = _run_host(
         [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -4219,7 +4232,7 @@ def test_console_probe_sees_a_pseudoconsole_client() -> None:
     )
     assert result.messages[-1] == {"event": "exit", "code": result.code}
     assert len(answers) == 1, result
-    assert list(answers[0].values()) == [0], (answers, result.stderr)
+    assert list(answers[0].values()) == [True], (answers, result.stderr)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
@@ -4228,7 +4241,7 @@ def test_tracking_jobs_hold_what_leaves_the_kill_on_close_job(tmp_path: Path) ->
 
     A plain grandchild leaves the kill-on-close job silently and stops in the
     middle job, which permits no silent breakaway; one that asks to break away
-    leaves the middle job too and stops in the root, which permits none.
+    is not refused and is still tracked.
     """
     gate = tmp_path / "gate"
     out = tmp_path / "pids.json"
@@ -4251,7 +4264,9 @@ def test_tracking_jobs_hold_what_leaves_the_kill_on_close_job(tmp_path: Path) ->
         assert isinstance(away, int), published
         tracked = _MODULE._tracked_process_ids(tracking)
         assert {child.pid, plain, away} <= set(tracked), tracked
-        assert set(_MODULE._tracked_process_ids(breakaway)) == {child.pid, plain}
+        # The console hosts of the hidden consoles sit in the jobs as well.
+        middle = set(_MODULE._tracked_process_ids(breakaway))
+        assert {child.pid, plain} <= middle, middle
         assert _MODULE._tracked_process_ids(inner) == [child.pid]
         for pid in (child.pid, plain, away):
             opened = _MODULE._open_tracked_process(pid, tracking)

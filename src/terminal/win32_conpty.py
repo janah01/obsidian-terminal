@@ -51,7 +51,6 @@ import os
 import re
 import shutil
 import struct
-import subprocess
 import sys
 import threading
 import time
@@ -1637,10 +1636,6 @@ if sys.platform == "win32":
     _TH32CS_SNAPPROCESS = 0x00000002
     """``QueryFullProcessImageNameW`` flag selecting a Win32 path."""
     _IMAGE_NAME_WIN32 = 0
-    """Creation flag giving a child no console at all."""
-    _DETACHED_PROCESS = 0x00000008
-    """Win32 error of ``AttachConsole`` when the probed process has no console."""
-    _ERROR_INVALID_HANDLE = 6
     """Win32 error meaning a job's process list did not fit the buffer."""
     _ERROR_MORE_DATA = 234
     """``INVALID_HANDLE_VALUE`` as the unsigned pointer ``ctypes`` returns."""
@@ -2576,33 +2571,6 @@ if sys.platform == "win32":
         if not _TerminateJobObject(job, _EXIT_TERMINATED):
             raise _last_error()
 
-    """Code of the helper that asks which processes own a console.
-
-    ``AttachConsole`` succeeds only for a process that has a console and fails
-    with ``ERROR_INVALID_HANDLE`` for one that has none. Its caller must have
-    no console of its own, which this host, started with a hidden one, has, so
-    a detached helper asks instead. It prints one JSON object from PID to the
-    error code (0 for a console) after detaching from the last console it
-    looked at, so that nothing it writes goes through a standard handle that
-    ``AttachConsole`` replaced.
-    """
-    _CONSOLE_PROBE = (
-        "import ctypes, json, sys\n"
-        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
-        "kernel32.AttachConsole.argtypes = (ctypes.c_uint32,)\n"
-        "kernel32.AttachConsole.restype = ctypes.c_int\n"
-        "kernel32.FreeConsole.restype = ctypes.c_int\n"
-        "results = {}\n"
-        "for argument in sys.argv[1:]:\n"
-        "    if kernel32.AttachConsole(int(argument)):\n"
-        "        kernel32.FreeConsole()\n"
-        "        results[argument] = 0\n"
-        "    else:\n"
-        "        results[argument] = ctypes.get_last_error()\n"
-        "sys.stdout.write(json.dumps(results))\n"
-        "sys.stdout.flush()\n"
-    )
-
     def _tracked_process_ids(job: int) -> list[int]:
         """List every process in ``job`` and in its child jobs."""
         header = 2 * ctypes.sizeof(_DWORD)
@@ -2691,52 +2659,49 @@ if sys.platform == "win32":
             return None
         return buffer.value
 
-    def _probe_consoles(pids: Sequence[int], deadline: float) -> dict[int, int]:
-        """Ask a console-less helper which of ``pids`` have a console.
+    """``NtQueryInformationProcess`` class naming the console host of a process.
 
-        The result maps each PID to the ``AttachConsole`` error code, 0 for a
-        process that has a console. A helper that fails, or runs past the
-        deadline, answers for none of them, and a diagnostic says why.
+    ``AttachConsole`` reads the same class to find the target's console host,
+    and process explorers read it to show one. A process without a console
+    reports zero. The two low bits of the value are flags and are masked off.
+    """
+    _PROCESS_CONSOLE_HOST_PROCESS = 49
+    """``STATUS_SUCCESS``; an ``NTSTATUS`` below it is a failure."""
+    _STATUS_SUCCESS = 0
+    """Query process information from ``ntdll``."""
+    _NtQueryInformationProcess = _bind(
+        "NtQueryInformationProcess",
+        (_HANDLE, ctypes.c_int, _VOID, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)),
+        ctypes.c_long,
+        _ntdll,
+    )
+
+    def _console_host_of(process: int) -> int | None:
+        """Return the PID of the console host serving ``process``, 0 without one.
+
+        ``None`` means the question could not be answered for this process.
         """
-        try:
-            done = subprocess.run(
-                [sys.executable, "-I", "-S", "-c", _CONSOLE_PROBE, *map(str, pids)],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=max(0.05, deadline - time.monotonic()),
-                creationflags=_DETACHED_PROCESS,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            diagnose(f"the console probe did not answer: {error}")
-            return {}
-        if done.returncode != 0:
-            detail = done.stderr.decode("utf-8", "replace").strip().splitlines()
-            diagnose(f"the console probe failed: {detail[-1] if detail else ''}")
-            return {}
-        try:
-            answers: object = json.loads(done.stdout.decode("utf-8", "replace"))
-        except ValueError:
-            diagnose("the console probe answered with something other than JSON")
-            return {}
-        if not isinstance(answers, dict):
-            return {}
-        return {
-            int(pid): code
-            for pid, code in answers.items()
-            if isinstance(pid, str) and pid.isdigit() and isinstance(code, int)
-        }
+        host = _SIZE(0)
+        status = _NtQueryInformationProcess(
+            process,
+            _PROCESS_CONSOLE_HOST_PROCESS,
+            ctypes.byref(host),
+            ctypes.sizeof(host),
+            None,
+        )
+        if status < _STATUS_SUCCESS:
+            return None
+        return int(host.value) & ~3
 
-    def _console_owners(pids: Sequence[int], deadline: float) -> dict[int, bool]:
-        """Report which of ``pids`` have a console; leave the undecidable out."""
+    def _console_owners(handles: Mapping[int, int]) -> dict[int, bool]:
+        """Report which open processes have a console; leave the undecidable out."""
         owners: dict[int, bool] = {}
-        for pid, code in _probe_consoles(pids, deadline).items():
-            if code == 0:
-                owners[pid] = True
-            elif code == _ERROR_INVALID_HANDLE:
-                owners[pid] = False
+        for pid, process in handles.items():
+            host = _console_host_of(process)
+            if host is None:
+                diagnose(f"could not tell whether {pid} has a console")
             else:
-                diagnose(f"could not tell whether {pid} has a console: error {code}")
+                owners[pid] = host != 0
         return owners
 
     def _descendant_records(
@@ -2783,7 +2748,7 @@ if sys.platform == "win32":
         """End the session's tracked console programs within ``deadline``.
 
         ``select_descendants_to_end`` makes the choice; this function supplies
-        the processes, the console probe and the terminations. What is left at
+        the processes, the console check and the terminations. What is left at
         the deadline is diagnosed, and no error leaves this function.
         """
         cache: dict[tuple[int, int], str] = {}
@@ -2802,7 +2767,10 @@ if sys.platform == "win32":
             records, opened = _descendant_records(job, cache, skip)
             handles.update(opened)
             return select_descendants_to_end(
-                records, lambda pids: _console_owners(pids, deadline)
+                records,
+                lambda pids: _console_owners(
+                    {pid: handles[pid] for pid in pids if pid in handles}
+                ),
             )
 
         def end(pids: Sequence[int], until: float) -> Sequence[int]:
