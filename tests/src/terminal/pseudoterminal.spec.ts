@@ -8,6 +8,7 @@ import { PassThrough, Writable } from "node:stream";
 import nodeUrl, { pathToFileURL } from "node:url";
 import type { Terminal } from "@xterm/xterm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectTypeOf } from "vitest";
 import type { TerminalPlugin } from "../../../src/main.js";
 import { Settings } from "../../../src/settings-data.js";
 import {
@@ -24,6 +25,7 @@ import {
   ConPtyHostPool,
   logChildStderr,
   type ConPtyConsoleHost,
+  type ConPtyConsoleHostFallback,
   type ConPtyControlChannel,
   ConPtyControlError,
   ConPtyPseudoterminal,
@@ -597,6 +599,22 @@ describe("ConPTY control protocol", () => {
         '{"event":"resized","columns":100,"rows":40,"seq":3,"forged":true}',
       ),
     ).toBeNull();
+  });
+
+  // The tuple type is written out, so that a source archive without the
+  // vendored library still knows the reasons. It must stay what `deepFreeze`
+  // made of it: frozen and literal rather than widened to `string`.
+  it("knows the four reasons for falling back to the system console host", () => {
+    expect(CONPTY_CONSOLE_HOST_FALLBACKS).toEqual([
+      "exited",
+      "not-found",
+      "start-failed",
+      "unsupported-os",
+    ]);
+    expect(Object.isFrozen(CONPTY_CONSOLE_HOST_FALLBACKS)).toBe(true);
+    expectTypeOf<ConPtyConsoleHostFallback>().toEqualTypeOf<
+      "exited" | "not-found" | "start-failed" | "unsupported-os"
+    >();
   });
 
   it.each<ConPtyConsoleHost>([
