@@ -94,7 +94,7 @@ The keyboard shortcuts can be customized in hotkeys settings.
 
 - Toggle focus on last terminal: `Ctrl`+`Shift`+`` ` ``
   - Focus on last terminal: \(unbound; useful if you want separate keys for focus and unfocus\)
-- Open root directory in terminal \(integrated\): `Ctrl`+`Shift`+`H`, `Command`+`Shift`+`H` \(Apple\)
+- Open current directory in terminal \(integrated\): `Ctrl`+`Shift`+`H`, `Command`+`Shift`+`H` \(Apple\)
   - It opens the default profile when that profile is integrated and runs on this platform, and otherwise the first integrated profile in the profile list that does. The other commands and menu items for one profile type work the same way.
   - Another plugin may use the same keys. Obsidian then shows a conflict, which you can resolve under Settings → Hotkeys.
 
@@ -112,9 +112,9 @@ This behavior can be turned off via the `Intercept keys when terminal is focused
 - Command palette: `Ctrl`+`P` \(Windows\), `Command`+`P` \(Apple\)
   - These keys are keymappings with the action `Send to Obsidian` \(Settings → Keymappings\). Obsidian runs its hotkey for a key with that action, and the shell does not get the key. Map more keys to it, or delete an entry to give its key back to the shell. On Windows, the entry keeps `Ctrl`+`P` from all programs in the terminal, such as bash in WSL, Git Bash and SSH sessions, and vim and nano. Linux has no such entry, because bash and zsh use `Ctrl`+`P`.
   - A keymapping matches the character a key types. With Caps Lock on, or on a layout where the key types another letter, `Ctrl`+`P` goes to the shell.
-- Open root directory or current directory in terminal \(default, external, integrated, select\) and open developer console: \(unbound, except open root directory in terminal \(integrated\) above; a hotkey you assign also works here\)
+- Open root directory or current directory in terminal \(default, external, integrated, select\) and open developer console: \(unbound, except open current directory in terminal \(integrated\) above; a hotkey you assign also works here\)
   - A hotkey of one of these commands, the default above or one you assign, works everywhere in Obsidian. In a focused terminal it wins over a default shortcut of this list on the same keys, so do not ignore a conflict that Obsidian reports for it.
-  - The commands that open the current directory need an active file. In a focused terminal there is none, so a hotkey you assign to one of them shows a notice and does not reach the shell.
+  - The commands that open the current directory use the folder of the active file. Without one, for example in a focused terminal, on an empty tab or in the graph view, they use the folder of the file you looked at last, and the vault root when no file is open or recently opened. Their hotkeys do not reach the shell.
   - With `Add to command` off, these commands do nothing. In a focused terminal their hotkeys, the default above included, then go to the shell.
 
 ### Theming
