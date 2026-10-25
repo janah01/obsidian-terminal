@@ -656,7 +656,7 @@ describe("commands and menu items of one profile type", () => {
         ),
       );
     expect(withKey.map(({ id }) => id)).toEqual([
-      "open-terminal.integrated.root",
+      "open-terminal.integrated.current",
     ]);
     // Holding the keys opens one terminal: Obsidian repeats only repeatable commands.
     expect(withKey[0]?.repeatable ?? false).toBe(false);
@@ -665,6 +665,40 @@ describe("commands and menu items of one profile type", () => {
       context,
       context.settings.value.profiles["chosen"],
       { cwd: "C:\\Vault", profileSourceId: "chosen" },
+    );
+  });
+
+  it("opens the default profile in the folder of the file viewed last", async () => {
+    const { commands, context } = await load({
+        defaultProfile: "chosen",
+        profiles: {
+          first: integrated,
+          chosen: { ...integrated, name: "Chosen" },
+        },
+      }),
+      alpha = Object.assign(new obsidianClasses.TFile(), {
+        parent: { path: "Projects/alpha" },
+        path: "Projects/alpha/note.md",
+      });
+    Object.assign(context.app.workspace, {
+      getLastOpenFiles: vi.fn().mockReturnValue([alpha.path]),
+    });
+    Object.assign(context.app.vault, {
+      getAbstractFileByPath: vi.fn((path: string) =>
+        path === alpha.path ? alpha : null,
+      ),
+    });
+    const withKey = commands.find((command) =>
+      command.hotkeys?.some(
+        ({ key, modifiers }) =>
+          key === "H" && modifiers.join("+") === "Mod+Shift",
+      ),
+    );
+    expect(withKey?.checkCallback?.(false)).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["chosen"],
+      { cwd: "C:\\Vault\\Projects/alpha", profileSourceId: "chosen" },
     );
   });
 
