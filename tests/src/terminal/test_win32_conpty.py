@@ -414,6 +414,63 @@ def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
     assert ended == [10, 40]
 
 
+def test_windowed_programs_leave_out_console_windows() -> None:
+    """A console window is nobody's own window; a window of any other class counts.
+
+    Windows names the program in a classic console window, not the console
+    host, as the window's owner, so ``start cmd`` or a minimized ``ping``
+    would pass for a program that shows a window and outlive the session. A
+    Tk app run as ``start python app.py`` has a console window too and counts
+    through the window of its own, as a console program showing a message
+    box does.
+    """
+    windows = [
+        # ping, in a minimized console window of its own.
+        (20, "ConsoleWindowClass"),
+        # A Tk app run as ``start python app.py``: its console window and its own.
+        (30, "ConsoleWindowClass"),
+        (30, "TkTopLevel"),
+        # A console program showing a message box.
+        (40, "#32770"),
+    ]
+    assert _MODULE.windowed_programs(windows) == {30, 40}
+
+
+def test_windowed_programs_count_a_window_whose_class_cannot_be_read() -> None:
+    """A window whose class could not be read counts as the program's own.
+
+    Keeping a program that may show a window is the safe failure; ending one
+    that does is not.
+    """
+    assert _MODULE.windowed_programs([(20, None)]) == {20}
+
+
+def test_sweep_ends_a_console_program_in_a_console_window_of_its_own() -> None:
+    """``start cmd`` from the terminal closes with it; a Tk app beside it stays.
+
+    Both run in a console of their own and both are named as the owner of
+    their console window. Only the Tk app shows a window of its own, so it
+    keeps running with its helper, while the ``cmd`` ends like a hidden one.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole.
+        _record(10, 1, "console"),
+        # cmd, run as ``start cmd``, in a console window of its own.
+        _record(20, 10, "console"),
+        # A Tk app run as ``start python app.py``, and a hidden helper it runs.
+        _record(30, 10, "console"),
+        _record(40, 30, "console"),
+    ]
+    answers = {10: "attached", 20: "own", 30: "own", 40: "own"}
+    windowed = _MODULE.windowed_programs(
+        [(20, "ConsoleWindowClass"), (30, "ConsoleWindowClass"), (30, "TkTopLevel")]
+    )
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, windowed=windowed
+    )
+    assert ended == [20]
+
+
 def test_sweep_keeps_a_program_too_new_to_judge_and_reports_it() -> None:
     """A program that has not connected to a console yet is kept and reported.
 
@@ -4791,7 +4848,8 @@ def _run_published_program(
     shape: str,
     deadline: float = 30.0,
     announces_start: bool = False,
-) -> tuple[_HostResult, list[int], list[int]]:
+    ends: bool = False,
+) -> tuple[_HostResult, Mapping[str, Any], list[int]]:
     """Run a session whose shell starts ``program``; return what is still running.
 
     The program's record must report ``shape`` as true before the shutdown.
@@ -4799,13 +4857,15 @@ def _run_published_program(
     probe allows 15 seconds more for the start, and the host 15 more again.
     A program that ``announces_start`` first publishes ``<record>.started``,
     so a record that does not come says whether the program had started.
-    The result holds the host's result, the program's PID, and the pinned
-    processes that outlive the session, the program expected among them.
+    The result holds the host's result, the program's record, and the pinned
+    processes that outlive the session, the program expected among them
+    unless it ``ends`` with the session.
     """
     ready_file = tmp_path / "program.json"
     exit_gate = tmp_path / "shell-exit"
     read_timeout = deadline + 15.0
     published: list[int] = []
+    records: list[Mapping[str, Any]] = []
     with closing(_ProcessWatch()) as watch:
 
         def pin_before_shutdown(ready: Mapping[str, object]) -> None:
@@ -4817,7 +4877,7 @@ def _run_published_program(
             if announces_start:
                 started = Path(f"{ready_file}.started")
                 _read_when_published(started, until - time.monotonic())
-            record: object = json.loads(
+            record: Mapping[str, Any] = json.loads(
                 _read_when_published(ready_file, until - time.monotonic())
             )
             assert isinstance(record, dict), record
@@ -4825,6 +4885,7 @@ def _run_published_program(
             assert isinstance(pid, int), record
             watch.pin(pid)
             published.append(pid)
+            records.append(record)
             assert record.get(shape) is True, record
             if shutdown == "natural-exit":
                 exit_gate.touch()
@@ -4839,7 +4900,11 @@ def _run_published_program(
         assert len(published) == 1, result
         assert result.messages[-1] == {"event": "exit", "code": result.code}
         # Assert through pinned handles before closing the watch kills survivors.
-        return result, published, watch.survivors(15.0, expected=published)
+        return (
+            result,
+            records[0],
+            watch.survivors(15.0, expected=() if ends else published),
+        )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
@@ -4852,14 +4917,14 @@ def test_session_end_keeps_a_program_that_freed_its_console(
     Once ``FreeConsole`` returns, the program holds no console host, so it is
     a program without a console, which the session end keeps running.
     """
-    result, published, survivors = _run_published_program(
+    result, record, survivors = _run_published_program(
         tmp_path,
         shutdown,
         _CONSOLE_FREEING_PROGRAM,
         "subprocess.CREATE_NO_WINDOW",
         "freed",
     )
-    assert survivors == published, result.stderr
+    assert survivors == [record["pid"]], result.stderr
 
 
 """Seconds the windowed program waits for its window to show."""
@@ -4916,7 +4981,7 @@ def test_session_end_keeps_a_console_program_that_shows_a_window(
     ``start python app.py``, a Swing app run through ``java.exe`` and a GUI
     app built as a console image all have one, in a console of their own.
     """
-    result, published, survivors = _run_published_program(
+    result, record, survivors = _run_published_program(
         tmp_path,
         shutdown,
         _WINDOWED_CONSOLE_PROGRAM,
@@ -4925,7 +4990,76 @@ def test_session_end_keeps_a_console_program_that_shows_a_window(
         deadline=_WINDOW_DEADLINE,
         announces_start=True,
     )
-    assert survivors == published, result.stderr
+    assert survivors == [record["pid"]], result.stderr
+
+
+"""A console program whose only window is its console window, as ``start ping``.
+
+The program publishes its record once its console window is visible or
+``_WINDOW_DEADLINE`` has passed: whether the window is visible, the class of
+the window and the process Windows names as its owner.
+"""
+_PROGRAM_IN_A_CONSOLE_WINDOW = (
+    "import ctypes, json, os, sys, time\n"
+    "from ctypes import wintypes\n"
+    "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+    "user32 = ctypes.WinDLL('user32', use_last_error=True)\n"
+    "kernel32.GetConsoleWindow.restype = ctypes.c_void_p\n"
+    "def console_window():\n"
+    "    window = kernel32.GetConsoleWindow()\n"
+    "    visible = bool(window) and bool(\n"
+    "        user32.IsWindowVisible(ctypes.c_void_p(window))\n"
+    "    )\n"
+    "    return window, visible\n"
+    "started = time.monotonic()\n"
+    "window, visible = console_window()\n"
+    f"while not visible and time.monotonic() < started + {_WINDOW_DEADLINE}:\n"
+    "    time.sleep(0.05)\n"
+    "    window, visible = console_window()\n"
+    "owner = wintypes.DWORD(0)\n"
+    "name = ctypes.create_unicode_buffer(257)\n"
+    "if window:\n"
+    "    user32.GetWindowThreadProcessId(ctypes.c_void_p(window), ctypes.byref(owner))\n"
+    "    user32.GetClassNameW(ctypes.c_void_p(window), name, len(name))\n"
+    "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump({\n"
+    "        'pid': os.getpid(),\n"
+    "        'visible': visible,\n"
+    "        'owner': owner.value,\n"
+    "        'class': name.value,\n"
+    "    }, stream)\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(120)\n"
+)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_ends_a_console_program_in_a_console_window_of_its_own(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A console program whose only window is its console window ends.
+
+    A console window opened from the terminal, with ``start cmd`` say, closes
+    with it, as the changeset says. The console host names the program in the
+    window as the window's owner, so that window must not pass for one of the
+    program's own. Where another program hosts the window (Windows Terminal
+    as the default terminal), the program is not named and there is nothing
+    to tell apart; the test then has nothing to show.
+    """
+    result, record, survivors = _run_published_program(
+        tmp_path,
+        shutdown,
+        _PROGRAM_IN_A_CONSOLE_WINDOW,
+        "subprocess.CREATE_NEW_CONSOLE",
+        "visible",
+        deadline=_WINDOW_DEADLINE,
+        ends=True,
+    )
+    if record["class"] != "ConsoleWindowClass" or record["owner"] != record["pid"]:
+        reason = f"the console window is not the program's own: {record}"
+        pytest.skip(reason)  # ty: ignore[too-many-positional-arguments]
+    assert survivors == [], result.stderr
 
 
 """Creation flag of a child with a hidden console of its own."""
