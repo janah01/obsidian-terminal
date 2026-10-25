@@ -807,6 +807,278 @@ def test_sweep_descendants_keeps_a_process_too_new_to_judge_at_the_deadline() ->
 
 
 # ---------------------------------------------------------------------------
+# Session-end sweep: the desktop survey, through stand-in user32 functions
+# ---------------------------------------------------------------------------
+
+
+class _Library:
+    """Stand in for one ``ctypes.WinDLL``; note how it was loaded."""
+
+    def __init__(
+        self, loads: list[tuple[str, Mapping[str, Any]]], name: str, **options: Any
+    ) -> None:
+        """Note the library's name and load options in ``loads``."""
+        loads.append((name, options))
+        self._functions: dict[str, Mock] = {}
+
+    def __getattr__(self, name: str) -> Mock:
+        """Return one stand-in export per name."""
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return self._functions.setdefault(name, Mock(name=name))
+
+
+class _WindowsModule(NamedTuple):
+    """The module loaded as on Windows, and the libraries it loaded."""
+
+    module: ModuleType
+    loads: list[tuple[str, Mapping[str, Any]]]
+
+
+@pytest.fixture
+def windows_module(monkeypatch: pytest.MonkeyPatch) -> _WindowsModule:
+    """Load the module's Windows-only part with stand-in Win32 libraries.
+
+    The desktop survey (``_windowed_process_ids`` and ``_window_class``) lives
+    in that part. With every library export a ``Mock`` and the stdcall
+    callback type the plain one, its filters, its class read and their
+    failures run on any platform; only the real bindings need Windows.
+    """
+    loads: list[tuple[str, Mapping[str, Any]]] = []
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "msvcrt", ModuleType("msvcrt"))
+        patch.setattr(
+            ctypes,
+            "WinDLL",
+            lambda name, **options: _Library(loads, name, **options),
+            raising=False,
+        )
+        patch.setattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE, raising=False)
+        patch.setattr(sys, "platform", "win32")
+        module = _load_module()
+    return _WindowsModule(module, loads)
+
+
+class _Window(NamedTuple):
+    """One top-level window on the stand-in desktop.
+
+    ``window_class`` is ``None`` when ``GetClassNameW`` fails for the window.
+    ``gone_after`` names the call after which the window no longer exists.
+    """
+
+    handle: int
+    pid: int
+    window_class: str | None
+    visible: bool = True
+    owner: int = 0
+    gone_after: str = ""
+
+
+class _Desktop:
+    """The ``user32`` functions the desktop survey calls, over fixed windows."""
+
+    def __init__(self, windows: Sequence[_Window], fail_at: int | None = None) -> None:
+        """Hold ``windows`` in Z order; ``EnumWindows`` fails at index ``fail_at``."""
+        self.windows = {window.handle: window for window in windows}
+        self.order = [window.handle for window in windows]
+        self.fail_at = fail_at
+        self.gone: set[int] = set()
+        self.class_buffers: list[int] = []
+        self.diagnostics: list[str] = []
+
+    def install(self, module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Put the stand-ins in place of the module's bindings."""
+        monkeypatch.setattr(module, "_EnumWindows", self.enum_windows)
+        monkeypatch.setattr(module, "_IsWindowVisible", self.is_window_visible)
+        monkeypatch.setattr(module, "_GetWindow", self.get_window)
+        monkeypatch.setattr(
+            module, "_GetWindowThreadProcessId", self.get_window_thread_process_id
+        )
+        monkeypatch.setattr(module, "_GetClassNameW", self.get_class_name)
+        monkeypatch.setattr(module, "diagnose", self.diagnostics.append)
+        monkeypatch.setattr(module, "_last_error", lambda: OSError(8, "out of memory"))
+
+    def _live(self, handle: int) -> _Window | None:
+        """Return the window behind ``handle`` while it exists."""
+        return None if handle in self.gone else self.windows.get(handle)
+
+    def _after(self, window: _Window, call: str) -> None:
+        """Destroy ``window`` once ``call`` returned, when it is set to go then."""
+        if window.gone_after == call:
+            self.gone.add(window.handle)
+
+    def enum_windows(self, visit: Callable[[int, int], int], parameter: int) -> int:
+        """Call ``visit`` per window; fail when ``fail_at`` is reached."""
+        for index, handle in enumerate(self.order):
+            if index == self.fail_at:
+                return 0
+            if not visit(handle, parameter):
+                return 0
+        return 1
+
+    def is_window_visible(self, handle: int) -> int:
+        """Report the visible style; a destroyed window is not visible."""
+        window = self._live(handle)
+        if window is None:
+            return 0
+        self._after(window, "visible")
+        return int(window.visible)
+
+    def get_window(self, handle: int, relationship: int) -> int | None:
+        """Return the owner; a destroyed window has none (``NULL``, the error)."""
+        assert relationship == 4, relationship  # ``GW_OWNER``
+        window = self._live(handle)
+        return None if window is None or not window.owner else window.owner
+
+    def get_window_thread_process_id(self, handle: int, pid: Any) -> int:
+        """Store the owner PID through ``pid`` and return a thread, 0 when gone."""
+        window = self._live(handle)
+        if window is None:
+            return 0
+        pid._obj.value = window.pid
+        self._after(window, "owner")
+        return 1000 + window.pid
+
+    def get_class_name(self, handle: int, name: Any, characters: int) -> int:
+        """Copy the class as ``GetClassNameW`` does: truncated, terminated, or 0."""
+        self.class_buffers.append(characters)
+        assert characters == len(name)
+        window = self._live(handle)
+        if window is None or window.window_class is None:
+            return 0
+        copied = window.window_class[: characters - 1]
+        name.value = copied
+        return len(copied)
+
+
+def _survey(
+    windows_module: _WindowsModule,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: Sequence[_Window],
+    fail_at: int | None = None,
+) -> tuple[set[int], _Desktop]:
+    """Run the desktop survey over a stand-in desktop; return it and the desktop."""
+    desktop = _Desktop(windows, fail_at)
+    desktop.install(windows_module.module, monkeypatch)
+    return windows_module.module._windowed_process_ids(), desktop
+
+
+def test_desktop_survey_counts_visible_unowned_windows_of_any_class_but_a_console_s(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The visible, unowned window of a program in a console window keeps it.
+
+    A console window alone, a dialog owned by another window and a hidden
+    window keep nobody.
+    """
+    result, _desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 20, "ConsoleWindowClass"),
+            _Window(0x11, 30, "ConsoleWindowClass"),
+            _Window(0x12, 30, "TkTopLevel"),
+            _Window(0x13, 40, "ConsoleWindowClass"),
+            _Window(0x14, 40, "#32770", owner=0x13),
+            _Window(0x15, 50, "Chrome_WidgetWin_1", visible=False),
+        ],
+    )
+    assert result == {30}
+
+
+def test_desktop_survey_names_windows_terminal_for_its_window_only(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows Terminal's window names Windows Terminal, which no session tracks.
+
+    The pseudoconsole window it gives a console it hosts is owned by that
+    window, so it is not listed at all.
+    """
+    result, _desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 900, "CASCADIA_HOSTING_WINDOW_CLASS"),
+            _Window(0x11, 20, "PseudoConsoleWindow", owner=0x10),
+        ],
+    )
+    assert result == {900}
+
+
+def test_desktop_survey_counts_a_window_whose_class_cannot_be_read(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``GetClassNameW`` returning 0 keeps the owner: the safe failure."""
+    result, _desktop = _survey(windows_module, monkeypatch, [_Window(0x10, 60, None)])
+    assert result == {60}
+
+
+def test_desktop_survey_holds_the_longest_class_name(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The class buffer holds 256 characters and the terminator; a cut class counts."""
+    result, desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [_Window(0x10, 70, "X" * 300), _Window(0x11, 71, "C" * 256)],
+    )
+    assert result == {70, 71}
+    assert desktop.class_buffers == [257, 257]
+
+
+def test_desktop_survey_skips_a_window_that_closes_while_it_runs(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A window gone before its owner is read is skipped; gone after, it counts.
+
+    The program of a console window that closes between the two reads stays
+    for this round only, which is the safe side.
+    """
+    result, _desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 80, "TkTopLevel", gone_after="visible"),
+            _Window(0x11, 81, "ConsoleWindowClass", gone_after="owner"),
+        ],
+    )
+    assert result == {81}
+
+
+def test_desktop_survey_keeps_what_a_failed_enumeration_listed(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``EnumWindows`` failing midway gives the owners read so far and a diagnostic."""
+    result, desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 90, "ConsoleWindowClass"),
+            _Window(0x11, 91, "TkTopLevel"),
+            _Window(0x12, 90, "TkTopLevel"),
+        ],
+        fail_at=2,
+    )
+    assert result == {91}
+    assert desktop.diagnostics == [
+        "could not list the windows on the desktop: [Errno 8] out of memory"
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_window_class_reads_the_desktop_window_s_class() -> None:
+    """The real ``GetClassNameW`` binding names the desktop window's class.
+
+    The desktop window is always there and its class is fixed, so this pins
+    the binding whatever the default terminal is. No window reads as ``None``.
+    """
+    user32 = ctypes.WinDLL("user32")  # ty: ignore[possibly-missing-attribute]
+    user32.GetDesktopWindow.restype = ctypes.c_void_p
+    assert _MODULE._window_class(user32.GetDesktopWindow()) == "#32769"
+    assert _MODULE._window_class(0) is None
+
+
+# ---------------------------------------------------------------------------
 # Command-line quoting
 # ---------------------------------------------------------------------------
 
