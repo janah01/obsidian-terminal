@@ -91,6 +91,7 @@ __all__ = (
     "to_exit_status",
     "verified_console_host",
     "wait_each",
+    "windowed_programs",
 )
 
 """Environment variable carrying the control-channel authentication token."""
@@ -720,6 +721,8 @@ _CONSOLE_OWN = "own"
 _CONSOLE_YOUNG = "young"
 """Image names of the console hosts that serve a pseudoconsole, in lower case."""
 _CONSOLE_HOST_IMAGES = ("conhost.exe", "openconsole.exe")
+"""Class of a classic console window, which names the program in it as its owner."""
+_CONSOLE_WINDOW_CLASS = "ConsoleWindowClass"
 
 
 class DescendantRecord(NamedTuple):
@@ -800,6 +803,23 @@ def verified_console_host(pid: int, image: str | None) -> int:
     if image is None:
         return 0
     return pid if ntpath.basename(image).lower() in _CONSOLE_HOST_IMAGES else 0
+
+
+def windowed_programs(windows: Iterable[tuple[int, str | None]]) -> set[int]:
+    """Return the programs that show a window of their own among ``windows``.
+
+    Each window is given as the process Windows names as its owner and its
+    class name, ``None`` when the class could not be read. A classic console
+    window names the program in it, not the console host: the host hands the
+    window to its first program, so a program in a console window of its own
+    would pass for one with a window of its own and outlive the session. A
+    console window is told by its class and counts for nobody. A window whose
+    class could not be read counts: keeping a program that may show a window
+    is the safe failure.
+    """
+    return {
+        pid for pid, window_class in windows if window_class != _CONSOLE_WINDOW_CLASS
+    }
 
 
 def select_descendants_to_end(
@@ -1713,6 +1733,8 @@ if sys.platform == "win32":
     _IMAGE_NAME_WIN32 = 0
     """``GetWindow`` relationship selecting the owner of a window."""
     _GW_OWNER = 4
+    """Characters a window class name may take, plus its terminator."""
+    _WINDOW_CLASS_CHARACTERS = 256 + 1
     """``NtQueryInformationProcess`` class naming the console host of a process.
 
     Microsoft does not document this class; process explorers read it to show
@@ -2139,6 +2161,10 @@ if sys.platform == "win32":
     )
     """Call back once per top-level window on the calling thread's desktop."""
     _EnumWindows = _bind("EnumWindows", (_WNDENUMPROC, _LPARAM), _BOOL, _user32)
+    """Copy a window's class name; return the characters copied, 0 on failure."""
+    _GetClassNameW = _bind(
+        "GetClassNameW", (_HANDLE, _LPWSTR, ctypes.c_int), ctypes.c_int, _user32
+    )
     """Return a window related to the given one, such as its owner."""
     _GetWindow = _bind("GetWindow", (_HANDLE, _UINT), _HANDLE, _user32)
     """Return the thread that created a window; store its process."""
@@ -2871,18 +2897,28 @@ if sys.platform == "win32":
                 kinds[pid] = _CONSOLE_OWN
         return kinds
 
-    def _windowed_process_ids() -> set[int]:
-        """Return the processes that own a visible, unowned top-level window.
+    def _window_class(window: int) -> str | None:
+        """Return a window's class name, or ``None`` when it cannot be read."""
+        name = ctypes.create_unicode_buffer(_WINDOW_CLASS_CHARACTERS)
+        if not _GetClassNameW(window, name, len(name)):
+            return None
+        return name.value
 
-        A console window belongs to the console host, not to the program in
-        it, so a program in a console of its own qualifies only through a
-        window of its own. A failed enumeration keeps what was read so far.
+    def _windowed_process_ids() -> set[int]:
+        """Return the processes that show a window of their own on the desktop.
+
+        A visible, unowned top-level window counts, a classic console window
+        aside: Windows names the program in it, not the console host, as its
+        owner (``windowed_programs``). The pseudoconsole's own window stays
+        hidden unless the terminal shows it, and Windows Terminal's window
+        belongs to Windows Terminal, so neither needs telling apart. A failed
+        enumeration keeps what was read so far.
         """
-        owners: set[int] = set()
+        windows: list[tuple[int, str | None]] = []
 
         @_WNDENUMPROC
         def visit(window: int | None, _parameter: int) -> bool:
-            """Note the owner of a visible, unowned top-level window; go on."""
+            """Note a visible, unowned top-level window's owner and class; go on."""
             if (
                 window
                 and _IsWindowVisible(window)
@@ -2890,12 +2926,12 @@ if sys.platform == "win32":
             ):
                 pid = _DWORD(0)
                 if _GetWindowThreadProcessId(window, ctypes.byref(pid)):
-                    owners.add(int(pid.value))
+                    windows.append((int(pid.value), _window_class(window)))
             return True
 
         if not _EnumWindows(visit, 0):
             diagnose(f"could not list the windows on the desktop: {_last_error()}")
-        return owners
+        return windowed_programs(windows)
 
     def _descendant_records(
         job: int, cache: dict[tuple[int, int], str], skip: Collection[int]
