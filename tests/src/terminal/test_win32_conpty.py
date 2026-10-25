@@ -419,12 +419,15 @@ def test_windowed_programs_leave_out_console_windows() -> None:
 
     Windows names the program in a classic console window, not the console
     host, as the window's owner, so ``start cmd`` or a minimized ``ping``
-    would pass for a program that shows a window and outlive the session. A
-    Tk app run as ``start python app.py`` has a console window too and counts
-    through the window of its own, as a console program showing a message
-    box does.
+    would pass for a program that shows a window and outlive the session. The
+    session's own console window names the shell once a program in the
+    terminal shows it. A Tk app run as ``start python app.py`` has a console
+    window too and counts through the window of its own, as a console program
+    showing a message box does.
     """
     windows = [
+        # The session's own console window, shown by a program in the terminal.
+        (10, "PseudoConsoleWindow"),
         # ping, in a minimized console window of its own.
         (20, "ConsoleWindowClass"),
         # A Tk app run as ``start python app.py``: its console window and its own.
@@ -465,6 +468,31 @@ def test_sweep_ends_a_console_program_in_a_console_window_of_its_own() -> None:
     windowed = _MODULE.windowed_programs(
         [(20, "ConsoleWindowClass"), (30, "ConsoleWindowClass"), (30, "TkTopLevel")]
     )
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, windowed=windowed
+    )
+    assert ended == [20]
+
+
+def test_sweep_ends_the_helpers_of_a_shell_whose_console_window_is_shown() -> None:
+    """A program that shows the session's console window must not stop the sweep.
+
+    ``GetConsoleWindow`` gives every program in the terminal the
+    pseudoconsole's hidden window, and the console host names the shell, its
+    first program, as that window's owner; this host sets no owner window for
+    it. Once a program shows it (``powershell -WindowStyle Normal`` does), it
+    is a visible, unowned top-level window that names the shell. Counted as
+    the shell's own window, the shell would shelter every helper under it and
+    the session end nothing.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole.
+        _record(10, 1, "console"),
+        # A hidden-console helper the shell left behind.
+        _record(20, 10, "console"),
+    ]
+    answers = {10: "attached", 20: "own"}
+    windowed = _MODULE.windowed_programs([(10, "PseudoConsoleWindow")])
     ended = _MODULE.select_descendants_to_end(
         records, lambda _pids: answers, windowed=windowed
     )
@@ -1003,6 +1031,21 @@ def test_desktop_survey_names_windows_terminal_for_its_window_only(
         ],
     )
     assert result == {900}
+
+
+def test_desktop_survey_leaves_out_a_shown_pseudoconsole_window(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session's own console window, once a program shows it, keeps nobody.
+
+    This host gives the pseudoconsole no owner window, so ``ShowWindow`` on
+    ``GetConsoleWindow()`` makes it a visible, unowned top-level window that
+    names the shell.
+    """
+    result, _desktop = _survey(
+        windows_module, monkeypatch, [_Window(0x10, 10, "PseudoConsoleWindow")]
+    )
+    assert result == set()
 
 
 def test_desktop_survey_counts_a_window_whose_class_cannot_be_read(
