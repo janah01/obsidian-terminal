@@ -1835,13 +1835,13 @@ describe("opening commands on the focused list follow Add to command", () => {
       integrated = vi
         .mocked(addCommand)
         .mock.calls.map(([, , command]) => command)
-        .find(({ id }) => id === "open-terminal.integrated.root");
+        .find(({ id }) => id === "open-terminal.integrated.current");
 
     // Obsidian keeps the key; only a focused terminal stops taking it.
     expect(integrated?.hotkeys).toEqual([
       { key: "H", modifiers: ["Mod", "Shift"] },
     ]);
-    expect(listed.has("open-terminal.integrated.root")).toBe(false);
+    expect(listed.has("open-terminal.integrated.current")).toBe(false);
   });
 
   it("lists them while it is on and follows each change at once", async () => {
