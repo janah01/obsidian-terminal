@@ -54,7 +54,7 @@ import struct
 import sys
 import threading
 import time
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from typing import Any, BinaryIO, Callable, NamedTuple
 
 """Public API of this module."""
@@ -837,10 +837,13 @@ def select_descendants_to_end(
     A process ends when its image is a console program, ``consoles`` answers
     ``own`` for it (a console of its own, hidden or with a window), it is not
     in ``windowed`` (the processes that show a top-level window of their
-    own), and no program above it that keeps running shelters it. GUI
-    programs and windowed programs shelter what runs under them, and so do
-    console programs without a console (``none``, the detached ones): a
-    daemon that was meant to outlive the terminal keeps its workers. A
+    own), no program above it that keeps running shelters it, and no
+    windowed program runs under it. GUI programs and windowed programs
+    shelter what runs under them, and so do console programs without a
+    console (``none``, the detached ones): a daemon that was meant to outlive
+    the terminal keeps its workers. A windowed program also keeps what it
+    runs under: a launcher that waits for it may hold it in a job that kills
+    it when the launcher ends, as Python's launchers do. A
     process attached to the session's
     pseudoconsole (``attached``) is left to that console host, which closes
     it with the pseudoconsole and gives it the usual time to answer, and
@@ -869,18 +872,29 @@ def select_descendants_to_end(
             or kinds.get(record.pid) == _CONSOLE_NONE
         )
 
-    def sheltered(record: DescendantRecord) -> bool:
-        """Report whether a running sheltering program is an ancestor of ``record``."""
+    def above(record: DescendantRecord) -> Iterator[DescendantRecord]:
+        """Yield the programs above ``record``, nearest first, through known links."""
         seen = {record.pid}
         child = record
         while True:
             parent = by_pid.get(child.parent_pid)
             if parent is None or parent.pid in seen or parent.created > child.created:
-                return False
-            if shelters(parent):
-                return True
+                return
+            yield parent
             seen.add(parent.pid)
             child = parent
+
+    def sheltered(record: DescendantRecord) -> bool:
+        """Report whether a running sheltering program is an ancestor of ``record``."""
+        return any(shelters(parent) for parent in above(record))
+
+    # The programs a windowed program runs under: ending one could end it too.
+    launchers = {
+        parent.pid
+        for record in records
+        if record.pid in windowed
+        for parent in above(record)
+    }
 
     def ends_as(kind: str, record: DescendantRecord) -> bool:
         """Report whether ``record`` has the console ``kind`` and would end."""
@@ -889,6 +903,7 @@ def select_descendants_to_end(
             and record.parent_pid is not None
             and kinds.get(record.pid) == kind
             and record.pid not in windowed
+            and record.pid not in launchers
             and not sheltered(record)
         )
 
