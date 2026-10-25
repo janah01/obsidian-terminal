@@ -1139,6 +1139,19 @@ def test_desktop_survey_keeps_what_a_failed_enumeration_listed(
     ]
 
 
+def test_user32_is_loaded_with_its_last_error_kept(
+    windows_module: _WindowsModule,
+) -> None:
+    """``user32`` is loaded so ``_last_error`` reads what ``EnumWindows`` set.
+
+    ``ctypes.get_last_error`` sees only calls through a library loaded with
+    ``use_last_error``; otherwise the diagnostic names a stale error.
+    """
+    options = dict(windows_module.loads)
+    assert options["kernel32"].get("use_last_error") is True
+    assert options["user32"].get("use_last_error") is True
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 def test_window_class_reads_the_desktop_window_s_class() -> None:
     """The real ``GetClassNameW`` binding names the desktop window's class.
