@@ -611,6 +611,52 @@ describe("opening commands while a terminal has focus", () => {
     expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
   });
 
+  it("finds a file deleted and created again at the same path", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      older = fileIn("Archive"),
+      files = [older, alpha];
+    const { context, run } = await loadCommands({
+      files,
+      opened: [older, alpha, null],
+    });
+    // Obsidian makes a new object for a file created after a delete.
+    files[1] = fileIn("Projects/alpha");
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
+  });
+
+  it("finds the only file seen after it was created again at the same path", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      files = [alpha];
+    const { context, run } = await loadCommands({
+      files,
+      opened: [alpha, null],
+    });
+    files[0] = fileIn("Projects/alpha");
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
+  });
+
+  it("skips a remembered path that is a folder now", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      // Not a TFile, as a folder is not.
+      folderIn = (folder: string): MockFile => ({
+        parent: { path: folder },
+        path: `${folder}/note.md`,
+      });
+    const { context, run } = await loadCommands({
+      files: [
+        folderIn("Projects/alpha"),
+        folderIn("Recent"),
+        fileIn("Archive"),
+      ],
+      lastOpenFiles: ["Recent/note.md", "Archive/note.md"],
+      opened: [alpha, null],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Archive");
+  });
+
   it("follows a file renamed after it was active", async () => {
     const alpha = fileIn("Projects/alpha");
     const { context, run } = await loadCommands({

@@ -104,14 +104,18 @@ export function loadTerminal(context: TerminalPlugin): void {
     getCurrentFolder = (): TFolder | null => {
       const active = workspace.getActiveFile();
       if (active) return active.parent;
-      const exists = (file: TFile): boolean =>
-        vault.getAbstractFileByPath(file.path) === file;
+      // By path: a file deleted and created again is a new object.
+      const parentAt = (path: string): TFolder | null => {
+        const file = vault.getAbstractFileByPath(path);
+        return file instanceof TFile ? file.parent : null;
+      };
       for (const file of recentFiles) {
-        if (file.parent && exists(file)) return file.parent;
+        const parent = parentAt(file.path);
+        if (parent) return parent;
       }
       for (const path of workspace.getLastOpenFiles()) {
-        const file = vault.getAbstractFileByPath(path);
-        if (file instanceof TFile && file.parent) return file.parent;
+        const parent = parentAt(path);
+        if (parent) return parent;
       }
       return null;
     },
