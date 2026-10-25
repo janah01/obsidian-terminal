@@ -2173,7 +2173,9 @@ if sys.platform == "win32":
         _ClosePseudoConsole = _no_conpty
 
     """The ``user32`` library, which lists the windows on the desktop."""
-    _user32 = ctypes.WinDLL("user32")  # ty: ignore[possibly-missing-attribute]
+    _user32 = ctypes.WinDLL(  # ty: ignore[possibly-missing-attribute]
+        "user32", use_last_error=True
+    )
     """Callback type of ``EnumWindows``: one call per top-level window."""
     _WNDENUMPROC = ctypes.WINFUNCTYPE(  # ty: ignore[possibly-missing-attribute]
         _BOOL, _HANDLE, _LPARAM
