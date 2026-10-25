@@ -587,7 +587,8 @@ describe("hotkeys while a terminal has focus", () => {
 
   it("leaves the default hotkey of a command off the list to the terminal", () => {
     const { context, executeCommand, press } = loadView(),
-      // Registered with a default key, as the root command's Mod+Shift+H.
+      // Registered with a default key, as the integrated current-directory
+      // command is with Mod+Shift+H.
       command = library.addCommand(context, () => "open", {
         checkCallback: vi.fn((_checking: boolean): boolean => true),
         hotkeys: [{ key: "H", modifiers: ["Mod", "Shift"] }],
