@@ -843,11 +843,11 @@ def select_descendants_to_end(
     console (``none``, the detached ones): a daemon that was meant to outlive
     the terminal keeps its workers. A windowed program also keeps what it
     runs under: a launcher that waits for it may hold it in a job that kills
-    it when the launcher ends, as Python's launchers do. A
-    process attached to the session's
-    pseudoconsole (``attached``) is left to that console host, which closes
-    it with the pseudoconsole and gives it the usual time to answer, and
-    shelters nothing: what it left in consoles of its own is the leak.
+    it when the launcher ends, as Python's launchers do. A process attached
+    to the session's pseudoconsole (``attached``) is left to that console
+    host, which closes it with the pseudoconsole and gives it the usual time
+    to answer, and shelters nothing: what it left in consoles of its own is
+    the leak.
     Parent links are followed only through records created no later than the
     child, so a reused parent PID breaks the chain, and an orphan whose
     launcher has exited has no ancestor at all. GUI programs, programs whose
