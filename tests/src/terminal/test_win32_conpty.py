@@ -5158,12 +5158,17 @@ def test_session_end_classifies_programs_at_non_ascii_paths(tmp_path: Path) -> N
 
 
 def _spawn_published_program(
-    ready_file: Path, exit_gate: Path, program: str, flags: str
+    ready_file: Path,
+    exit_gate: Path,
+    program: str,
+    flags: str,
+    startupinfo: str = "None",
 ) -> list[str]:
     """Start ``program`` with creation ``flags``; it publishes itself; gate exit.
 
-    ``program`` is Python code that writes its record to ``sys.argv[1]``. The
-    shell waits for ``exit_gate`` and exits 42.
+    ``program`` is Python code that writes its record to ``sys.argv[1]``;
+    ``startupinfo`` is code for the ``STARTUPINFO`` it starts with. The shell
+    waits for ``exit_gate`` and exits 42.
     """
     code = (
         "import os, subprocess, sys, time\n"
@@ -5173,6 +5178,7 @@ def _spawn_published_program(
         "    stdout=subprocess.DEVNULL,\n"
         "    stderr=subprocess.DEVNULL,\n"
         f"    creationflags={flags},\n"
+        f"    startupinfo={startupinfo},\n"
         ")\n"
         "deadline = time.monotonic() + 120\n"
         f"while not os.path.exists({str(exit_gate)!r}):\n"
@@ -5208,6 +5214,7 @@ def _run_published_program(
     deadline: float = 30.0,
     announces_start: bool = False,
     ends: bool = False,
+    startupinfo: str = "None",
 ) -> tuple[_HostResult, Mapping[str, Any], list[int]]:
     """Run a session whose shell starts ``program``; return what is still running.
 
@@ -5216,6 +5223,7 @@ def _run_published_program(
     probe allows 15 seconds more for the start, and the host 15 more again.
     A program that ``announces_start`` first publishes ``<record>.started``,
     so a record that does not come says whether the program had started.
+    ``startupinfo`` is code for the ``STARTUPINFO`` the program starts with.
     The result holds the host's result, the program's record, and the pinned
     processes that outlive the session, the program expected among them
     unless it ``ends`` with the session.
@@ -5248,7 +5256,9 @@ def _run_published_program(
                 exit_gate.touch()
 
         result = _run_host(
-            _spawn_published_program(ready_file, exit_gate, program, flags),
+            _spawn_published_program(
+                ready_file, exit_gate, program, flags, startupinfo
+            ),
             close_stdin=False,
             replies=({"op": "kill"},) if shutdown == "kill" else (),
             ready_probe=pin_before_shutdown,
@@ -5390,6 +5400,15 @@ _PROGRAM_IN_A_CONSOLE_WINDOW = (
     "time.sleep(120)\n"
 )
 
+"""``ShowWindow`` state of a minimized window the console host keeps for itself.
+
+The console host hands a new console to the default terminal unless it was
+started hidden or minimized, so a minimized program sits in a classic console
+window of its own wherever the test runs. A minimized window keeps the visible
+style.
+"""
+_SW_SHOWMINNOACTIVE = 7
+
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 @pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
@@ -5401,9 +5420,11 @@ def test_session_end_ends_a_console_program_in_a_console_window_of_its_own(
     A console window opened from the terminal, with ``start cmd`` say, closes
     with it, as the changeset says. The console host names the program in the
     window as the window's owner, so that window must not pass for one of the
-    program's own. Where another program hosts the window (Windows Terminal
-    as the default terminal), the program is not named and there is nothing
-    to tell apart; the test then has nothing to show.
+    program's own. The program starts minimized, as ``start /min`` starts one,
+    so its window is a classic console window of its own whatever the default
+    terminal is. Under a handoff the window would be the pseudoconsole's,
+    owned by Windows Terminal's window, and there would be nothing to tell
+    apart; the guard below then says so instead of failing.
     """
     result, record, survivors = _run_published_program(
         tmp_path,
@@ -5413,6 +5434,10 @@ def test_session_end_ends_a_console_program_in_a_console_window_of_its_own(
         "visible",
         deadline=_WINDOW_DEADLINE,
         ends=True,
+        startupinfo=(
+            "subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW,"
+            f" wShowWindow={_SW_SHOWMINNOACTIVE})"
+        ),
     )
     if record["class"] != "ConsoleWindowClass" or record["owner"] != record["pid"]:
         reason = f"the console window is not the program's own: {record}"
