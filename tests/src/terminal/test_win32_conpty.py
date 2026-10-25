@@ -4864,7 +4864,6 @@ def _run_published_program(
     ready_file = tmp_path / "program.json"
     exit_gate = tmp_path / "shell-exit"
     read_timeout = deadline + 15.0
-    published: list[int] = []
     records: list[Mapping[str, Any]] = []
     with closing(_ProcessWatch()) as watch:
 
@@ -4884,7 +4883,6 @@ def _run_published_program(
             pid = record.get("pid")
             assert isinstance(pid, int), record
             watch.pin(pid)
-            published.append(pid)
             records.append(record)
             assert record.get(shape) is True, record
             if shutdown == "natural-exit":
@@ -4897,13 +4895,14 @@ def _run_published_program(
             ready_probe=pin_before_shutdown,
             timeout=read_timeout + 15.0,
         )
-        assert len(published) == 1, result
+        assert len(records) == 1, result
+        (published,) = records
         assert result.messages[-1] == {"event": "exit", "code": result.code}
         # Assert through pinned handles before closing the watch kills survivors.
         return (
             result,
-            records[0],
-            watch.survivors(15.0, expected=() if ends else published),
+            published,
+            watch.survivors(15.0, expected=() if ends else [published["pid"]]),
         )
 
 
