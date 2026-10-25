@@ -396,7 +396,9 @@ def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
 
     A Tk or Qt app run as ``start python app.py`` is a console image in a
     console of its own that shows a window: it keeps running like a GUI
-    program, and so does what it runs.
+    program, and so does what it runs. So does the console program it runs
+    under, here one judged to have a console of its own, as every program is
+    while the pseudoconsole's host is unknown.
     """
     records = [
         # The shell.
@@ -411,7 +413,121 @@ def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
     ended = _MODULE.select_descendants_to_end(
         records, _consoles(10, 20, 30, 40), windowed={20}
     )
-    assert ended == [10, 40]
+    assert ended == [40]
+
+
+def test_sweep_keeps_the_launcher_of_a_program_that_shows_a_window() -> None:
+    """``start python app.py`` through a launcher keeps the Tk app running.
+
+    A venv's ``python.exe``, ``py.exe``, the install manager's ``python``
+    alias and pip's and uv's entry-point executables are console programs
+    that run the real interpreter under them and wait for it, holding it in
+    a job that kills it when the launcher ends
+    (``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``). The launcher is the first
+    program in the new console, so the console window names the launcher;
+    the Tk window names the interpreter. Ending the launcher ends the app.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole.
+        _record(10, 1, "console"),
+        # The launcher, first program in a console window of its own.
+        _record(20, 10, "console"),
+        # The interpreter it waits for, in the same console, showing a Tk window.
+        _record(30, 20, "console"),
+    ]
+    answers = {10: "attached", 20: "own", 30: "own"}
+    windowed = _MODULE.windowed_programs(
+        [(20, "ConsoleWindowClass"), (30, "TkTopLevel")]
+    )
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, windowed=windowed
+    )
+    assert ended == []
+
+
+def test_windowed_programs_leave_out_console_windows() -> None:
+    """A console window is nobody's own window; a window of any other class counts.
+
+    Windows names the program in a classic console window, not the console
+    host, as the window's owner, so ``start cmd`` or a minimized ``ping``
+    would pass for a program that shows a window and outlive the session. The
+    session's own console window names the shell once a program in the
+    terminal shows it. A Tk app run as ``start python app.py`` has a console
+    window too and counts through the window of its own, as a console program
+    showing a message box does.
+    """
+    windows = [
+        # The session's own console window, shown by a program in the terminal.
+        (10, "PseudoConsoleWindow"),
+        # ping, in a minimized console window of its own.
+        (20, "ConsoleWindowClass"),
+        # A Tk app run as ``start python app.py``: its console window and its own.
+        (30, "ConsoleWindowClass"),
+        (30, "TkTopLevel"),
+        # A console program showing a message box.
+        (40, "#32770"),
+    ]
+    assert _MODULE.windowed_programs(windows) == {30, 40}
+
+
+def test_windowed_programs_count_a_window_whose_class_cannot_be_read() -> None:
+    """A window whose class could not be read counts as the program's own.
+
+    Keeping a program that may show a window is the safe failure; ending one
+    that does is not.
+    """
+    assert _MODULE.windowed_programs([(20, None)]) == {20}
+
+
+def test_sweep_ends_a_console_program_in_a_console_window_of_its_own() -> None:
+    """``start cmd`` from the terminal closes with it; a Tk app beside it stays.
+
+    Both run in a console of their own and both are named as the owner of
+    their console window. Only the Tk app shows a window of its own, so it
+    keeps running with its helper, while the ``cmd`` ends like a hidden one.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole.
+        _record(10, 1, "console"),
+        # cmd, run as ``start cmd``, in a console window of its own.
+        _record(20, 10, "console"),
+        # A Tk app run as ``start python app.py``, and a hidden helper it runs.
+        _record(30, 10, "console"),
+        _record(40, 30, "console"),
+    ]
+    answers = {10: "attached", 20: "own", 30: "own", 40: "own"}
+    windowed = _MODULE.windowed_programs(
+        [(20, "ConsoleWindowClass"), (30, "ConsoleWindowClass"), (30, "TkTopLevel")]
+    )
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, windowed=windowed
+    )
+    assert ended == [20]
+
+
+def test_sweep_ends_the_helpers_of_a_shell_whose_console_window_is_shown() -> None:
+    """A program that shows the session's console window must not stop the sweep.
+
+    ``GetConsoleWindow`` gives every program in the terminal the
+    pseudoconsole's hidden window, and the console host names the shell, its
+    first program, as that window's owner; this host sets no owner window for
+    it. Once a program shows it (``powershell -WindowStyle Normal`` does), it
+    is a visible, unowned top-level window that names the shell. Counted as
+    the shell's own window, the shell would shelter every helper under it and
+    the session end nothing.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole.
+        _record(10, 1, "console"),
+        # A hidden-console helper the shell left behind.
+        _record(20, 10, "console"),
+    ]
+    answers = {10: "attached", 20: "own"}
+    windowed = _MODULE.windowed_programs([(10, "PseudoConsoleWindow")])
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, windowed=windowed
+    )
+    assert ended == [20]
 
 
 def test_sweep_keeps_a_program_too_new_to_judge_and_reports_it() -> None:
@@ -747,6 +863,310 @@ def test_sweep_descendants_keeps_a_process_too_new_to_judge_at_the_deadline() ->
     assert surveys[0] == 3
     assert slept == pytest.approx([0.05, 0.05, 0.025])
     assert now[0] == pytest.approx(0.125)
+
+
+# ---------------------------------------------------------------------------
+# Session-end sweep: the desktop survey, through stand-in user32 functions
+# ---------------------------------------------------------------------------
+
+
+class _Library:
+    """Stand in for one ``ctypes.WinDLL``; note how it was loaded."""
+
+    def __init__(
+        self, loads: list[tuple[str, Mapping[str, Any]]], name: str, **options: Any
+    ) -> None:
+        """Note the library's name and load options in ``loads``."""
+        loads.append((name, options))
+        self._functions: dict[str, Mock] = {}
+
+    def __getattr__(self, name: str) -> Mock:
+        """Return one stand-in export per name."""
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return self._functions.setdefault(name, Mock(name=name))
+
+
+class _WindowsModule(NamedTuple):
+    """The module loaded as on Windows, and the libraries it loaded."""
+
+    module: ModuleType
+    loads: list[tuple[str, Mapping[str, Any]]]
+
+
+@pytest.fixture
+def windows_module(monkeypatch: pytest.MonkeyPatch) -> _WindowsModule:
+    """Load the module's Windows-only part with stand-in Win32 libraries.
+
+    The desktop survey (``_windowed_process_ids`` and ``_window_class``) lives
+    in that part. With every library export a ``Mock`` and the stdcall
+    callback type the plain one, its filters, its class read and their
+    failures run on any platform; only the real bindings need Windows.
+    """
+    loads: list[tuple[str, Mapping[str, Any]]] = []
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "msvcrt", ModuleType("msvcrt"))
+        patch.setattr(
+            ctypes,
+            "WinDLL",
+            lambda name, **options: _Library(loads, name, **options),
+            raising=False,
+        )
+        patch.setattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE, raising=False)
+        patch.setattr(sys, "platform", "win32")
+        module = _load_module()
+    return _WindowsModule(module, loads)
+
+
+class _Window(NamedTuple):
+    """One top-level window on the stand-in desktop.
+
+    ``window_class`` is ``None`` when ``GetClassNameW`` fails for the window.
+    ``gone_after`` names the call after which the window no longer exists.
+    """
+
+    handle: int
+    pid: int
+    window_class: str | None
+    visible: bool = True
+    owner: int = 0
+    gone_after: str = ""
+
+
+class _Desktop:
+    """The ``user32`` functions the desktop survey calls, over fixed windows."""
+
+    def __init__(
+        self, module: ModuleType, windows: Sequence[_Window], fail_at: int | None = None
+    ) -> None:
+        """Hold ``windows`` in Z order; ``EnumWindows`` fails at index ``fail_at``."""
+        self.module = module
+        self.windows = {window.handle: window for window in windows}
+        self.order = [window.handle for window in windows]
+        self.fail_at = fail_at
+        self.gone: set[int] = set()
+        self.class_buffers: list[int] = []
+        self.diagnostics: list[str] = []
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Put the stand-ins in place of the module's bindings."""
+        module = self.module
+        monkeypatch.setattr(module, "_EnumWindows", self.enum_windows)
+        monkeypatch.setattr(module, "_IsWindowVisible", self.is_window_visible)
+        monkeypatch.setattr(module, "_GetWindow", self.get_window)
+        monkeypatch.setattr(
+            module, "_GetWindowThreadProcessId", self.get_window_thread_process_id
+        )
+        monkeypatch.setattr(module, "_GetClassNameW", self.get_class_name)
+        monkeypatch.setattr(module, "diagnose", self.diagnostics.append)
+        monkeypatch.setattr(module, "_last_error", lambda: OSError(8, "out of memory"))
+
+    def _live(self, handle: int) -> _Window | None:
+        """Return the window behind ``handle`` while it exists."""
+        return None if handle in self.gone else self.windows.get(handle)
+
+    def _after(self, window: _Window, call: str) -> None:
+        """Destroy ``window`` once ``call`` returned, when it is set to go then."""
+        if window.gone_after == call:
+            self.gone.add(window.handle)
+
+    def enum_windows(self, visit: Callable[[int, int], int], parameter: int) -> int:
+        """Call ``visit`` per window; fail when ``fail_at`` is reached."""
+        for index, handle in enumerate(self.order):
+            if index == self.fail_at:
+                return 0
+            if not visit(handle, parameter):
+                return 0
+        return 1
+
+    def is_window_visible(self, handle: int) -> int:
+        """Report the visible style; a destroyed window is not visible."""
+        window = self._live(handle)
+        if window is None:
+            return 0
+        self._after(window, "visible")
+        return int(window.visible)
+
+    def get_window(self, handle: int, relationship: int) -> int | None:
+        """Return the owner; a destroyed window has none (``NULL``, the error)."""
+        assert relationship == self.module._GW_OWNER, relationship
+        window = self._live(handle)
+        return None if window is None or not window.owner else window.owner
+
+    def get_window_thread_process_id(self, handle: int, pid: Any) -> int:
+        """Store the owner PID through ``pid`` and return a thread, 0 when gone."""
+        window = self._live(handle)
+        if window is None:
+            return 0
+        pid._obj.value = window.pid
+        self._after(window, "owner")
+        return 1000 + window.pid
+
+    def get_class_name(self, handle: int, name: Any, characters: int) -> int:
+        """Copy the class as ``GetClassNameW`` does: truncated, terminated, or 0."""
+        self.class_buffers.append(characters)
+        assert characters == len(name)
+        window = self._live(handle)
+        if window is None or window.window_class is None:
+            return 0
+        copied = window.window_class[: characters - 1]
+        name.value = copied
+        return len(copied)
+
+
+def _survey(
+    windows_module: _WindowsModule,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: Sequence[_Window],
+    fail_at: int | None = None,
+) -> tuple[set[int], _Desktop]:
+    """Run the desktop survey over a stand-in desktop; return it and the desktop."""
+    desktop = _Desktop(windows_module.module, windows, fail_at)
+    desktop.install(monkeypatch)
+    return windows_module.module._windowed_process_ids(), desktop
+
+
+def test_desktop_survey_counts_visible_unowned_windows_of_any_class_but_a_console_s(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The visible, unowned window of a program in a console window keeps it.
+
+    A console window alone, a dialog owned by another window and a hidden
+    window keep nobody.
+    """
+    result, _desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 20, "ConsoleWindowClass"),
+            _Window(0x11, 30, "ConsoleWindowClass"),
+            _Window(0x12, 30, "TkTopLevel"),
+            _Window(0x13, 40, "ConsoleWindowClass"),
+            _Window(0x14, 40, "#32770", owner=0x13),
+            _Window(0x15, 50, "Chrome_WidgetWin_1", visible=False),
+        ],
+    )
+    assert result == {30}
+
+
+def test_desktop_survey_names_windows_terminal_for_its_window_only(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows Terminal's window names Windows Terminal, which no session tracks.
+
+    The pseudoconsole window it gives a console it hosts is owned by that
+    window, so it is not listed at all.
+    """
+    result, _desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 900, "CASCADIA_HOSTING_WINDOW_CLASS"),
+            _Window(0x11, 20, "PseudoConsoleWindow", owner=0x10),
+        ],
+    )
+    assert result == {900}
+
+
+def test_desktop_survey_leaves_out_a_shown_pseudoconsole_window(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session's own console window, once a program shows it, keeps nobody.
+
+    This host gives the pseudoconsole no owner window, so ``ShowWindow`` on
+    ``GetConsoleWindow()`` makes it a visible, unowned top-level window that
+    names the shell.
+    """
+    result, _desktop = _survey(
+        windows_module, monkeypatch, [_Window(0x10, 10, "PseudoConsoleWindow")]
+    )
+    assert result == set()
+
+
+def test_desktop_survey_counts_a_window_whose_class_cannot_be_read(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``GetClassNameW`` returning 0 keeps the owner: the safe failure."""
+    result, _desktop = _survey(windows_module, monkeypatch, [_Window(0x10, 60, None)])
+    assert result == {60}
+
+
+def test_desktop_survey_holds_the_longest_class_name(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The class buffer holds 256 characters and the terminator; a cut class counts."""
+    result, desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [_Window(0x10, 70, "X" * 300), _Window(0x11, 71, "C" * 256)],
+    )
+    assert result == {70, 71}
+    assert desktop.class_buffers == [257, 257]
+
+
+def test_desktop_survey_skips_a_window_that_closes_while_it_runs(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A window gone before its owner is read is skipped; gone after, it counts.
+
+    The program of a console window that closes between the two reads stays
+    for this round only, which is the safe side.
+    """
+    result, _desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 80, "TkTopLevel", gone_after="visible"),
+            _Window(0x11, 81, "ConsoleWindowClass", gone_after="owner"),
+        ],
+    )
+    assert result == {81}
+
+
+def test_desktop_survey_keeps_what_a_failed_enumeration_listed(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``EnumWindows`` failing midway gives the owners read so far and a diagnostic."""
+    result, desktop = _survey(
+        windows_module,
+        monkeypatch,
+        [
+            _Window(0x10, 90, "ConsoleWindowClass"),
+            _Window(0x11, 91, "TkTopLevel"),
+            _Window(0x12, 90, "TkTopLevel"),
+        ],
+        fail_at=2,
+    )
+    assert result == {91}
+    assert desktop.diagnostics == [
+        "could not list the windows on the desktop: [Errno 8] out of memory"
+    ]
+
+
+def test_user32_is_loaded_with_its_last_error_kept(
+    windows_module: _WindowsModule,
+) -> None:
+    """``user32`` is loaded so ``_last_error`` reads what ``EnumWindows`` set.
+
+    ``ctypes.get_last_error`` sees only calls through a library loaded with
+    ``use_last_error``; otherwise the diagnostic names a stale error.
+    """
+    options = dict(windows_module.loads)
+    assert options["kernel32"].get("use_last_error") is True
+    assert options["user32"].get("use_last_error") is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_window_class_reads_the_desktop_window_s_class() -> None:
+    """The real ``GetClassNameW`` binding names the desktop window's class.
+
+    The desktop window is always there and its class is fixed, so this pins
+    the binding whatever the default terminal is. No window reads as ``None``.
+    """
+    user32 = ctypes.WinDLL("user32")  # ty: ignore[possibly-missing-attribute]
+    user32.GetDesktopWindow.restype = ctypes.c_void_p
+    assert _MODULE._window_class(user32.GetDesktopWindow()) == "#32769"
+    assert _MODULE._window_class(0) is None
 
 
 # ---------------------------------------------------------------------------
@@ -4742,12 +5162,17 @@ def test_session_end_classifies_programs_at_non_ascii_paths(tmp_path: Path) -> N
 
 
 def _spawn_published_program(
-    ready_file: Path, exit_gate: Path, program: str, flags: str
+    ready_file: Path,
+    exit_gate: Path,
+    program: str,
+    flags: str,
+    startupinfo: str = "None",
 ) -> list[str]:
     """Start ``program`` with creation ``flags``; it publishes itself; gate exit.
 
-    ``program`` is Python code that writes its record to ``sys.argv[1]``. The
-    shell waits for ``exit_gate`` and exits 42.
+    ``program`` is Python code that writes its record to ``sys.argv[1]``;
+    ``startupinfo`` is code for the ``STARTUPINFO`` it starts with. The shell
+    waits for ``exit_gate`` and exits 42.
     """
     code = (
         "import os, subprocess, sys, time\n"
@@ -4757,6 +5182,7 @@ def _spawn_published_program(
         "    stdout=subprocess.DEVNULL,\n"
         "    stderr=subprocess.DEVNULL,\n"
         f"    creationflags={flags},\n"
+        f"    startupinfo={startupinfo},\n"
         ")\n"
         "deadline = time.monotonic() + 120\n"
         f"while not os.path.exists({str(exit_gate)!r}):\n"
@@ -4791,7 +5217,9 @@ def _run_published_program(
     shape: str,
     deadline: float = 30.0,
     announces_start: bool = False,
-) -> tuple[_HostResult, list[int], list[int]]:
+    ends: bool = False,
+    startupinfo: str = "None",
+) -> tuple[_HostResult, Mapping[str, Any], list[int]]:
     """Run a session whose shell starts ``program``; return what is still running.
 
     The program's record must report ``shape`` as true before the shutdown.
@@ -4799,13 +5227,15 @@ def _run_published_program(
     probe allows 15 seconds more for the start, and the host 15 more again.
     A program that ``announces_start`` first publishes ``<record>.started``,
     so a record that does not come says whether the program had started.
-    The result holds the host's result, the program's PID, and the pinned
-    processes that outlive the session, the program expected among them.
+    ``startupinfo`` is code for the ``STARTUPINFO`` the program starts with.
+    The result holds the host's result, the program's record, and the pinned
+    processes that outlive the session, the program expected among them
+    unless it ``ends`` with the session.
     """
     ready_file = tmp_path / "program.json"
     exit_gate = tmp_path / "shell-exit"
     read_timeout = deadline + 15.0
-    published: list[int] = []
+    records: list[Mapping[str, Any]] = []
     with closing(_ProcessWatch()) as watch:
 
         def pin_before_shutdown(ready: Mapping[str, object]) -> None:
@@ -4817,29 +5247,36 @@ def _run_published_program(
             if announces_start:
                 started = Path(f"{ready_file}.started")
                 _read_when_published(started, until - time.monotonic())
-            record: object = json.loads(
+            record: Mapping[str, Any] = json.loads(
                 _read_when_published(ready_file, until - time.monotonic())
             )
             assert isinstance(record, dict), record
             pid = record.get("pid")
             assert isinstance(pid, int), record
             watch.pin(pid)
-            published.append(pid)
+            records.append(record)
             assert record.get(shape) is True, record
             if shutdown == "natural-exit":
                 exit_gate.touch()
 
         result = _run_host(
-            _spawn_published_program(ready_file, exit_gate, program, flags),
+            _spawn_published_program(
+                ready_file, exit_gate, program, flags, startupinfo
+            ),
             close_stdin=False,
             replies=({"op": "kill"},) if shutdown == "kill" else (),
             ready_probe=pin_before_shutdown,
             timeout=read_timeout + 15.0,
         )
-        assert len(published) == 1, result
+        assert len(records) == 1, result
+        (published,) = records
         assert result.messages[-1] == {"event": "exit", "code": result.code}
         # Assert through pinned handles before closing the watch kills survivors.
-        return result, published, watch.survivors(15.0, expected=published)
+        return (
+            result,
+            published,
+            watch.survivors(15.0, expected=() if ends else [published["pid"]]),
+        )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
@@ -4852,14 +5289,14 @@ def test_session_end_keeps_a_program_that_freed_its_console(
     Once ``FreeConsole`` returns, the program holds no console host, so it is
     a program without a console, which the session end keeps running.
     """
-    result, published, survivors = _run_published_program(
+    result, record, survivors = _run_published_program(
         tmp_path,
         shutdown,
         _CONSOLE_FREEING_PROGRAM,
         "subprocess.CREATE_NO_WINDOW",
         "freed",
     )
-    assert survivors == published, result.stderr
+    assert survivors == [record["pid"]], result.stderr
 
 
 """Seconds the windowed program waits for its window to show."""
@@ -4916,7 +5353,7 @@ def test_session_end_keeps_a_console_program_that_shows_a_window(
     ``start python app.py``, a Swing app run through ``java.exe`` and a GUI
     app built as a console image all have one, in a console of their own.
     """
-    result, published, survivors = _run_published_program(
+    result, record, survivors = _run_published_program(
         tmp_path,
         shutdown,
         _WINDOWED_CONSOLE_PROGRAM,
@@ -4925,7 +5362,91 @@ def test_session_end_keeps_a_console_program_that_shows_a_window(
         deadline=_WINDOW_DEADLINE,
         announces_start=True,
     )
-    assert survivors == published, result.stderr
+    assert survivors == [record["pid"]], result.stderr
+
+
+"""A console program whose only window is its console window, as ``start ping``.
+
+The program publishes its record once its console window is visible or
+``_WINDOW_DEADLINE`` has passed: whether the window is visible, the class of
+the window and the process Windows names as its owner.
+"""
+_PROGRAM_IN_A_CONSOLE_WINDOW = (
+    "import ctypes, json, os, sys, time\n"
+    "from ctypes import wintypes\n"
+    "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+    "user32 = ctypes.WinDLL('user32', use_last_error=True)\n"
+    "kernel32.GetConsoleWindow.restype = ctypes.c_void_p\n"
+    "def console_window():\n"
+    "    window = kernel32.GetConsoleWindow()\n"
+    "    visible = bool(window) and bool(\n"
+    "        user32.IsWindowVisible(ctypes.c_void_p(window))\n"
+    "    )\n"
+    "    return window, visible\n"
+    "started = time.monotonic()\n"
+    "window, visible = console_window()\n"
+    f"while not visible and time.monotonic() < started + {_WINDOW_DEADLINE}:\n"
+    "    time.sleep(0.05)\n"
+    "    window, visible = console_window()\n"
+    "owner = wintypes.DWORD(0)\n"
+    "name = ctypes.create_unicode_buffer(257)\n"
+    "if window:\n"
+    "    user32.GetWindowThreadProcessId(ctypes.c_void_p(window), ctypes.byref(owner))\n"
+    "    user32.GetClassNameW(ctypes.c_void_p(window), name, len(name))\n"
+    "with open(sys.argv[1] + '.tmp', 'w', encoding='utf-8') as stream:\n"
+    "    json.dump({\n"
+    "        'pid': os.getpid(),\n"
+    "        'visible': visible,\n"
+    "        'owner': owner.value,\n"
+    "        'class': name.value,\n"
+    "    }, stream)\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(120)\n"
+)
+
+"""``ShowWindow`` state of a minimized window the console host keeps for itself.
+
+The console host hands a new console to the default terminal unless it was
+started hidden or minimized, so a minimized program sits in a classic console
+window of its own wherever the test runs. A minimized window keeps the visible
+style.
+"""
+_SW_SHOWMINNOACTIVE = 7
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize("shutdown", ("natural-exit", "kill"))
+def test_session_end_ends_a_console_program_in_a_console_window_of_its_own(
+    tmp_path: Path, shutdown: str
+) -> None:
+    """A console program whose only window is its console window ends.
+
+    A console window opened from the terminal, with ``start cmd`` say, closes
+    with it, as the changeset says. The console host names the program in the
+    window as the window's owner, so that window must not pass for one of the
+    program's own. The program starts minimized, as ``start /min`` starts one,
+    so its window is a classic console window of its own whatever the default
+    terminal is. Under a handoff the window would be the pseudoconsole's,
+    owned by Windows Terminal's window, and there would be nothing to tell
+    apart; the guard below then says so instead of failing.
+    """
+    result, record, survivors = _run_published_program(
+        tmp_path,
+        shutdown,
+        _PROGRAM_IN_A_CONSOLE_WINDOW,
+        "subprocess.CREATE_NEW_CONSOLE",
+        "visible",
+        deadline=_WINDOW_DEADLINE,
+        ends=True,
+        startupinfo=(
+            "subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW,"
+            f" wShowWindow={_SW_SHOWMINNOACTIVE})"
+        ),
+    )
+    if record["class"] != "ConsoleWindowClass" or record["owner"] != record["pid"]:
+        reason = f"the console window is not the program's own: {record}"
+        pytest.skip(reason)  # ty: ignore[too-many-positional-arguments]
+    assert survivors == [], result.stderr
 
 
 """Creation flag of a child with a hidden console of its own."""
