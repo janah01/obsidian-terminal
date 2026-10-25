@@ -676,6 +676,21 @@ describe("opening commands while a terminal has focus", () => {
     expect(run("open-terminal.integrated.current", false)).toBe(false);
     expect(notice2).not.toHaveBeenCalled();
   });
+
+  it("declines a current-directory command while Add to command is off", async () => {
+    const alpha = fileIn("Projects/alpha");
+    const { context, run } = await loadCommands({
+      files: [alpha],
+      opened: [alpha, null],
+    });
+    await context.settings.mutate((value) => {
+      value.addToCommand = false;
+    });
+    expect(run("open-terminal.integrated.current", true)).toBe(false);
+    expect(run("open-terminal.integrated.current", false)).toBe(false);
+    expect(spawnTerminal).not.toHaveBeenCalled();
+    expect(notice2).not.toHaveBeenCalled();
+  });
 });
 
 describe("layout-ready automatic Python work", () => {
