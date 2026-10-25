@@ -396,7 +396,9 @@ def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
 
     A Tk or Qt app run as ``start python app.py`` is a console image in a
     console of its own that shows a window: it keeps running like a GUI
-    program, and so does what it runs.
+    program, and so does what it runs. So does the console program it runs
+    under, here one judged to have a console of its own, as every program is
+    while the pseudoconsole's host is unknown.
     """
     records = [
         # The shell.
@@ -411,7 +413,36 @@ def test_sweep_keeps_a_program_with_a_window_and_what_runs_under_it() -> None:
     ended = _MODULE.select_descendants_to_end(
         records, _consoles(10, 20, 30, 40), windowed={20}
     )
-    assert ended == [10, 40]
+    assert ended == [40]
+
+
+def test_sweep_keeps_the_launcher_of_a_program_that_shows_a_window() -> None:
+    """``start python app.py`` through a launcher keeps the Tk app running.
+
+    A venv's ``python.exe``, ``py.exe``, the install manager's ``python``
+    alias and pip's and uv's entry-point executables are console programs
+    that run the real interpreter under them and wait for it, holding it in
+    a job that kills it when the launcher ends
+    (``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``). The launcher is the first
+    program in the new console, so the console window names the launcher;
+    the Tk window names the interpreter. Ending the launcher ends the app.
+    """
+    records = [
+        # The shell, attached to the pseudoconsole.
+        _record(10, 1, "console"),
+        # The launcher, first program in a console window of its own.
+        _record(20, 10, "console"),
+        # The interpreter it waits for, in the same console, showing a Tk window.
+        _record(30, 20, "console"),
+    ]
+    answers = {10: "attached", 20: "own", 30: "own"}
+    windowed = _MODULE.windowed_programs(
+        [(20, "ConsoleWindowClass"), (30, "TkTopLevel")]
+    )
+    ended = _MODULE.select_descendants_to_end(
+        records, lambda _pids: answers, windowed=windowed
+    )
+    assert ended == []
 
 
 def test_windowed_programs_leave_out_console_windows() -> None:
