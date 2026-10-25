@@ -45,11 +45,21 @@ const ribbonMenu = vi.hoisted(() => {
   return { Item, items, showAtMouseEvent: vi.fn(), openSelector: vi.fn() };
 });
 
+// The shared Obsidian mock declares `TFile` as an interface only; the loader
+// narrows with `instanceof TFile`, which needs a class at run time.
+const obsidianClasses = vi.hoisted(() => ({
+  TFile: class TFile {
+    public readonly parent: unknown = null;
+    public readonly path: string = "";
+  },
+}));
+
 vi.mock("obsidian", async (importOriginal) => ({
   ...(await importOriginal<typeof import("obsidian")>()),
   FileSystemAdapter: vi.fn(),
   MarkdownView: vi.fn(),
   TFolder: vi.fn(),
+  TFile: obsidianClasses.TFile,
   Menu: vi.fn(
     class {
       public readonly showAtMouseEvent = ribbonMenu.showAtMouseEvent;
@@ -654,7 +664,7 @@ describe("commands and menu items of one profile type", () => {
         ),
       );
     expect(withKey.map(({ id }) => id)).toEqual([
-      "open-terminal.integrated.root",
+      "open-terminal.integrated.current",
     ]);
     // Holding the keys opens one terminal: Obsidian repeats only repeatable commands.
     expect(withKey[0]?.repeatable ?? false).toBe(false);
@@ -663,6 +673,40 @@ describe("commands and menu items of one profile type", () => {
       context,
       context.settings.value.profiles["chosen"],
       { cwd: "C:\\Vault", profileSourceId: "chosen" },
+    );
+  });
+
+  it("opens the default profile in the folder of the file viewed last", async () => {
+    const { commands, context } = await load({
+        defaultProfile: "chosen",
+        profiles: {
+          first: integrated,
+          chosen: { ...integrated, name: "Chosen" },
+        },
+      }),
+      alpha = Object.assign(new obsidianClasses.TFile(), {
+        parent: { path: "Projects/alpha" },
+        path: "Projects/alpha/note.md",
+      });
+    Object.assign(context.app.workspace, {
+      getLastOpenFiles: vi.fn().mockReturnValue([alpha.path]),
+    });
+    Object.assign(context.app.vault, {
+      getAbstractFileByPath: vi.fn((path: string) =>
+        path === alpha.path ? alpha : null,
+      ),
+    });
+    const withKey = commands.find((command) =>
+      command.hotkeys?.some(
+        ({ key, modifiers }) =>
+          key === "H" && modifiers.join("+") === "Mod+Shift",
+      ),
+    );
+    expect(withKey?.checkCallback?.(false)).toBe(true);
+    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      context.settings.value.profiles["chosen"],
+      { cwd: "C:\\Vault\\Projects/alpha", profileSourceId: "chosen" },
     );
   });
 
@@ -1399,10 +1443,24 @@ describe("opening commands while a terminal has focus", () => {
     ]);
   });
 
-  async function loadCommands(
-    activeFile: { readonly parent: { readonly path: string } } | null = null,
+  interface CommandsSetup {
+    readonly activeFile?: { readonly parent: { readonly path: string } } | null;
+    readonly fileSystem?: boolean;
+    /** `file-open` events after loading, oldest first; `null` is no file. */
+    readonly opened?: readonly (MockFile | null)[];
+    /** `getLastOpenFiles`, newest first. */
+    readonly lastOpenFiles?: readonly string[];
+    /** The files `getAbstractFileByPath` still finds. */
+    readonly files?: readonly MockFile[];
+  }
+
+  async function loadCommands({
+    activeFile = null,
     fileSystem = true,
-  ) {
+    opened = [],
+    lastOpenFiles = [],
+    files = [],
+  }: CommandsSetup = {}) {
     vi.mocked(addCommand).mockImplementation((_context, name, command) => ({
       ...command,
       name: name(),
@@ -1430,12 +1488,19 @@ describe("opening commands while a terminal has focus", () => {
             getFullPath: vi.fn((path: string) => `C:\\Vault\\${path}`),
           })
         : {},
+      getAbstractFileByPath: vi.fn(
+        (path: string) => files.find((file) => file.path === path) ?? null,
+      ),
     });
     Object.assign(context.app.workspace, {
       getActiveFile: vi.fn().mockReturnValue(activeFile),
+      getLastOpenFiles: vi.fn().mockReturnValue(lastOpenFiles),
       onLayoutReady: vi.fn(),
     });
+    const registerEvent = vi.spyOn(context, "registerEvent");
     loadTerminal(context);
+    const refs = registerEvent.mock.calls.map(([ref]) => ref);
+    for (const file of opened) context.app.workspace.trigger("file-open", file);
     const commands = vi
       .mocked(addCommand)
       .mock.calls.map(([, , command]) => command);
@@ -1444,72 +1509,246 @@ describe("opening commands while a terminal has focus", () => {
       if (!command?.checkCallback) throw new Error(`No command: ${id}`);
       return command.checkCallback(checking);
     }
-    return { commands, context, run };
+    return { commands, context, refs, run };
   }
 
-  it("binds Mod+Shift+H to the integrated root-directory command only", async () => {
-    const { commands } = await loadCommands();
-    expect(
-      commands.filter((command) => "hotkeys" in command).map(({ id }) => id),
-    ).toEqual(["open-terminal.integrated.root"]);
-    expect(
-      commands.find(({ id }) => id === "open-terminal.integrated.root")
-        ?.hotkeys,
-    ).toEqual([{ key: "H", modifiers: ["Mod", "Shift"] }]);
-    expect(
-      commands.find(({ id }) => id === "open-terminal.integrated.current"),
-    ).not.toHaveProperty("hotkeys");
-  });
+  type MockFile = InstanceType<typeof obsidianClasses.TFile>;
 
-  it.each(["default", "external", "integrated", "select"])(
-    "shows a notice when the %s current-directory command runs without an active file",
-    async (type) => {
-      const { context, run } = await loadCommands();
-      expect(run(`open-terminal.${type}.current`, false)).toBe(false);
-      expect(notice2).toHaveBeenCalledExactlyOnceWith(
-        expect.any(Function),
-        context.settings.value.noticeTimeout,
-        context,
-      );
-      expect(vi.mocked(notice2).mock.calls[0]?.[0]()).toBe(
-        "No active file: open a file to start a terminal in its folder.",
-      );
-      expect(spawnTerminal).not.toHaveBeenCalled();
-      expect(SelectProfileModal).not.toHaveBeenCalled();
-    },
-  );
+  function fileIn(folder: string, name = "note.md"): MockFile {
+    return Object.assign(new obsidianClasses.TFile(), {
+      parent: { path: folder },
+      path: `${folder}/${name}`,
+    });
+  }
 
-  it("hides a current-directory command without an active file silently", async () => {
-    const { run } = await loadCommands();
-    expect(run("open-terminal.integrated.current", true)).toBe(false);
-    expect(notice2).not.toHaveBeenCalled();
-  });
-
-  it("opens the folder of the active file without a notice", async () => {
-    const { context, run } = await loadCommands({ parent: { path: "Notes" } });
-    expect(run("open-terminal.integrated.current", false)).toBe(true);
+  function expectSpawnIn(
+    context: Awaited<ReturnType<typeof loadCommands>>["context"],
+    cwd: string,
+  ): void {
     expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
       context,
       context.settings.value.profiles.integrated,
-      { cwd: "C:\\Vault\\Notes", profileSourceId: "integrated" },
+      { cwd, profileSourceId: "integrated" },
     );
     expect(notice2).not.toHaveBeenCalled();
+  }
+
+  it("binds Mod+Shift+H to the integrated current-directory command only", async () => {
+    const { commands } = await loadCommands();
+    expect(
+      commands.filter((command) => "hotkeys" in command).map(({ id }) => id),
+    ).toEqual(["open-terminal.integrated.current"]);
+    expect(
+      commands.find(({ id }) => id === "open-terminal.integrated.current")
+        ?.hotkeys,
+    ).toEqual([{ key: "H", modifiers: ["Mod", "Shift"] }]);
+    expect(
+      commands.find(({ id }) => id === "open-terminal.integrated.root"),
+    ).not.toHaveProperty("hotkeys");
+  });
+
+  it("opens the vault root when the integrated current-directory command finds no file", async () => {
+    const { context, run } = await loadCommands();
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
+  });
+
+  it("offers the vault root to the select current-directory command without any file", async () => {
+    const { context, run } = await loadCommands();
+    expect(run("open-terminal.select.current", false)).toBe(true);
+    expect(SelectProfileModal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      "C:\\Vault",
+    );
+    expect(notice2).not.toHaveBeenCalled();
+  });
+
+  it("offers a current-directory command without any file, silently", async () => {
+    const { run } = await loadCommands();
+    expect(run("open-terminal.integrated.current", true)).toBe(true);
+    expect(notice2).not.toHaveBeenCalled();
+    expect(spawnTerminal).not.toHaveBeenCalled();
+  });
+
+  it("offers a current-directory command after a file was active, silently", async () => {
+    const alpha = fileIn("Projects/alpha");
+    const { run } = await loadCommands({
+      files: [alpha],
+      opened: [alpha, null],
+    });
+    expect(run("open-terminal.integrated.current", true)).toBe(true);
+    expect(notice2).not.toHaveBeenCalled();
+    expect(spawnTerminal).not.toHaveBeenCalled();
+  });
+
+  it("stops following files once the plugin's events are unregistered", async () => {
+    const alpha = fileIn("Projects/alpha");
+    const { context, refs, run } = await loadCommands({ files: [alpha] });
+    for (const ref of refs) context.app.workspace.offref(ref);
+    context.app.workspace.trigger("file-open", alpha);
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
+  });
+
+  it("opens the folder of the active file without a notice", async () => {
+    const alpha = fileIn("Projects/alpha");
+    const { context, run } = await loadCommands({
+      activeFile: { parent: { path: "Notes" } },
+      files: [alpha],
+      opened: [alpha],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Notes");
+  });
+
+  it("opens the folder of the file active last without an active file", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      older = fileIn("Archive");
+    const { context, run } = await loadCommands({
+      files: [older, alpha, fileIn("Recent")],
+      lastOpenFiles: ["Recent/note.md"],
+      opened: [older, alpha, null],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
+  });
+
+  it("skips a deleted file and a file outside a folder", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      gone = fileIn("Projects/beta", "gone.md"),
+      external = Object.assign(fileIn("Elsewhere"), { parent: null });
+    const { context, run } = await loadCommands({
+      files: [alpha, external],
+      opened: [alpha, gone, external, null],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
+  });
+
+  it("finds a file deleted and created again at the same path", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      older = fileIn("Archive"),
+      files = [older, alpha];
+    const { context, run } = await loadCommands({
+      files,
+      opened: [older, alpha, null],
+    });
+    // Obsidian makes a new object for a file created after a delete.
+    files[1] = fileIn("Projects/alpha");
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
+  });
+
+  it("finds the only file seen after it was created again at the same path", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      files = [alpha];
+    const { context, run } = await loadCommands({
+      files,
+      opened: [alpha, null],
+    });
+    files[0] = fileIn("Projects/alpha");
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
+  });
+
+  it("skips a remembered path that is a folder now", async () => {
+    const alpha = fileIn("Projects/alpha"),
+      // Not a TFile, as a folder is not.
+      folderIn = (folder: string): MockFile => ({
+        parent: { path: folder },
+        path: `${folder}/note.md`,
+      });
+    const { context, run } = await loadCommands({
+      files: [
+        folderIn("Projects/alpha"),
+        folderIn("Recent"),
+        fileIn("Archive"),
+      ],
+      lastOpenFiles: ["Recent/note.md", "Archive/note.md"],
+      opened: [alpha, null],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Archive");
+  });
+
+  it("follows a file renamed after it was active", async () => {
+    const alpha = fileIn("Projects/alpha");
+    const { context, run } = await loadCommands({
+      files: [alpha],
+      opened: [alpha, null],
+    });
+    // Obsidian renames a file by changing the same object.
+    Object.assign(alpha, {
+      parent: { path: "Projects/renamed" },
+      path: "Projects/renamed/note.md",
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/renamed");
+  });
+
+  it("forgets files after ten newer ones, counting a file active again once", async () => {
+    const old = fileIn("Old"),
+      newer = Array.from({ length: 9 }, (_, index) =>
+        fileIn(`F${String(index)}`),
+      );
+    const { context, run } = await loadCommands({
+      files: [old],
+      opened: [old, ...newer, newer[0] ?? null],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Old");
+    vi.mocked(spawnTerminal).mockClear();
+    context.app.workspace.trigger("file-open", fileIn("F9"));
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
+  });
+
+  it("falls back to the newest recent file that still exists", async () => {
+    const { context, run } = await loadCommands({
+      files: [fileIn("Projects/alpha"), fileIn("Older")],
+      lastOpenFiles: [
+        "Gone/note.md",
+        "Projects/alpha/note.md",
+        "Older/note.md",
+      ],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
+  });
+
+  it("opens the vault root when every recent file was deleted", async () => {
+    const { context, run } = await loadCommands({
+      lastOpenFiles: ["Gone/note.md"],
+      opened: [fileIn("Projects/beta", "gone.md"), null],
+    });
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
   });
 
   it("opens the vault root without an active file and without a notice", async () => {
     const { context, run } = await loadCommands();
     expect(run("open-terminal.integrated.root", false)).toBe(true);
-    expect(spawnTerminal).toHaveBeenCalledExactlyOnceWith(
-      context,
-      context.settings.value.profiles.integrated,
-      { cwd: "C:\\Vault", profileSourceId: "integrated" },
-    );
-    expect(notice2).not.toHaveBeenCalled();
+    expectSpawnIn(context, "C:\\Vault");
   });
 
   it("stays silent without a file-system vault", async () => {
-    const { run } = await loadCommands(null, false);
+    const { run } = await loadCommands({ fileSystem: false });
     expect(run("open-terminal.integrated.current", false)).toBe(false);
+    expect(notice2).not.toHaveBeenCalled();
+  });
+
+  it("declines a current-directory command while Add to command is off", async () => {
+    const alpha = fileIn("Projects/alpha");
+    const { context, run } = await loadCommands({
+      files: [alpha],
+      opened: [alpha, null],
+    });
+    await context.settings.mutate((value) => {
+      value.addToCommand = false;
+    });
+    expect(run("open-terminal.integrated.current", true)).toBe(false);
+    expect(run("open-terminal.integrated.current", false)).toBe(false);
+    expect(spawnTerminal).not.toHaveBeenCalled();
     expect(notice2).not.toHaveBeenCalled();
   });
 });
