@@ -936,8 +936,11 @@ class _Window(NamedTuple):
 class _Desktop:
     """The ``user32`` functions the desktop survey calls, over fixed windows."""
 
-    def __init__(self, windows: Sequence[_Window], fail_at: int | None = None) -> None:
+    def __init__(
+        self, module: ModuleType, windows: Sequence[_Window], fail_at: int | None = None
+    ) -> None:
         """Hold ``windows`` in Z order; ``EnumWindows`` fails at index ``fail_at``."""
+        self.module = module
         self.windows = {window.handle: window for window in windows}
         self.order = [window.handle for window in windows]
         self.fail_at = fail_at
@@ -945,8 +948,9 @@ class _Desktop:
         self.class_buffers: list[int] = []
         self.diagnostics: list[str] = []
 
-    def install(self, module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Put the stand-ins in place of the module's bindings."""
+        module = self.module
         monkeypatch.setattr(module, "_EnumWindows", self.enum_windows)
         monkeypatch.setattr(module, "_IsWindowVisible", self.is_window_visible)
         monkeypatch.setattr(module, "_GetWindow", self.get_window)
@@ -985,7 +989,7 @@ class _Desktop:
 
     def get_window(self, handle: int, relationship: int) -> int | None:
         """Return the owner; a destroyed window has none (``NULL``, the error)."""
-        assert relationship == 4, relationship  # ``GW_OWNER``
+        assert relationship == self.module._GW_OWNER, relationship
         window = self._live(handle)
         return None if window is None or not window.owner else window.owner
 
@@ -1017,8 +1021,8 @@ def _survey(
     fail_at: int | None = None,
 ) -> tuple[set[int], _Desktop]:
     """Run the desktop survey over a stand-in desktop; return it and the desktop."""
-    desktop = _Desktop(windows, fail_at)
-    desktop.install(windows_module.module, monkeypatch)
+    desktop = _Desktop(windows_module.module, windows, fail_at)
+    desktop.install(monkeypatch)
     return windows_module.module._windowed_process_ids(), desktop
 
 
