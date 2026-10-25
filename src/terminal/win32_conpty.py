@@ -721,8 +721,8 @@ _CONSOLE_OWN = "own"
 _CONSOLE_YOUNG = "young"
 """Image names of the console hosts that serve a pseudoconsole, in lower case."""
 _CONSOLE_HOST_IMAGES = ("conhost.exe", "openconsole.exe")
-"""Class of a classic console window, which names the program in it as its owner."""
-_CONSOLE_WINDOW_CLASS = "ConsoleWindowClass"
+"""Classes of the console host's windows, which name a program in them as owner."""
+_CONSOLE_WINDOW_CLASSES = ("ConsoleWindowClass", "PseudoConsoleWindow")
 
 
 class DescendantRecord(NamedTuple):
@@ -809,16 +809,20 @@ def windowed_programs(windows: Iterable[tuple[int, str | None]]) -> set[int]:
     """Return the programs that show a window of their own among ``windows``.
 
     Each window is given as the process Windows names as its owner and its
-    class name, ``None`` when the class could not be read. A classic console
-    window names the program in it, not the console host: the host hands the
-    window to its first program, so a program in a console window of its own
-    would pass for one with a window of its own and outlive the session. A
-    console window is told by its class and counts for nobody. A window whose
-    class could not be read counts: keeping a program that may show a window
-    is the safe failure.
+    class name, ``None`` when the class could not be read. A console window
+    names a program in it, not the console host: the host hands a classic
+    console window to its first program, and the pseudoconsole's hidden
+    window, which any program attached to it can show, to the first program
+    on the pseudoconsole. Either would pass for a window of the program's own
+    and keep it, and what runs under it, past the session. A console window
+    is told by its class and counts for nobody. A window whose class could
+    not be read counts: keeping a program that may show a window is the safe
+    failure.
     """
     return {
-        pid for pid, window_class in windows if window_class != _CONSOLE_WINDOW_CLASS
+        pid
+        for pid, window_class in windows
+        if window_class not in _CONSOLE_WINDOW_CLASSES
     }
 
 
@@ -2907,12 +2911,12 @@ if sys.platform == "win32":
     def _windowed_process_ids() -> set[int]:
         """Return the processes that show a window of their own on the desktop.
 
-        A visible, unowned top-level window counts, a classic console window
-        aside: Windows names the program in it, not the console host, as its
-        owner (``windowed_programs``). The pseudoconsole's own window stays
-        hidden unless the terminal shows it, and Windows Terminal's window
-        belongs to Windows Terminal, so neither needs telling apart. A failed
-        enumeration keeps what was read so far.
+        A visible, unowned top-level window counts, a console window aside:
+        Windows names the program in it, not the console host, as its owner,
+        and the session's own console window names the shell once a program
+        in the terminal shows it (``windowed_programs``). Windows Terminal's
+        window belongs to Windows Terminal and needs no telling apart. A
+        failed enumeration keeps what was read so far.
         """
         windows: list[tuple[int, str | None]] = []
 
