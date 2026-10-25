@@ -519,42 +519,41 @@ describe("opening commands while a terminal has focus", () => {
     expect(notice2).not.toHaveBeenCalled();
   }
 
-  it("binds Mod+Shift+H to the integrated root-directory command only", async () => {
+  it("binds Mod+Shift+H to the integrated current-directory command only", async () => {
     const { commands } = await loadCommands();
     expect(
       commands.filter((command) => "hotkeys" in command).map(({ id }) => id),
-    ).toEqual(["open-terminal.integrated.root"]);
+    ).toEqual(["open-terminal.integrated.current"]);
     expect(
-      commands.find(({ id }) => id === "open-terminal.integrated.root")
+      commands.find(({ id }) => id === "open-terminal.integrated.current")
         ?.hotkeys,
     ).toEqual([{ key: "H", modifiers: ["Mod", "Shift"] }]);
     expect(
-      commands.find(({ id }) => id === "open-terminal.integrated.current"),
+      commands.find(({ id }) => id === "open-terminal.integrated.root"),
     ).not.toHaveProperty("hotkeys");
   });
 
-  it.each(["default", "external", "integrated", "select"])(
-    "shows a notice when the %s current-directory command runs without any file",
-    async (type) => {
-      const { context, run } = await loadCommands();
-      expect(run(`open-terminal.${type}.current`, false)).toBe(false);
-      expect(notice2).toHaveBeenCalledExactlyOnceWith(
-        expect.any(Function),
-        context.settings.value.noticeTimeout,
-        context,
-      );
-      expect(vi.mocked(notice2).mock.calls[0]?.[0]()).toBe(
-        "No open or recent file: open a file to start a terminal in its folder.",
-      );
-      expect(spawnTerminal).not.toHaveBeenCalled();
-      expect(SelectProfileModal).not.toHaveBeenCalled();
-    },
-  );
+  it("opens the vault root when the integrated current-directory command finds no file", async () => {
+    const { context, run } = await loadCommands();
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
+  });
 
-  it("hides a current-directory command without any file silently", async () => {
-    const { run } = await loadCommands();
-    expect(run("open-terminal.integrated.current", true)).toBe(false);
+  it("offers the vault root to the select current-directory command without any file", async () => {
+    const { context, run } = await loadCommands();
+    expect(run("open-terminal.select.current", false)).toBe(true);
+    expect(SelectProfileModal).toHaveBeenCalledExactlyOnceWith(
+      context,
+      "C:\\Vault",
+    );
     expect(notice2).not.toHaveBeenCalled();
+  });
+
+  it("offers a current-directory command without any file, silently", async () => {
+    const { run } = await loadCommands();
+    expect(run("open-terminal.integrated.current", true)).toBe(true);
+    expect(notice2).not.toHaveBeenCalled();
+    expect(spawnTerminal).not.toHaveBeenCalled();
   });
 
   it("offers a current-directory command after a file was active, silently", async () => {
@@ -573,8 +572,8 @@ describe("opening commands while a terminal has focus", () => {
     const { context, refs, run } = await loadCommands({ files: [alpha] });
     for (const ref of refs) context.app.workspace.offref(ref);
     context.app.workspace.trigger("file-open", alpha);
-    expect(run("open-terminal.integrated.current", false)).toBe(false);
-    expect(spawnTerminal).not.toHaveBeenCalled();
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
   });
 
   it("opens the folder of the active file without a notice", async () => {
@@ -640,8 +639,8 @@ describe("opening commands while a terminal has focus", () => {
     expectSpawnIn(context, "C:\\Vault\\Old");
     vi.mocked(spawnTerminal).mockClear();
     context.app.workspace.trigger("file-open", fileIn("F9"));
-    expect(run("open-terminal.integrated.current", false)).toBe(false);
-    expect(spawnTerminal).not.toHaveBeenCalled();
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
   });
 
   it("falls back to the newest recent file that still exists", async () => {
@@ -657,14 +656,13 @@ describe("opening commands while a terminal has focus", () => {
     expectSpawnIn(context, "C:\\Vault\\Projects/alpha");
   });
 
-  it("shows the notice when every recent file was deleted", async () => {
-    const { run } = await loadCommands({
+  it("opens the vault root when every recent file was deleted", async () => {
+    const { context, run } = await loadCommands({
       lastOpenFiles: ["Gone/note.md"],
       opened: [fileIn("Projects/beta", "gone.md"), null],
     });
-    expect(run("open-terminal.integrated.current", false)).toBe(false);
-    expect(notice2).toHaveBeenCalledOnce();
-    expect(spawnTerminal).not.toHaveBeenCalled();
+    expect(run("open-terminal.integrated.current", false)).toBe(true);
+    expectSpawnIn(context, "C:\\Vault");
   });
 
   it("opens the vault root without an active file and without a notice", async () => {

@@ -98,7 +98,8 @@ export function loadTerminal(context: TerminalPlugin): void {
      * to another view, as the graph view does. Before any file was active in
      * this session, Obsidian's recent-file list stands in. It comes last
      * because it also records files created in the vault, by a shell for
-     * example, and keeps the paths of deleted files.
+     * example, and keeps the paths of deleted files. Without any file the
+     * caller opens the vault root.
      */
     getCurrentFolder = (): TFolder | null => {
       const active = workspace.getActiveFile();
@@ -161,17 +162,9 @@ export function loadTerminal(context: TerminalPlugin): void {
               return adapter.getBasePath();
             case "current": {
               const folder = getCurrentFolder();
-              if (folder) {
-                return adapter.getFullPath(folder.path);
-              }
-              if (!checking) {
-                notice2(
-                  () => i18n.t("notices.no-file-for-current-directory"),
-                  settings.value.noticeTimeout,
-                  context,
-                );
-              }
-              return null;
+              return folder
+                ? adapter.getFullPath(folder.path)
+                : adapter.getBasePath();
             }
             // No default
           }
@@ -457,11 +450,12 @@ export function loadTerminal(context: TerminalPlugin): void {
           /*
            * A default hotkey on purpose, against Obsidian's advice to avoid
            * them: one key then opens a terminal from anywhere, also from a
-           * focused terminal. A letter stays on its printed key on every
+           * focused terminal, in the folder of the file last looked at or
+           * else the vault root. A letter stays on its printed key on every
            * layout, unlike a backtick. "H", not "h": only the uppercase key
            * code name matches on non-Latin layouts.
            */
-          ...(type === "integrated" && cwd === "root"
+          ...(type === "integrated" && cwd === "current"
             ? { hotkeys: [{ key: "H", modifiers: ["Mod", "Shift"] }] }
             : {}),
           icon: i18n.t(`asset:commands.open-terminal-${cwd}-icon`),
@@ -470,11 +464,11 @@ export function loadTerminal(context: TerminalPlugin): void {
       );
       /*
        * A focused terminal has no active file, so "current" opens in the
-       * folder of the file last looked at. Allowing it also lets the focused
-       * listener consume a hotkey the user assigned to it instead of the
-       * shell: ConPTY turns Ctrl+Shift+<letter> into that letter's control
-       * character, e.g. Ctrl+Shift+H into 0x08, which cmd.exe treats as
-       * backspace.
+       * folder of the file last looked at, or the vault root. Allowing it also
+       * lets the focused listener consume its hotkey, the default one or one
+       * the user assigned, instead of the shell: ConPTY turns
+       * Ctrl+Shift+<letter> into that letter's control character, e.g.
+       * Ctrl+Shift+H into 0x08, which cmd.exe treats as backspace.
        */
       TerminalView.allowWhileFocused(opening);
     }
