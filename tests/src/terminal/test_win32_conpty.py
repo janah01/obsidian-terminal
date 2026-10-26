@@ -3902,6 +3902,7 @@ def _run_host(
     console_host_ahead: str | None = None,
     start_fields: Mapping[str, Any] | None = None,
     host_script: Path | None = None,
+    creationflags: int = 0,
 ) -> _HostResult:
     """Run the ConPTY host once against a real control pipe and child.
 
@@ -3912,6 +3913,7 @@ def _run_host(
     immediate host inherits ``child_environment`` and receives ``child_cwd``
     and ``console_host`` as its ``--cwd`` and ``--console-host`` arguments.
     ``host_script`` runs in place of the host module, with the same arguments.
+    ``creationflags`` are the host process's own creation flags.
     """
     pipe_name = "\\\\.\\pipe\\obsidian-terminal-conpty-test-" + uuid.uuid4().hex
     token = uuid.uuid4().hex
@@ -3968,6 +3970,7 @@ def _run_host(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=environment,
+            creationflags=creationflags,
         )
         output: list[bytes] = []
         errors: list[bytes] = []
@@ -4754,11 +4757,14 @@ def test_host_preserves_edited_utf8_input_through_enter(coalesced: bool) -> None
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
-def test_ctrl_c_byte_reaches_the_child() -> None:
+@pytest.mark.parametrize("detached", (False, True), ids=("attached", "detached"))
+def test_ctrl_c_byte_reaches_the_child(detached: bool) -> None:
     """A ``0x03`` byte on stdin must interrupt the child, not just close stdin.
 
     The byte is sent only once the child has attached to the console: a
     Ctrl+C that conhost translates before then has no process to signal.
+    ``detached`` starts the host as Node's ``detached`` spawn does, with no
+    console and in a new process group, which starts with Ctrl+C ignored.
     """
     started = time.monotonic()
     result = _run_host(
@@ -4774,6 +4780,7 @@ def test_ctrl_c_byte_reaches_the_child() -> None:
         stdout_ready=b"CHILD_READY",
         close_stdin=False,
         timeout=25.0,
+        creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP if detached else 0,
     )
     assert time.monotonic() - started < 25.0
     assert result.code != 0
@@ -5453,6 +5460,8 @@ def test_session_end_ends_a_console_program_in_a_console_window_of_its_own(
 _CREATE_NO_WINDOW = 0x08000000
 """Creation flag of a child with no console at all."""
 _DETACHED_PROCESS = 0x00000008
+"""Creation flag of a child that leads a new process group."""
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 """Creation flag asking to leave the creator's job."""
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 """Process access to assign a running child to jobs and to wait on it."""

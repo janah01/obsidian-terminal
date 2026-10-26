@@ -478,6 +478,16 @@ const HIDDEN_HELPER_SHELL = [
   "time.sleep(60)",
 ].join("\n");
 
+/** A shell that waits for Ctrl+C and says when it came. */
+const CTRL_C_SHELL = [
+  "import time",
+  "print('WAITING-FOR-CTRL-C', flush=True)",
+  "try:",
+  "    time.sleep(60)",
+  "except KeyboardInterrupt:",
+  "    print('INTERRUPTED', flush=True)",
+].join("\n");
+
 /**
  * A parent for the host in Obsidian's place: it spawns the host as it is
  * told, prints the host's PID, passes the host's output on and runs until it
@@ -493,8 +503,34 @@ const HOST_PARENT = [
 
 /**
  * Spawns the host with `args` after its source, through
- * {@link CONPTY_DEPENDENCIES} with the plugin's own spawn options, from a
- * {@link HOST_PARENT} that stands in for Obsidian.
+ * {@link CONPTY_DEPENDENCIES} with the plugin's own spawn options.
+ */
+async function spawnHost(
+  python: string,
+  control: WindowsNamedPipeControlChannel,
+  args: readonly string[],
+): Promise<{
+  readonly host: ChildProcessWithoutNullStreams;
+  readonly output: () => string;
+}> {
+  const source = await CONPTY_DEPENDENCIES.materializeSource(
+      await loadHostSource(),
+    ),
+    host = await CONPTY_DEPENDENCIES.spawn(
+      python,
+      ["-I", "-S", "-B", source, ...args],
+      { env: { ...process.env, [TOKEN_ENV]: control.token } },
+    ),
+    chunks: Buffer[] = [];
+  host.stdout.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  return {
+    host,
+    output: () => stripVTControlCharacters(Buffer.concat(chunks).toString()),
+  };
+}
+
+/**
+ * {@link spawnHost} from a {@link HOST_PARENT} that stands in for Obsidian.
  */
 async function spawnFromParent(
   python: string,
@@ -521,20 +557,8 @@ async function spawnFromParent(
       );
     },
   );
-  const source = await CONPTY_DEPENDENCIES.materializeSource(
-      await loadHostSource(),
-    ),
-    parent = await CONPTY_DEPENDENCIES.spawn(
-      python,
-      ["-I", "-S", "-B", source, ...args],
-      { env: { ...process.env, [TOKEN_ENV]: control.token } },
-    ),
-    chunks: Buffer[] = [];
-  parent.stdout.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
-  return {
-    parent,
-    output: () => stripVTControlCharacters(Buffer.concat(chunks).toString()),
-  };
+  const { host: parent, output } = await spawnHost(python, control, args);
+  return { parent, output };
 }
 
 /** Waits for `label` and the PID after it in `output`. */
@@ -864,6 +888,47 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
       await channel.control.dispose();
     }
   }, 60_000);
+
+  it.each([{ consoleHost: "auto" }, { consoleHost: null }] as const)(
+    "interrupts the shell's program on Ctrl+C when the host is spawned as the plugin spawns it (console host $consoleHost)",
+    async ({ consoleHost }) => {
+      // A process started in a new process group ignores Ctrl+C, and every
+      // process it creates inherits that: the shell and what runs in it.
+      const channel = await recordedChannel(false);
+      let host: ChildProcessWithoutNullStreams | undefined;
+      try {
+        const spawned = await spawnHost(python, channel.control, [
+          "80",
+          "24",
+          channel.control.path,
+          ...(consoleHost === null ? [] : ["--console-host", consoleHost]),
+          "--",
+          python,
+          "-c",
+          CTRL_C_SHELL,
+        ]);
+        ({ host } = spawned);
+        await bounded(channel.control.ready, "session ready");
+        await vi.waitFor(
+          () => {
+            expect(spawned.output()).toContain("WAITING-FOR-CTRL-C");
+          },
+          { timeout: TIMEOUT_MS },
+        );
+        host.stdin.write("\x03");
+        await vi.waitFor(
+          () => {
+            expect(spawned.output()).toContain("INTERRUPTED");
+          },
+          { timeout: TIMEOUT_MS },
+        );
+      } finally {
+        host?.kill();
+        await channel.control.dispose();
+      }
+    },
+    60_000,
+  );
 
   it("kills an authenticated idle spare without starting a shell", async () => {
     const fixture = await nativeFixture(python);
