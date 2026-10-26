@@ -1,5 +1,5 @@
 /** Native contract coverage complements the platform-free .spec.ts suite. */
-import {
+import childProcess, {
   execFile,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
@@ -478,6 +478,72 @@ const HIDDEN_HELPER_SHELL = [
   "time.sleep(60)",
 ].join("\n");
 
+/**
+ * A parent for the host in Obsidian's place: it spawns the host as it is
+ * told, prints the host's PID, passes the host's output on and runs until it
+ * is killed, as Obsidian's window process can go before the host is done.
+ */
+const HOST_PARENT = [
+  "const { spawn } = require('node:child_process');",
+  "const [executable, args, options] = process.argv.slice(1);",
+  "const host = spawn(executable, JSON.parse(args), JSON.parse(options));",
+  "host.once('spawn', () => process.stdout.write('HOST-PID ' + host.pid + '\\n'));",
+  "host.stdout.pipe(process.stdout);",
+].join(" ");
+
+/**
+ * Spawns the host through {@link CONPTY_DEPENDENCIES} with the plugin's own
+ * spawn options, from a {@link HOST_PARENT} that stands in for Obsidian.
+ */
+async function spawnFromParent(
+  python: string,
+  args: readonly string[],
+  env: typeof process.env,
+): Promise<{
+  readonly parent: ChildProcessWithoutNullStreams;
+  readonly output: () => string;
+}> {
+  const nativeSpawn = childProcess.spawn.bind(childProcess);
+  vi.spyOn(childProcess, "spawn").mockImplementationOnce(
+    (executable, hostArgs, options) => {
+      const { env: parentEnv, ...hostOptions } = options;
+      return nativeSpawn(
+        process.execPath,
+        [
+          "-e",
+          HOST_PARENT,
+          executable,
+          JSON.stringify(hostArgs),
+          JSON.stringify(hostOptions),
+        ],
+        { env: parentEnv, stdio: "pipe" },
+      );
+    },
+  );
+  const parent = await CONPTY_DEPENDENCIES.spawn(python, args, { env }),
+    chunks: Buffer[] = [];
+  parent.stdout.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  return {
+    parent,
+    output: () => stripVTControlCharacters(Buffer.concat(chunks).toString()),
+  };
+}
+
+/** Waits for `label` and the PID after it in `output`. */
+async function printedPid(
+  output: () => string,
+  label: string,
+): Promise<number> {
+  return vi.waitFor(
+    () => {
+      const match = new RegExp(`${label} (\\d+)`, "u").exec(output());
+      if (!match?.[1]) throw new Error(`Waiting for ${label}`);
+      return Number(match[1]);
+    },
+    { timeout: TIMEOUT_MS },
+  );
+}
+
 /** Whether process `pid` still runs; a refused probe counts as running. */
 function processRuns(pid: number): boolean {
   try {
@@ -702,8 +768,8 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
       }
       expect(tasks).toHaveLength(1);
       await bounded(Promise.all(tasks), "quit task");
-      // Obsidian closes the window once its quit tasks settle, and libuv's
-      // job then ends the host: the helper has to be gone by now.
+      // The quit task settles once the host has exited: the helper has to be
+      // gone by now.
       expect(processRuns(helper)).toBe(false);
       await bounded(pty.onExit, "quit exit");
       await vi.waitFor(() => {
@@ -712,6 +778,97 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
     } finally {
       if (helper && processRuns(helper)) process.kill(helper);
       await fixture.cleanup();
+    }
+  }, 60_000);
+
+  it.each([
+    { consoleHost: "auto", kill: true },
+    { consoleHost: null, kill: false },
+  ] as const)(
+    "ends what the shell left in a hidden console once Obsidian has gone (console host $consoleHost, kill $kill)",
+    async ({ consoleHost, kill }) => {
+      // Obsidian's window can close before the quit task settles, and a crash
+      // runs none: the window's process, the host's parent, is gone while
+      // the host still has the session to end.
+      const channel = await recordedChannel(false),
+        source = await CONPTY_DEPENDENCIES.materializeSource(
+          await loadHostSource(),
+        );
+      let parent: ChildProcessWithoutNullStreams | undefined,
+        helper = 0,
+        hostPid = 0;
+      try {
+        const spawned = await spawnFromParent(
+          python,
+          [
+            "-I",
+            "-S",
+            "-B",
+            source,
+            "80",
+            "24",
+            channel.control.path,
+            ...(consoleHost === null ? [] : ["--console-host", consoleHost]),
+            "--",
+            python,
+            "-c",
+            HIDDEN_HELPER_SHELL,
+          ],
+          { ...process.env, [TOKEN_ENV]: channel.control.token },
+        );
+        ({ parent } = spawned);
+        ({ hostPid } = await bounded(channel.control.ready, "session ready"));
+        helper = await printedPid(spawned.output, "HELPER-PID");
+        expect(processRuns(helper)).toBe(true);
+        if (kill) await bounded(channel.control.kill(), "kill");
+        parent.kill();
+        await channel.control.dispose();
+        await vi.waitFor(
+          () => {
+            expect(processRuns(hostPid)).toBe(false);
+          },
+          { timeout: TIMEOUT_MS },
+        );
+        expect(processRuns(helper)).toBe(false);
+      } finally {
+        for (const pid of [helper, hostPid])
+          if (pid && processRuns(pid)) process.kill(pid);
+        parent?.kill();
+        await channel.control.dispose();
+      }
+    },
+    60_000,
+  );
+
+  it("ends an idle spare once Obsidian has gone", async () => {
+    // A spare outlives the window too; it must not wait for a session forever.
+    const channel = await recordedChannel(true),
+      source = await CONPTY_DEPENDENCIES.materializeSource(
+        await loadHostSource(),
+      );
+    let parent: ChildProcessWithoutNullStreams | undefined,
+      hostPid = 0;
+    try {
+      const spawned = await spawnFromParent(
+        python,
+        ["-I", "-S", "-B", source, "--defer-session", channel.control.path],
+        { ...process.env, [TOKEN_ENV]: channel.control.token },
+      );
+      ({ parent } = spawned);
+      await bounded(channel.control.idleAuthenticated, "idle authentication");
+      hostPid = await printedPid(spawned.output, "HOST-PID");
+      parent.kill();
+      await channel.control.dispose();
+      await vi.waitFor(
+        () => {
+          expect(processRuns(hostPid)).toBe(false);
+        },
+        { timeout: TIMEOUT_MS },
+      );
+    } finally {
+      if (hostPid && processRuns(hostPid)) process.kill(hostPid);
+      parent?.kill();
+      await channel.control.dispose();
     }
   }, 60_000);
 
