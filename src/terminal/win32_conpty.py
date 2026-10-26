@@ -2126,6 +2126,8 @@ if sys.platform == "win32":
     _SearchPathW = _bind(
         "SearchPathW", (_LPWSTR, _LPWSTR, _LPWSTR, _DWORD, _LPWSTR, _VOID), _DWORD
     )
+    """Set whether this process and those it creates ignore Ctrl+C."""
+    _SetConsoleCtrlHandler = _bind("SetConsoleCtrlHandler", (_VOID, _BOOL), _BOOL)
     """Turn handle inheritance on or off for one handle."""
     _SetHandleInformation = _bind(
         "SetHandleInformation", (_HANDLE, _DWORD, _DWORD), _BOOL
@@ -3976,6 +3978,10 @@ if sys.platform == "win32":
 
     def main() -> None:
         """Run the ConPTY session described by the host command line."""
+        # The plugin spawns the host detached, in a new process group that
+        # ignores Ctrl+C; every process the host creates would inherit that.
+        if not _SetConsoleCtrlHandler(None, False):
+            diagnose(f"cannot turn Ctrl+C back on for the session: {_last_error()}")
         token = os.environ.get(TOKEN_ENVIRONMENT_VARIABLE, "")
         # The child inherits this process's environment block, so the token has
         # to be removed before the child is created.
