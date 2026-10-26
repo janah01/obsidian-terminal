@@ -14,6 +14,7 @@ import {
 } from "obsidian";
 import * as doctor from "../../src/terminal/win32-doctor.js";
 import { SettingTab } from "../../src/settings.js";
+import { TerminalSettingsManager } from "../../src/settings-manager.js";
 import { loadDocumentations } from "../../src/documentations.js";
 import {
   EXPERIMENTS,
@@ -1586,6 +1587,108 @@ class LoadedSettingTab extends SettingTab {
     // The Windows-only rows have their own tests above.
   }
 }
+
+describe("Undo under All settings after an import of older settings", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  // The mock's button, which Obsidian's typings do not describe.
+  interface MockButton {
+    readonly click?: () => void;
+    readonly getCta?: () => boolean;
+    readonly getTooltip?: () => string;
+  }
+
+  const { keymappingDefaultsVersion: _version, ...unversioned } =
+      Settings.DEFAULT,
+    // Settings as a device on 3.29.0 saves them: no version of the built-in
+    // keymappings, and Send to Obsidian turned to Ignore.
+    saved329: unknown = JSON.parse(
+      JSON.stringify({
+        ...unversioned,
+        keymappings: unversioned.keymappings.map((mapping) =>
+          mapping.action === "sendToObsidian"
+            ? { ...mapping, action: "ignore" }
+            : mapping,
+        ),
+      }),
+    ),
+    json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+  it.each(["Reset", "an import of settings with a version"] as const)(
+    "gives back settings without a version after %s, so the next start offers the built-in keymappings",
+    async (change) => {
+      const i18n = createInstance();
+      await i18n.init({ lng: "en", resources: { en: { translation: en } } });
+      captureMainWindowRows();
+      const context = await pythonSettingsContext(),
+        // The plugin's own manager, over data.json as this version saves it.
+        settings = new TerminalSettingsManager(context, Settings.fix);
+      Object.assign(context, {
+        loadData: vi.fn().mockResolvedValue(json(Settings.DEFAULT)),
+        localSettings: {
+          value: LocalSettings.fix({ lastReadChangelogVersion: "0.0.0" }).value,
+        },
+        settings,
+        version: null,
+      });
+      Object.assign(context.language, {
+        onChangeLanguage: { listen: vi.fn().mockReturnValue(vi.fn()) },
+        value: i18n,
+      });
+      vi.spyOn(settings, "write").mockResolvedValue();
+      settings.load();
+      await vi.waitFor(() => settings.value);
+      // The buttons the tab draws, newest last; each redraw draws new ones.
+      const buttons: MockButton[] = [];
+      vi.spyOn(MainWindowRow.prototype, "addButton").mockImplementation(
+        function (this: MainWindowRow, configure) {
+          const button = new ButtonComponent(this.settingEl);
+          configure(button);
+          buttons.push(button as MockButton);
+          return this;
+        },
+      );
+      const button = (tooltip: string): MockButton | undefined =>
+        buttons.findLast((drawn) => drawn.getTooltip?.() === tooltip);
+      // Import settings from clipboard, as the command reads them.
+      await settings.read(() => saved329);
+      const before = settings.value;
+      expect(before.keymappingDefaultsVersion).toBeUndefined();
+      const tab = new LoadedSettingTab(context, loadDocumentations(context));
+      document.body.append(tab.containerEl);
+      try {
+        tab.load();
+        tab.display();
+        if (change === "Reset") {
+          button(i18n.t("settings.all-settings-actions.reset"))?.click?.();
+        } else {
+          // Settings that this version exported.
+          await settings.read(() => json(Settings.DEFAULT));
+        }
+        await vi.waitFor(() => {
+          expect(settings.value.keymappingDefaultsVersion).toBe(
+            Settings.KEYMAPPING_DEFAULTS_VERSION,
+          );
+          expect(
+            button(i18n.t("settings.all-settings-actions.undo"))?.getCta?.(),
+          ).toBe(true);
+        });
+        button(i18n.t("settings.all-settings-actions.undo"))?.click?.();
+        await vi.waitFor(() => {
+          expect(settings.value.keymappings).toStrictEqual(before.keymappings);
+        });
+        // data.json as Undo leaves it. Without a version, the next start
+        // offers the built-in keymappings again.
+        expect(json(settings.value)).toStrictEqual(json(before));
+      } finally {
+        tab.dispose();
+      }
+    },
+  );
+});
 
 describe("settings tab descriptions", () => {
   afterEach(() => {
