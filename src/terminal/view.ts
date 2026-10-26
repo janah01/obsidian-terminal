@@ -340,35 +340,32 @@ export class EditTerminalModal extends DialogModal {
               },
               {
                 pre: (component) => {
-                  component
-                    .addOption(
-                      unselected,
+                  component.addOption(
+                    unselected,
+                    i18n.t(
+                      "components.terminal.edit-modal.profile-placeholder",
+                    ),
+                  );
+                  // One by one: an object would put ids such as "2" first.
+                  for (const entry of deviceProfileEntries(context)) {
+                    component.addOption(
+                      entry[0],
                       i18n.t(
-                        "components.terminal.edit-modal.profile-placeholder",
-                      ),
-                    )
-                    .addOptions(
-                      Object.fromEntries(
-                        deviceProfileEntries(context).map((entry) => [
-                          entry[0],
-
-                          i18n.t(
-                            `components.terminal.edit-modal.profile-name-${
-                              Settings.Profile.isCompatible(
-                                entry[1],
-                                Platform.CURRENT,
-                              )
-                                ? ""
-                                : "incompatible"
-                            }`,
-                            {
-                              info: Settings.Profile.info(entry),
-                              interpolation: { escapeValue: false },
-                            },
-                          ),
-                        ]),
+                        `components.terminal.edit-modal.profile-name-${
+                          Settings.Profile.isCompatible(
+                            entry[1],
+                            Platform.CURRENT,
+                          )
+                            ? ""
+                            : "incompatible"
+                        }`,
+                        {
+                          info: Settings.Profile.info(entry),
+                          interpolation: { escapeValue: false },
+                        },
                       ),
                     );
+                  }
                 },
               },
             ),

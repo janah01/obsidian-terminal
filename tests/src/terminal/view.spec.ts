@@ -3352,13 +3352,18 @@ describe("TerminalView pane menu", () => {
 });
 
 describe("EditTerminalModal profile dropdown", () => {
-  it("lists the profiles in this device's order", () => {
+  it("lists the profiles in this device's order, ids such as 2 and 10 too", () => {
     const profile = Settings.Profile.DEFAULTS.integrated;
-    const { context } = makeTerminalContext({
-      profiles: { first: profile, second: profile, third: profile },
-    });
+    const profiles = {
+      first: profile,
+      second: profile,
+      third: profile,
+      2: profile,
+      10: profile,
+    };
+    const { context } = makeTerminalContext({ profiles });
     Object.assign(context, {
-      localSettings: { value: { profileOrder: ["third", "first"] } },
+      localSettings: { value: { profileOrder: ["third", "10", "first", "2"] } },
     });
     // The mock row ignores its dropdown and keeps its buttons in the array
     // it was made with; this one hands both out.
@@ -3383,7 +3388,16 @@ describe("EditTerminalModal profile dropdown", () => {
         return this;
       },
     );
-    const addOptions = vi.spyOn(DropdownComponent.prototype, "addOptions");
+    // Obsidian adds the options of an object in its key order.
+    vi.spyOn(DropdownComponent.prototype, "addOptions").mockImplementation(
+      function (this: DropdownComponent, options) {
+        for (const [id, name] of Object.entries(options)) {
+          this.addOption(id, name);
+        }
+        return this;
+      },
+    );
+    const addOption = vi.spyOn(DropdownComponent.prototype, "addOption");
 
     const modal = new EditTerminalModal(
       context,
@@ -3395,10 +3409,10 @@ describe("EditTerminalModal profile dropdown", () => {
     modal.open();
 
     expect(
-      addOptions.mock.calls
-        .map(([options]) => Object.keys(options))
-        .filter((ids) => ids.includes("first")),
-    ).toEqual([["third", "first", "second"]]);
+      addOption.mock.calls
+        .map(([id]) => id)
+        .filter((id) => Object.hasOwn(profiles, id)),
+    ).toEqual(["third", "10", "first", "2", "second"]);
   });
 });
 
