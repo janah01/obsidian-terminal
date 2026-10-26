@@ -492,13 +492,14 @@ const HOST_PARENT = [
 ].join(" ");
 
 /**
- * Spawns the host through {@link CONPTY_DEPENDENCIES} with the plugin's own
- * spawn options, from a {@link HOST_PARENT} that stands in for Obsidian.
+ * Spawns the host with `args` after its source, through
+ * {@link CONPTY_DEPENDENCIES} with the plugin's own spawn options, from a
+ * {@link HOST_PARENT} that stands in for Obsidian.
  */
 async function spawnFromParent(
   python: string,
+  control: WindowsNamedPipeControlChannel,
   args: readonly string[],
-  env: typeof process.env,
 ): Promise<{
   readonly parent: ChildProcessWithoutNullStreams;
   readonly output: () => string;
@@ -520,7 +521,14 @@ async function spawnFromParent(
       );
     },
   );
-  const parent = await CONPTY_DEPENDENCIES.spawn(python, args, { env }),
+  const source = await CONPTY_DEPENDENCIES.materializeSource(
+      await loadHostSource(),
+    ),
+    parent = await CONPTY_DEPENDENCIES.spawn(
+      python,
+      ["-I", "-S", "-B", source, ...args],
+      { env: { ...process.env, [TOKEN_ENV]: control.token } },
+    ),
     chunks: Buffer[] = [];
   parent.stdout.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
   return {
@@ -790,32 +798,21 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
       // Obsidian's window can close before the quit task settles, and a crash
       // runs none: the window's process, the host's parent, is gone while
       // the host still has the session to end.
-      const channel = await recordedChannel(false),
-        source = await CONPTY_DEPENDENCIES.materializeSource(
-          await loadHostSource(),
-        );
+      const channel = await recordedChannel(false);
       let parent: ChildProcessWithoutNullStreams | undefined,
         helper = 0,
         hostPid = 0;
       try {
-        const spawned = await spawnFromParent(
+        const spawned = await spawnFromParent(python, channel.control, [
+          "80",
+          "24",
+          channel.control.path,
+          ...(consoleHost === null ? [] : ["--console-host", consoleHost]),
+          "--",
           python,
-          [
-            "-I",
-            "-S",
-            "-B",
-            source,
-            "80",
-            "24",
-            channel.control.path,
-            ...(consoleHost === null ? [] : ["--console-host", consoleHost]),
-            "--",
-            python,
-            "-c",
-            HIDDEN_HELPER_SHELL,
-          ],
-          { ...process.env, [TOKEN_ENV]: channel.control.token },
-        );
+          "-c",
+          HIDDEN_HELPER_SHELL,
+        ]);
         ({ parent } = spawned);
         ({ hostPid } = await bounded(channel.control.ready, "session ready"));
         helper = await printedPid(spawned.output, "HELPER-PID");
@@ -842,18 +839,14 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
 
   it("ends an idle spare once Obsidian has gone", async () => {
     // A spare outlives the window too; it must not wait for a session forever.
-    const channel = await recordedChannel(true),
-      source = await CONPTY_DEPENDENCIES.materializeSource(
-        await loadHostSource(),
-      );
+    const channel = await recordedChannel(true);
     let parent: ChildProcessWithoutNullStreams | undefined,
       hostPid = 0;
     try {
-      const spawned = await spawnFromParent(
-        python,
-        ["-I", "-S", "-B", source, "--defer-session", channel.control.path],
-        { ...process.env, [TOKEN_ENV]: channel.control.token },
-      );
+      const spawned = await spawnFromParent(python, channel.control, [
+        "--defer-session",
+        channel.control.path,
+      ]);
       ({ parent } = spawned);
       await bounded(channel.control.idleAuthenticated, "idle authentication");
       hostPid = await printedPid(spawned.output, "HOST-PID");
