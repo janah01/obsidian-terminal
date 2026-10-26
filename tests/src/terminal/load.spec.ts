@@ -1167,6 +1167,18 @@ describe("built-in keymappings at the start of the plugin", () => {
     return stored;
   }
 
+  // The data.json a device on 3.29.0 saves after it read `keymappings`: it
+  // knows no Send to Obsidian, so it makes the action Ignore.
+  function saved329(keymappings: readonly Settings.Keymapping[]): unknown {
+    return released329(
+      keymappings.map((mapping) =>
+        mapping.action === "sendToObsidian"
+          ? { ...mapping, action: "ignore" }
+          : mapping,
+      ),
+    );
+  }
+
   // Loads `stored` through the real settings manager, then the terminal.
   async function start(stored: unknown) {
     // The local settings below log their missing changelog version.
@@ -1250,6 +1262,50 @@ describe("built-in keymappings at the start of the plugin", () => {
       windows,
       macOS,
     ]);
+  });
+
+  it("adds a deleted palette key again at each start after a device on 3.29.0 saved data.json", async () => {
+    let { settings } = await start(released329());
+    for (let round = 0; round < 2; round++) {
+      // Settings → Keymappings: the user deletes Ctrl+P. This version keeps
+      // the deletion at its next start.
+      const deleted = settings.value.keymappings.filter(
+          ({ action, platform }) =>
+            action !== "sendToObsidian" || platform !== "win32",
+        ),
+        saved: unknown = JSON.parse(
+          JSON.stringify({ ...settings.value, keymappings: deleted }),
+        ),
+        own = await start(saved);
+      expect(own.settings.value.keymappings).toStrictEqual([...list329, macOS]);
+      expect(own.mutate).not.toHaveBeenCalled();
+
+      ({ settings } = await start(saved329(own.settings.value.keymappings)));
+      expect(settings.value.keymappings).toStrictEqual([
+        ...list329,
+        macOS,
+        windows,
+      ]);
+    }
+  });
+
+  it("keeps a palette key set to Passthrough after a device on 3.29.0 saved data.json", async () => {
+    // Settings → Keymappings: the user sets Ctrl+P to Passthrough.
+    const passthrough = {
+      ...windows,
+      action: "passthrough",
+    } as const satisfies Settings.Keymapping;
+    let keymappings: readonly Settings.Keymapping[] = [
+      ...list329,
+      passthrough,
+      macOS,
+    ];
+    for (let round = 0; round < 2; round++) {
+      // 3.29.0 knows Passthrough and keeps it.
+      const { settings } = await start(saved329(keymappings));
+      ({ keymappings } = settings.value);
+      expect(keymappings).toStrictEqual([...list329, passthrough, macOS]);
+    }
   });
 
   it("adds no palette key twice to a list that has them, at this start or the next", async () => {
