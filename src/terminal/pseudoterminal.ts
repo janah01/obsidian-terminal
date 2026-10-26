@@ -2701,6 +2701,9 @@ export const CONPTY_DEPENDENCIES: ConPtyPseudoterminalDependencies = {
     return spawnPromise(async () =>
       childProcess2.spawn(executable, [...args], {
         ...options,
+        // Out of libuv's job, which kills the host when the window's process
+        // exits: the host then ends its session itself once its pipes close.
+        detached: true,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       }),
@@ -3079,10 +3082,10 @@ export class ConPtyPseudoterminal implements Pseudoterminal {
       .then(async (exit) => (await control).reportedExitCode() ?? exit)
       .finally(dispose);
     this.onExit.catch(noop);
-    // Obsidian awaits quit tasks before the window closes. The kill lets the
-    // host end the console programs the shell left behind, which host death
-    // through libuv's job cannot. Bounded: a task that hangs or rejects would
-    // hold the quit forever.
+    // The kill starts ending the session when Obsidian quits. Obsidian may
+    // close the window before the task settles; the detached host then ends
+    // the console programs the shell left behind on its own. Bounded: a task
+    // that hangs or rejects would hold the quit forever.
     const { workspace } = context.app,
       quitHook = workspace.on("quit", (tasks) => {
         tasks.add(async () => {
