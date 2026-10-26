@@ -4446,6 +4446,23 @@ describe("ConPTY quit hook", () => {
     }
   });
 
+  it("spawns the host outside the job that ends it with Obsidian's window", async () => {
+    const host = testHost(),
+      spawn = vi.spyOn(childProcess, "spawn").mockReturnValue(host);
+    try {
+      await CONPTY_DEPENDENCIES.spawn("python", ["host.py"], { env: {} });
+      // libuv holds a child spawned without `detached` in a job that ends it
+      // when the window's process exits, even before the quit task settles.
+      expect(spawn).toHaveBeenCalledWith(
+        "python",
+        ["host.py"],
+        expect.objectContaining({ detached: true, env: {} }),
+      );
+    } finally {
+      host.kill();
+    }
+  });
+
   it("kills the host of a session that never became ready", async () => {
     const host = testHost(),
       { context, quit } = quitContext(),

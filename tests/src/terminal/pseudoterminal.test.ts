@@ -1,5 +1,5 @@
 /** Native contract coverage complements the platform-free .spec.ts suite. */
-import {
+import childProcess, {
   execFile,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
@@ -1270,6 +1270,104 @@ const HIDDEN_HELPER_SHELL = [
   "time.sleep(60)",
 ].join("\n");
 
+/** A shell that waits for Ctrl+C and says when it came. */
+const CTRL_C_SHELL = [
+  "import time",
+  "print('WAITING-FOR-CTRL-C', flush=True)",
+  "try:",
+  "    time.sleep(60)",
+  "except KeyboardInterrupt:",
+  "    print('INTERRUPTED', flush=True)",
+].join("\n");
+
+/**
+ * A parent for the host in Obsidian's place: it spawns the host as it is
+ * told, prints the host's PID, passes the host's output on and runs until it
+ * is killed, as Obsidian's window process can go before the host is done.
+ */
+const HOST_PARENT = [
+  "const { spawn } = require('node:child_process');",
+  "const [executable, args, options] = process.argv.slice(1);",
+  "const host = spawn(executable, JSON.parse(args), JSON.parse(options));",
+  "host.once('spawn', () => process.stdout.write('HOST-PID ' + host.pid + '\\n'));",
+  "host.stdout.pipe(process.stdout);",
+].join(" ");
+
+/**
+ * Spawns the host with `args` after its source, through
+ * {@link CONPTY_DEPENDENCIES} with the plugin's own spawn options.
+ */
+async function spawnHost(
+  python: string,
+  control: WindowsNamedPipeControlChannel,
+  args: readonly string[],
+): Promise<{
+  readonly host: ChildProcessWithoutNullStreams;
+  readonly output: () => string;
+}> {
+  const source = await CONPTY_DEPENDENCIES.materializeSource(
+      await loadHostSource(),
+    ),
+    host = await CONPTY_DEPENDENCIES.spawn(
+      python,
+      ["-I", "-S", "-B", source, ...args],
+      { env: { ...process.env, [TOKEN_ENV]: control.token } },
+    ),
+    chunks: Buffer[] = [];
+  host.stdout.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  return {
+    host,
+    output: () => stripVTControlCharacters(Buffer.concat(chunks).toString()),
+  };
+}
+
+/**
+ * {@link spawnHost} from a {@link HOST_PARENT} that stands in for Obsidian.
+ */
+async function spawnFromParent(
+  python: string,
+  control: WindowsNamedPipeControlChannel,
+  args: readonly string[],
+): Promise<{
+  readonly parent: ChildProcessWithoutNullStreams;
+  readonly output: () => string;
+}> {
+  const nativeSpawn = childProcess.spawn.bind(childProcess);
+  vi.spyOn(childProcess, "spawn").mockImplementationOnce(
+    (executable, hostArgs, options) => {
+      const { env: parentEnv, ...hostOptions } = options;
+      return nativeSpawn(
+        process.execPath,
+        [
+          "-e",
+          HOST_PARENT,
+          executable,
+          JSON.stringify(hostArgs),
+          JSON.stringify(hostOptions),
+        ],
+        { env: parentEnv, stdio: "pipe" },
+      );
+    },
+  );
+  const { host: parent, output } = await spawnHost(python, control, args);
+  return { parent, output };
+}
+
+/** Waits for `label` and the PID after it in `output`. */
+async function printedPid(
+  output: () => string,
+  label: string,
+): Promise<number> {
+  return vi.waitFor(
+    () => {
+      const match = new RegExp(`${label} (\\d+)`, "u").exec(output());
+      if (!match?.[1]) throw new Error(`Waiting for ${label}`);
+      return Number(match[1]);
+    },
+    { timeout: TIMEOUT_MS },
+  );
+}
+
 /** Whether process `pid` still runs; a refused probe counts as running. */
 function processRuns(pid: number): boolean {
   try {
@@ -1494,8 +1592,8 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
       }
       expect(tasks).toHaveLength(1);
       await bounded(Promise.all(tasks), "quit task");
-      // Obsidian closes the window once its quit tasks settle, and libuv's
-      // job then ends the host: the helper has to be gone by now.
+      // The quit task settles once the host has exited: the helper has to be
+      // gone by now.
       expect(processRuns(helper)).toBe(false);
       await bounded(pty.onExit, "quit exit");
       await vi.waitFor(() => {
@@ -1506,6 +1604,123 @@ describe.skipIf(process.platform !== "win32")("real ConPTY protocol", () => {
       await fixture.cleanup();
     }
   }, 60_000);
+
+  it.each([
+    { consoleHost: "auto", kill: true },
+    { consoleHost: null, kill: false },
+  ] as const)(
+    "ends what the shell left in a hidden console once Obsidian has gone (console host $consoleHost, kill $kill)",
+    async ({ consoleHost, kill }) => {
+      // Obsidian's window can close before the quit task settles, and a crash
+      // runs none: the window's process, the host's parent, is gone while
+      // the host still has the session to end.
+      const channel = await recordedChannel(false);
+      let parent: ChildProcessWithoutNullStreams | undefined,
+        helper = 0,
+        hostPid = 0;
+      try {
+        const spawned = await spawnFromParent(python, channel.control, [
+          "80",
+          "24",
+          channel.control.path,
+          ...(consoleHost === null ? [] : ["--console-host", consoleHost]),
+          "--",
+          python,
+          "-c",
+          HIDDEN_HELPER_SHELL,
+        ]);
+        ({ parent } = spawned);
+        ({ hostPid } = await bounded(channel.control.ready, "session ready"));
+        helper = await printedPid(spawned.output, "HELPER-PID");
+        expect(processRuns(helper)).toBe(true);
+        if (kill) await bounded(channel.control.kill(), "kill");
+        parent.kill();
+        await channel.control.dispose();
+        await vi.waitFor(
+          () => {
+            expect(processRuns(hostPid)).toBe(false);
+          },
+          { timeout: TIMEOUT_MS },
+        );
+        expect(processRuns(helper)).toBe(false);
+      } finally {
+        for (const pid of [helper, hostPid])
+          if (pid && processRuns(pid)) process.kill(pid);
+        parent?.kill();
+        await channel.control.dispose();
+      }
+    },
+    60_000,
+  );
+
+  it("ends an idle spare once Obsidian has gone", async () => {
+    // A spare outlives the window too; it must not wait for a session forever.
+    const channel = await recordedChannel(true);
+    let parent: ChildProcessWithoutNullStreams | undefined,
+      hostPid = 0;
+    try {
+      const spawned = await spawnFromParent(python, channel.control, [
+        "--defer-session",
+        channel.control.path,
+      ]);
+      ({ parent } = spawned);
+      await bounded(channel.control.idleAuthenticated, "idle authentication");
+      hostPid = await printedPid(spawned.output, "HOST-PID");
+      parent.kill();
+      await channel.control.dispose();
+      await vi.waitFor(
+        () => {
+          expect(processRuns(hostPid)).toBe(false);
+        },
+        { timeout: TIMEOUT_MS },
+      );
+    } finally {
+      if (hostPid && processRuns(hostPid)) process.kill(hostPid);
+      parent?.kill();
+      await channel.control.dispose();
+    }
+  }, 60_000);
+
+  it.each([{ consoleHost: "auto" }, { consoleHost: null }] as const)(
+    "interrupts the shell's program on Ctrl+C when the host is spawned as the plugin spawns it (console host $consoleHost)",
+    async ({ consoleHost }) => {
+      // A process started in a new process group ignores Ctrl+C, and every
+      // process it creates inherits that: the shell and what runs in it.
+      const channel = await recordedChannel(false);
+      let host: ChildProcessWithoutNullStreams | undefined;
+      try {
+        const spawned = await spawnHost(python, channel.control, [
+          "80",
+          "24",
+          channel.control.path,
+          ...(consoleHost === null ? [] : ["--console-host", consoleHost]),
+          "--",
+          python,
+          "-c",
+          CTRL_C_SHELL,
+        ]);
+        ({ host } = spawned);
+        await bounded(channel.control.ready, "session ready");
+        await vi.waitFor(
+          () => {
+            expect(spawned.output()).toContain("WAITING-FOR-CTRL-C");
+          },
+          { timeout: TIMEOUT_MS },
+        );
+        host.stdin.write("\x03");
+        await vi.waitFor(
+          () => {
+            expect(spawned.output()).toContain("INTERRUPTED");
+          },
+          { timeout: TIMEOUT_MS },
+        );
+      } finally {
+        host?.kill();
+        await channel.control.dispose();
+      }
+    },
+    60_000,
+  );
 
   it("kills an authenticated idle spare without starting a shell", async () => {
     const fixture = await nativeFixture(python);
