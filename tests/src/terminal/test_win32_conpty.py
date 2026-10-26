@@ -4609,6 +4609,75 @@ def test_host_fails_closed_on_bad_control_authentication(tmp_path: Path) -> None
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+@pytest.mark.parametrize(
+    "console_host", (None, "auto"), ids=("built-in", "windows-terminal")
+)
+def test_a_cold_host_whose_window_went_before_it_connected_ends_its_shell(
+    tmp_path: Path, console_host: str | None
+) -> None:
+    """A tab's host still booting when Obsidian's window goes ends by itself.
+
+    The plugin spawns the host detached, so the window's exit no longer ends
+    it. With nobody on the control pipe, the host gives up after
+    ``_CONTROL_CONNECT`` and closes the job: the shell, created suspended,
+    ends without having run, and the console host ends with it.
+    """
+    if console_host is not None:
+        _installed_windows_terminal()
+    marker = tmp_path / "shell-ran"
+    environment = dict(os.environ)
+    environment[_MODULE.TOKEN_ENVIRONMENT_VARIABLE] = uuid.uuid4().hex
+    # The base interpreter, as the plugin spawns it: a venv redirector would
+    # stand between this test and the host's own children.
+    arguments = [
+        getattr(sys, "_base_executable", sys.executable),
+        str(_module_path()),
+        "80",
+        "24",
+        # Nobody listens on this pipe: the window that made it has gone.
+        "\\\\.\\pipe\\obsidian-terminal-conpty-test-" + uuid.uuid4().hex,
+    ]
+    if console_host is not None:
+        arguments.extend(["--console-host", console_host])
+    arguments.extend(["--", *_create_marker(marker)])
+    earlier = set(_MODULE._parent_process_ids())
+    children: set[int] = set()
+    with closing(_ProcessWatch()) as watch:
+        host = subprocess.Popen(
+            arguments,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            # Node's ``detached`` spawn: no console, a new process group.
+            creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
+        )
+        deadline = time.monotonic() + _MODULE._CONTROL_CONNECT + 10.0
+        try:
+            # The console host and the shell wait while the host retries.
+            while len(children) < 2 and host.poll() is None:
+                assert time.monotonic() < deadline, children
+                time.sleep(0.05)
+                children = {
+                    pid
+                    for pid, parent in _MODULE._parent_process_ids().items()
+                    if parent == host.pid and pid not in earlier
+                }
+            for pid in children:
+                watch.pin(pid)
+            _, errors = host.communicate(timeout=deadline - time.monotonic())
+        finally:
+            if host.poll() is None:
+                host.kill()
+                host.wait(10.0)
+        assert len(children) == 2, (children, errors)
+        assert watch.survivors(15.0) == []
+    assert host.returncode == 250, errors
+    assert b"control pipe unavailable" in errors, errors
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
 def test_host_forwards_child_output_to_stdout() -> None:
     """Child output must reach the host stdout data plane."""
     result = _run_host(["cmd", "/c", "echo hello-conpty"])
