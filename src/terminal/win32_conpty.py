@@ -2738,7 +2738,8 @@ if sys.platform == "win32":
         not refused; it moves up into the root. From the root itself, which
         holds what MSYS runs and what asked once already, a breakaway is
         refused while the session runs: that is the price of tracking MSYS.
-        ``_permit_breakaway`` lifts it when the session lets go of the jobs.
+        ``_permit_breakaway`` lifts it when the sweep is over or the session
+        lets go of the jobs, whichever comes first.
         """
         tracking = _create_job_with_limits(0)
         try:
@@ -2751,10 +2752,11 @@ if sys.platform == "win32":
     def _permit_breakaway(jobs: Sequence[int]) -> None:
         """Let the processes in ``jobs``, and their future children, leave them.
 
-        Run when the session lets go of the jobs, however it ended: what it
-        kept then behaves as it did before the session tracked it, and a
-        program that asks to break away is no longer refused. A job that
-        refuses the change is diagnosed and left as it is.
+        Run when the sweep is over or the session lets go of the jobs,
+        whichever comes first: what it kept then behaves as it did before
+        the session tracked it, and a program that asks to break away is no
+        longer refused. Repeating the change is harmless. A job that refuses
+        the change is diagnosed and left as it is.
         """
         limits = _JOB_LIMITS()
         limits.LimitFlags = (
@@ -3644,10 +3646,14 @@ if sys.platform == "win32":
             attached programs cannot be told apart, so one sweep runs after
             the drain and ends them with the others: a sweep before the close
             would take their close event away.
+            Once the sweep is over, the tracking jobs permit every breakaway
+            again, so what the session kept, and what it starts later, behaves
+            as before the session tracked it.
             """
             deadline = started + _SWEEP_DEADLINE
             with self._handles:
                 job = self._tracking_job
+                breakaway_job = self._breakaway_job
                 pseudoconsole_host = self._pseudoconsole_host
             if not job:
                 return
@@ -3660,6 +3666,7 @@ if sys.platform == "win32":
                 )
             drained.wait(max(0.0, deadline - _SWEEP_LAST_ROUND - time.monotonic()))
             _sweep_descendants(job, deadline, pseudoconsole_host, last=True)
+            _permit_breakaway((job, breakaway_job))
 
         def _release(self) -> None:
             """Close every handle the session still owns, exactly once."""
@@ -3691,8 +3698,9 @@ if sys.platform == "win32":
             _close(self._thread)
             self._thread = 0
             _close(job)
-            # The jobs outlive these handles while a program runs in them, so
-            # what the session kept may break away again, however it ended.
+            # Fallback for ends where no sweep ran or it did not finish: the
+            # jobs outlive these handles while a program runs in them, so
+            # what the session kept may break away again.
             # A sweep still running keeps what the jobs hold now: only later
             # children start outside them, and the host exits shortly, which
             # abandons that sweep anyway.
