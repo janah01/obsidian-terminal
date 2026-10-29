@@ -7,6 +7,13 @@ import { LocalSettings, Settings } from "../../src/settings-data.js";
 import { PROFILE_PRESETS } from "../../src/terminal/profile-presets.js";
 import { inheritedPythonExecutable } from "../../src/terminal/win32-doctor.js";
 import released328 from "../fixtures/data-3.28.0.json" with { type: "json" };
+import released329 from "../fixtures/data-3.29.0.json" with { type: "json" };
+import {
+  type PluginContext,
+  SettingsManager,
+  StorageSettingsManager,
+} from "@polyipseity/obsidian-plugin-library";
+import { isEqual } from "es-toolkit/predicate";
 
 // Literal presets from 3.27.2 (a485e98b05f2dc0bc14e0a9d92c3d8cad6d0a95f),
 // src/terminal/profile-presets.ts and constants from src/magic.ts.
@@ -89,6 +96,32 @@ describe("src/settings-data.ts", () => {
     );
   });
 
+  it("keeps every number the number fields store, through a save and a load", () => {
+    // The fields store what is typed: a minus sign, an exponent, a decimal.
+    // A device on 3.29.0 reads them with these same fixers.
+    const [key, profile] = Object.entries(released329.profiles)[0] ?? [];
+    if (!key || !profile) throw new Error("fixture has no profile");
+    const typed = {
+        ...released329,
+        errorNoticeTimeout: -1,
+        noticeTimeout: 0.001,
+        profiles: {
+          ...released329.profiles,
+          [key]: { ...profile, terminalOptions: { fontSize: 14.05 } },
+        },
+        terminalOptions: { ...released329.terminalOptions, fontSize: 1000 },
+      },
+      fixed = Settings.fix(JSON.parse(JSON.stringify(typed)));
+
+    expect(fixed.valid).toBe(true);
+    expect(fixed.value).toMatchObject({
+      errorNoticeTimeout: -1,
+      noticeTimeout: 0.001,
+      profiles: { [key]: { terminalOptions: { fontSize: 14.05 } } },
+      terminalOptions: { fontSize: 1000 },
+    });
+  });
+
   it.each([
     undefined,
     null,
@@ -125,6 +158,113 @@ describe("src/settings-data.ts", () => {
     const first = LocalSettings.fix(null),
       stored: unknown = JSON.parse(JSON.stringify(first.value));
     expect(LocalSettings.fix(stored).valid).toBe(true);
+  });
+
+  it("LocalSettings.fix keeps the marker of local settings that could not be read", () => {
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    const { FAILED, hasFailed } = StorageSettingsManager;
+    // The changelog check at startup skips such settings, or the changelog
+    // would open on every start.
+    expect(hasFailed(LocalSettings.fix({ [FAILED]: true }).value)).toBe(true);
+    expect(hasFailed(LocalSettings.fix({}).value)).toBe(false);
+  });
+
+  describe("local settings whose storage key is not found", () => {
+    // The key needs a private API of Obsidian, which may change.
+    function failingLocalSettings(): {
+      readonly getItem: ReturnType<typeof vi.fn>;
+      readonly manager: StorageSettingsManager<LocalSettings>;
+      readonly setItem: ReturnType<typeof vi.fn>;
+    } {
+      const getItem = vi.fn(),
+        setItem = vi.fn(),
+        context = {
+          app: {
+            get appId(): never {
+              throw new Error("appId is gone");
+            },
+          },
+          language: {
+            onLoaded: Promise.resolve(),
+            value: { t: (key: string): string => key },
+          },
+          manifest: { id: "terminal" },
+        } as unknown as PluginContext,
+        manager = new StorageSettingsManager(context, LocalSettings.fix, {
+          getItem,
+          setItem,
+        } as unknown as Storage);
+      return { getItem, manager, setItem };
+    }
+
+    it("load with the marker, the defaults and no report", async () => {
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => {}),
+        warn = vi.spyOn(console, "warn").mockImplementation(() => {}),
+        errors = vi.spyOn(console, "error").mockImplementation(() => {}),
+        { getItem, manager, setItem } = failingLocalSettings();
+      manager.load();
+      try {
+        await manager.onLoaded;
+        await manager.write();
+
+        expect(warn).toHaveBeenCalledWith(
+          "errors.private-API-changed",
+          expect.any(Error),
+        );
+        expect(StorageSettingsManager.hasFailed(manager.value)).toBe(true);
+        expect(manager.value).toMatchObject({
+          hasUsedIntegratedTerminal: false,
+          lastReadChangelogVersion:
+            LocalSettings.fix(null).value.lastReadChangelogVersion,
+          recovery: {},
+        });
+        expect(errors).not.toHaveBeenCalled();
+        expect(getItem).not.toHaveBeenCalled();
+        expect(setItem).not.toHaveBeenCalled();
+      } finally {
+        manager.unload();
+        for (const spy of [debug, warn, errors]) {
+          spy.mockRestore();
+        }
+      }
+    });
+
+    it("keep the marker when data.json is malformed on the same start", async () => {
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => {}),
+        warn = vi.spyOn(console, "warn").mockImplementation(() => {}),
+        errors = vi.spyOn(console, "error").mockImplementation(() => {}),
+        { manager: localSettings } = failingLocalSettings(),
+        // As `main.ts` makes it, over a data.json with a wrong value.
+        settings = new SettingsManager(
+          {
+            language: {
+              onLoaded: Promise.resolve(),
+              value: { t: (key: string): string => key },
+            },
+            loadData: vi.fn().mockResolvedValue({ noticeTimeout: "5" }),
+            localSettings,
+            saveData: vi.fn(),
+          } as unknown as PluginContext,
+          Settings.fix,
+        );
+      localSettings.load();
+      settings.load();
+      try {
+        // `main.ts` waits for both before the changelog check.
+        await Promise.all([localSettings.onLoaded, settings.onLoaded]);
+
+        expect(errors.mock.calls[0]?.[0]).toBe("errors.malformed-data");
+        expect(StorageSettingsManager.hasFailed(localSettings.value)).toBe(
+          true,
+        );
+      } finally {
+        settings.unload();
+        localSettings.unload();
+        for (const spy of [debug, warn, errors]) {
+          spy.mockRestore();
+        }
+      }
+    });
   });
 
   it("LocalSettings.fix ensures lastReadChangelogVersion exists and is a string", () => {
@@ -173,6 +313,20 @@ describe("src/settings-data.ts", () => {
     expect((result as Settings.Profile.External).environment).toEqual([
       ["KEY", "value"],
     ]);
+  });
+
+  it("Profile.fix reports a value without a known type as malformed", () => {
+    // Such a value becomes an invalid profile that keeps every key it has,
+    // so the profile editor must not import it over a profile.
+    for (const value of [{}, { name: "x" }, { noticeTimeout: 5 }]) {
+      const fixed = Settings.Profile.fix(value);
+      expect(fixed.value).toEqual({ ...value, type: "invalid" });
+      expect(fixed.valid).toBe(false);
+    }
+    expect(Settings.Profile.fix({ type: "unknown" }).valid).toBe(false);
+    const invalid = { name: "x", type: "invalid" };
+    expect(Settings.Profile.fix(invalid).value).toEqual(invalid);
+    expect(Settings.Profile.fix(invalid).valid).toBe(true);
   });
 
   it("normalizes the Windows backend selector", () => {
@@ -533,6 +687,315 @@ describe("src/settings-data.ts", () => {
         expect(fixed.profiles).toEqual(released328.profiles);
         expect(fixed.experiments).toEqual({});
         expect(released).toEqual(released328);
+      });
+
+      it("a data.json saved by 3.28.0 is not malformed: it only lacks the new keys", () => {
+        const stored: unknown = JSON.parse(JSON.stringify(released328));
+        expect(Settings.fix(stored).valid).toBe(true);
+      });
+
+      it("a data.json saved by 3.29.0 loads unchanged and is not malformed", () => {
+        const stored: unknown = JSON.parse(JSON.stringify(released329)),
+          fixed = Settings.fix(stored);
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value).toMatchObject(released329);
+      });
+
+      it("3.29.0 local settings with a recovery copy are not malformed", () => {
+        const stored = {
+            hasUsedIntegratedTerminal: true,
+            lastReadChangelogVersion: "3.29.0",
+            recovery: {
+              "settings.2026-10-14T08:32:47.171Z": JSON.stringify(
+                released328,
+                null,
+                2,
+              ),
+            },
+          },
+          fixed = LocalSettings.fix(JSON.parse(JSON.stringify(stored)));
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value).toMatchObject(stored);
+        expect(fixed.value.recovery).toEqual(stored.recovery);
+      });
+    });
+
+    describe("data saved by an older version", () => {
+      interface Loaded<T> {
+        readonly errors: readonly (readonly unknown[])[];
+        readonly copies: Readonly<Record<string, string>>;
+        readonly written: unknown;
+        readonly value: T;
+      }
+
+      function copy(value: unknown): unknown {
+        const ret: unknown = JSON.parse(JSON.stringify(value));
+        return ret;
+      }
+
+      // The library's manager with `Settings.fix`, as `main.ts` makes it, over
+      // a context that reads `data` and keeps recovery copies in a record.
+      async function loadSettings(data: unknown): Promise<Loaded<Settings>> {
+        const errors = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => undefined),
+          copies: Record<string, string> = {},
+          saveData = vi.fn(),
+          // A stand-in for the plugin: only what the manager reads.
+          context = {
+            language: {
+              onLoaded: Promise.resolve(),
+              value: { t: (key: string): string => key },
+            },
+            loadData: vi.fn().mockResolvedValue(data),
+            localSettings: {
+              mutate: vi.fn(
+                async (
+                  mutator: (local: {
+                    readonly recovery: Record<string, string>;
+                  }) => unknown,
+                ) => {
+                  await mutator({ recovery: copies });
+                },
+              ),
+              onLoaded: Promise.resolve(),
+              write: vi.fn(),
+            },
+            saveData,
+          } as unknown as PluginContext,
+          manager = new SettingsManager(context, Settings.fix);
+        manager.load();
+        try {
+          await manager.onLoaded;
+          // The manager writes what it loaded back once.
+          await vi.waitFor(() => {
+            expect(saveData).toHaveBeenCalled();
+          });
+          return {
+            copies,
+            errors: [...errors.mock.calls],
+            value: manager.value,
+            written: saveData.mock.calls[0]?.[0],
+          };
+        } finally {
+          manager.unload();
+          errors.mockRestore();
+        }
+      }
+
+      // The same for `LocalSettings.fix` over a store holding `stored`.
+      async function loadLocalSettings(
+        stored: unknown,
+      ): Promise<Loaded<LocalSettings>> {
+        const errors = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => undefined),
+          setItem = vi.fn(),
+          storage = {
+            getItem: vi.fn(() => JSON.stringify(stored)),
+            setItem,
+          } as unknown as Storage,
+          context = {
+            app: { appId: "vault" },
+            language: {
+              onLoaded: Promise.resolve(),
+              value: { t: (key: string): string => key },
+            },
+            manifest: { id: "terminal" },
+          } as unknown as PluginContext,
+          manager = new StorageSettingsManager(
+            context,
+            LocalSettings.fix,
+            storage,
+          );
+        manager.load();
+        try {
+          await manager.onLoaded;
+          await vi.waitFor(() => {
+            expect(setItem).toHaveBeenCalled();
+          });
+          const text: unknown = setItem.mock.calls[0]?.[1];
+          return {
+            copies: manager.value.recovery,
+            errors: [...errors.mock.calls],
+            value: manager.value,
+            written: typeof text === "string" ? copy(JSON.parse(text)) : null,
+          };
+        } finally {
+          manager.unload();
+          errors.mockRestore();
+        }
+      }
+
+      it("loads a data.json saved by 3.29.0 without a report and writes every value back", async () => {
+        const loaded = await loadSettings(copy(released329));
+        expect(loaded.errors).toEqual([]);
+        expect(loaded.copies).toEqual({});
+        expect(loaded.value).toMatchObject(released329);
+        expect(copy(loaded.written)).toMatchObject(released329);
+      });
+
+      it("loads a data.json saved by 3.28.0 or an empty one without a report", async () => {
+        for (const data of [copy(released328), {}]) {
+          const loaded = await loadSettings(data);
+          expect(loaded.errors).toEqual([]);
+          expect(loaded.copies).toEqual({});
+        }
+      });
+
+      it("still reports a value it replaces and keeps a copy of what it read", async () => {
+        const data = { ...released329, noticeTimeout: "5" },
+          loaded = await loadSettings(copy(data));
+        expect(loaded.errors).toHaveLength(1);
+        expect(loaded.errors[0]?.[0]).toBe("errors.malformed-data");
+        expect(Object.keys(loaded.copies)).toEqual([
+          expect.stringMatching(/^settings\./u),
+        ]);
+        expect(
+          Object.values(loaded.copies).map((text): unknown => JSON.parse(text)),
+        ).toEqual([data]);
+        expect(loaded.value.noticeTimeout).toBe(Settings.DEFAULT.noticeTimeout);
+      });
+
+      it("loads 3.29.0 local settings without a report and keeps the copy 3.29.0 made", async () => {
+        const recovery = {
+            "settings.2026-10-14T08:32:47.171Z": JSON.stringify(
+              released328,
+              null,
+              2,
+            ),
+          },
+          loaded = await loadLocalSettings({
+            hasUsedIntegratedTerminal: true,
+            lastReadChangelogVersion: "3.29.0",
+            recovery,
+          });
+        expect(loaded.errors).toEqual([]);
+        expect(loaded.copies).toEqual(recovery);
+        expect(loaded.written).toMatchObject({ recovery });
+
+        const cleared = await loadLocalSettings({});
+        expect(cleared.errors).toEqual([]);
+        expect(cleared.copies).toEqual({});
+      });
+
+      it("accepts a profile or a keymapping that lacks a key added later", () => {
+        const data = cloneAsWritable(released329),
+          profile = data.profiles["custom-integrated"],
+          [keymapping] = data.keymappings;
+        if (!keymapping) {
+          throw new Error("the 3.29.0 fixture has no keymapping");
+        }
+        Reflect.deleteProperty(profile, "win32Backend");
+        Reflect.deleteProperty(profile.terminalOptions, "fontSize");
+        Reflect.deleteProperty(keymapping, "platform");
+        Reflect.deleteProperty(data.profiles, "developerConsole");
+        const developerConsole: Record<string, unknown> = {
+          ...released329.profiles.developerConsole,
+        };
+        Reflect.deleteProperty(developerConsole, "terminalOptions");
+        Object.assign(data.profiles, { developerConsole });
+
+        const fixed = Settings.fix(copy(data));
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value.profiles["custom-integrated"]).toMatchObject({
+          win32Backend: "conpty",
+        });
+        expect(fixed.value.keymappings[0]).toMatchObject({ platform: null });
+      });
+
+      it.each([
+        [
+          "a font size that is not a number",
+          {
+            terminalOptions: { ...released329.terminalOptions, fontSize: "x" },
+          },
+        ],
+        [
+          "a profile option of the wrong type",
+          {
+            profiles: {
+              ...released329.profiles,
+              "custom-integrated": {
+                ...released329.profiles["custom-integrated"],
+                terminalOptions: {
+                  ...released329.profiles["custom-integrated"].terminalOptions,
+                  cursorBlink: "yes",
+                },
+              },
+            },
+          },
+        ],
+        [
+          "a profile key it does not know",
+          {
+            profiles: {
+              ...released329.profiles,
+              "custom-external": {
+                ...released329.profiles["custom-external"],
+                later: true,
+              },
+            },
+          },
+        ],
+        [
+          "a keymapping action it does not know",
+          {
+            keymappings: [
+              { ...released329.keymappings[0], action: "notAnAction" },
+              ...released329.keymappings.slice(1),
+            ],
+          },
+        ],
+        [
+          "a keymapping that is not an object",
+          { keymappings: [...released329.keymappings, "x"] },
+        ],
+        ["a profile list that is a list", { profiles: [] }],
+      ])("still reports %s", (_name, change) => {
+        expect(Settings.fix(copy({ ...released329, ...change })).valid).toBe(
+          false,
+        );
+      });
+
+      it("adds no profile to the list it read, which the library would not report", () => {
+        // The library calls an added key no change, and the profile list is a
+        // record: a profile the fixer brought back would pass unreported.
+        expect(
+          Object.keys(Settings.fix(copy(released329)).value.profiles),
+        ).toEqual(Object.keys(released329.profiles));
+        expect(
+          Settings.fix(copy({ ...released329, profiles: {} })).value.profiles,
+        ).toEqual({});
+      });
+
+      it("gives the data editor text that it applies unchanged", () => {
+        // The data field applies only text that the fixer leaves as it is.
+        const data = copy(Settings.fix(copy(released329)).value);
+        expect(isEqual(data, Settings.fix(data).value)).toBe(true);
+        for (const profile of Object.values(released329.profiles)) {
+          const text = copy(profile);
+          expect(isEqual(text, Settings.Profile.fix(text).value)).toBe(true);
+        }
+        const options = copy(released329.terminalOptions);
+        expect(
+          isEqual(options, Settings.Profile.fixTerminalOptions(options).value),
+        ).toBe(true);
+      });
+
+      it("loads a profile of an unknown type however deep its data is", async () => {
+        // The profile fixer keeps a profile of type "invalid" as it is, so
+        // 3.29.0 loaded this data.json without a report.
+        const deep: unknown = JSON.parse(
+            `${'{"deep":'.repeat(2000)}1${"}".repeat(2000)}`,
+          ),
+          data = cloneAsWritable(released329);
+        Object.assign(data.profiles, { kept: { deep, type: "invalid" } });
+
+        expect(Settings.fix(data).valid).toBe(true);
+        const loaded = await loadSettings(data);
+        expect(loaded.errors).toEqual([]);
+        expect(loaded.value.profiles).toHaveProperty("kept");
       });
     });
   });
