@@ -223,7 +223,13 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
                     callback: async (data): Promise<void> => {
                       await settings.mutate((settingsM) => {
                         settingsM.profiles = Object.fromEntries(data.entries);
-                        settingsM.defaultProfile = data.defaultProfile;
+                        // The list sends the default it was opened with, even
+                        // after deleting that profile.
+                        settingsM.defaultProfile = data.entries.some(
+                          ([id]) => id === data.defaultProfile,
+                        )
+                          ? data.defaultProfile
+                          : null;
                       });
                       this.postMutate();
                     },
@@ -242,6 +248,13 @@ export class SettingTab extends AdvancedSettingTab<Settings> {
                   settingsM.profiles = cloneAsWritable(
                     Settings.DEFAULT.profiles,
                   );
+                  const { defaultProfile } = settingsM;
+                  if (
+                    defaultProfile !== null &&
+                    !Object.hasOwn(settingsM.profiles, defaultProfile)
+                  ) {
+                    settingsM.defaultProfile = null;
+                  }
                 }),
               () => {
                 this.postMutate();

@@ -1036,6 +1036,32 @@ describe("src/settings-data.ts", () => {
     expect(alsoBad.value.defaultProfile).toBe(null);
   });
 
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty"])(
+    "Settings.fix drops a default profile that only an inherited property answers (%s)",
+    (id) => {
+      const fixed = Settings.fix({
+        profiles: { foo: Settings.Profile.DEFAULTS.integrated },
+        defaultProfile: id,
+      });
+      expect(fixed.value.defaultProfile).toBeNull();
+      expect(fixed.valid).toBe(false);
+    },
+  );
+
+  it("Settings.fix keeps a default profile stored under the id constructor", () => {
+    const stored: unknown = JSON.parse(
+        JSON.stringify(
+          Settings.fix({
+            profiles: { constructor: Settings.Profile.DEFAULTS.integrated },
+            defaultProfile: "constructor",
+          }).value,
+        ),
+      ),
+      fixed = Settings.fix(stored);
+    expect(fixed.value.defaultProfile).toBe("constructor");
+    expect(fixed.valid).toBe(true);
+  });
+
   it("Settings.fix preserves valid showTerminalTabPrefix", () => {
     const enabled = Settings.fix({ showTerminalTabPrefix: true });
     expect(enabled.value.showTerminalTabPrefix).toBe(true);
