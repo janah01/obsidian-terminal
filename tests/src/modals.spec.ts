@@ -976,6 +976,93 @@ describe("terminal options font family", () => {
   });
 });
 
+describe("terminal options font size", () => {
+  // Chromium's two readings of an unfinished number in a number field: on
+  // macOS and Windows `14.` reads as "" with bad input, on Ubuntu as "14".
+  const PLATFORMS = ["macOS/Windows", "Ubuntu"] as const;
+
+  async function openFontSize(platform: (typeof PLATFORMS)[number]) {
+    const rows = capturePythonRows(),
+      modal = new TerminalOptionsModal(await pythonSettingsContext(), {
+        ...DEFAULT_TERMINAL_OPTIONS,
+        fontSize: 14,
+      });
+    modal.open();
+    onTestFinished(() => {
+      modal.close();
+    });
+    const field = rows.get("components.terminal-options.font-size")?.texts[0]
+        ?.inputEl,
+      json = rows.get("components.edit-data.data")?.textAreas[0]?.inputEl;
+    if (!field || !json) throw new Error("terminal options rows missing");
+    const writes: string[] = [];
+    let text = field.value;
+    const reported = (): { readonly badInput: boolean; value: string } => {
+      if (text === "" || /^-?(?:\d+|\d*\.\d+)$/u.test(text)) {
+        return { badInput: false, value: text };
+      }
+      if (platform === "Ubuntu" && /^-?\d+\.$/u.test(text)) {
+        return { badInput: false, value: text.slice(0, -1) };
+      }
+      return { badInput: true, value: "" };
+    };
+    Object.defineProperty(field, "value", {
+      configurable: true,
+      get: () => reported().value,
+      set: (value: string) => {
+        writes.push(value);
+        text = value;
+      },
+    });
+    Object.defineProperty(field, "validity", {
+      configurable: true,
+      get: () => ({ badInput: reported().badInput }),
+    });
+    // In the document, so that it can take the focus.
+    document.body.append(field);
+    onTestFinished(() => {
+      field.remove();
+    });
+    return {
+      fontSize: (): unknown => Reflect.get(JSON.parse(json.value), "fontSize"),
+      shown: (): string => text,
+      async type(typed: string): Promise<void> {
+        field.focus();
+        text = typed;
+        field.dispatchEvent(new Event("input"));
+        // Each key is a task of its own: what it stores settles before the next.
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 0);
+        });
+      },
+      inputType: field.type,
+      writes,
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(PLATFORMS)(
+    "takes 14.5 typed after 14 on %s, and keeps the size while it reads 14.",
+    async (platform) => {
+      const font = await openFontSize(platform);
+      expect(font.inputType).toBe("number");
+
+      await font.type("14.");
+      expect(font.fontSize()).toBe(14);
+      await font.type("14.5");
+
+      expect({
+        fontSize: font.fontSize(),
+        shown: font.shown(),
+        writes: font.writes,
+      }).toEqual({ fontSize: 14.5, shown: "14.5", writes: [] });
+    },
+  );
+});
+
 describe("keymapping editor key recorder", () => {
   // Obsidian's keymap listens on every window in the capture phase, so it sees
   // each key before any document listener and consumes keys its scopes handle.

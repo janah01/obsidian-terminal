@@ -16,6 +16,7 @@ import { loadDocumentations } from "./documentations.js";
 import { loadIcons } from "./icons.js";
 import { MAX_HISTORY, PLUGIN_UNLOAD_DELAY } from "./magic.js";
 import { EarlyPatchManager, loadPatch } from "./patch.js";
+import { migrateProfileChoice } from "./profile-choice.js";
 import { LocalSettings, Settings } from "./settings-data.js";
 import { TerminalSettingsManager } from "./settings-manager.js";
 import { loadSettings } from "./settings.js";
@@ -97,6 +98,7 @@ export class TerminalPlugin
         child.load();
       }
       await Promise.all(earlyChildren.map(async (child) => child.onLoaded));
+      await migrateProfileChoice(this);
       for (const child of children) {
         this.addChild(child);
       }

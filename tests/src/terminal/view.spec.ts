@@ -23,8 +23,11 @@ import * as library from "@polyipseity/obsidian-plugin-library";
 import { readStateCollaboratively } from "@polyipseity/obsidian-plugin-library";
 import {
   App,
+  ButtonComponent,
+  DropdownComponent,
   type Menu,
   type MenuItem,
+  Setting,
   View,
   WorkspaceLeaf,
   setIcon,
@@ -341,7 +344,9 @@ describe("hotkeys while a terminal has focus", () => {
     const listener = register.mock.lastCall?.[2];
     if (!listener) throw new Error("Missing focused-scope listener");
     return {
+      context,
       executeCommand,
+      listener,
       // The user's own hotkey and no default one, as on an opening command.
       addBoundCommand: (id: string, hotkey: Hotkey) => {
         const check = vi.fn((_checking: boolean): boolean => true),
@@ -364,7 +369,6 @@ describe("hotkeys while a terminal has focus", () => {
           modifiers: compile(modifiers),
           vkey: key,
         }),
-      context,
       hotkeys,
     };
   }
@@ -424,6 +428,162 @@ describe("hotkeys while a terminal has focus", () => {
     );
   });
 
+  describe("while a key is held", () => {
+    // Windows sends 31 key repeats while a key is held for about 1.5 s.
+    const REPEATS = 31;
+
+    /**
+     * Hands the listener of the last `loadView` one key-down, as Obsidian does.
+     * Spying again hands back the spy that caught the listener.
+     */
+    function send(
+      modifiers: readonly string[],
+      key: string,
+      repeat: boolean,
+    ): unknown {
+      const listener = vi.spyOn(ScopeView.scope, "register").mock.lastCall?.[2];
+      if (!listener) throw new Error("Missing focused-scope listener");
+      return listener(new KeyboardEvent("keydown", { key, repeat }), {
+        key,
+        modifiers: compile(modifiers),
+        vkey: key,
+      });
+    }
+
+    // The first key-down, then one key-down with `repeat` set per key repeat.
+    function hold(modifiers: readonly string[], key: string): unknown[] {
+      return [
+        send(modifiers, key, false),
+        ...Array.from({ length: REPEATS }, () => send(modifiers, key, true)),
+      ];
+    }
+
+    const consumed = Array<unknown>(REPEATS + 1).fill(false),
+      passedOn = Array<unknown>(REPEATS + 1).fill(undefined);
+
+    it.each([
+      ["Clear terminal", "clear-terminal", ["Mod", "Shift"], "k"],
+      ["Close terminal", "close-terminal", ["Mod", "Shift"], "w"],
+      ["Find in terminal", "find-in-terminal", ["Mod", "Shift"], "f"],
+      [
+        "Toggle focus on last terminal",
+        "toggle-focus-on-last-terminal",
+        ["Ctrl", "Shift"],
+        "`",
+      ],
+    ] as const)(
+      "runs %s once and lets none of its repeats reach the shell",
+      (_name, id, modifiers, key) => {
+        const { executeCommand } = loadView();
+
+        expect(hold(modifiers, key)).toStrictEqual(consumed);
+
+        expect(executeCommand).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ id: `terminal:${id}` }),
+        );
+      },
+    );
+
+    it("runs an opening hotkey once and lets none of its repeats reach the shell", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check, command } = addBoundCommand("open-terminal.integrated.root", {
+          key: "H",
+          modifiers: ["Mod", "Shift"],
+        });
+      TerminalView.allowWhileFocused(command);
+
+      expect(hold(["Mod", "Shift"], "H")).toStrictEqual(consumed);
+
+      expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+      expect(check).toHaveBeenCalledExactlyOnceWith(false);
+    });
+
+    it("consumes repeats without their key-down, as in the terminal the key opened, and runs nothing", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check, command } = addBoundCommand("open-terminal.integrated.root", {
+          key: "H",
+          modifiers: ["Mod", "Shift"],
+        });
+      TerminalView.allowWhileFocused(command);
+
+      expect(
+        Array.from({ length: REPEATS }, () =>
+          send(["Mod", "Shift"], "H", true),
+        ),
+      ).toStrictEqual(consumed.slice(1));
+
+      expect(executeCommand).not.toHaveBeenCalled();
+      expect(check).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a letter", [], "x"],
+      ["Ctrl+H, a Backspace to the shell", ["Ctrl"], "h"],
+      ["Backspace", [], "Backspace"],
+    ] as const)(
+      "lets every repeat of %s reach the shell when no hotkey has it",
+      (_name, modifiers, key) => {
+        const { executeCommand } = loadView();
+
+        expect(hold(modifiers, key)).toStrictEqual(passedOn);
+
+        expect(executeCommand).not.toHaveBeenCalled();
+      },
+    );
+
+    it("lets every repeat of a hotkey outside the list reach the shell", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check } = addBoundCommand("editor:toggle-bold", {
+          key: "b",
+          modifiers: ["Mod"],
+        });
+
+      expect(hold(["Mod"], "b")).toStrictEqual(passedOn);
+
+      expect(executeCommand).not.toHaveBeenCalled();
+      expect(check).not.toHaveBeenCalled();
+    });
+
+    it("matches each repeat by its own modifiers", () => {
+      const { executeCommand } = loadView();
+
+      expect(send(["Mod", "Shift"], "k", false)).toBe(false);
+      // Shift comes up while K stays down: the repeats are Mod+K.
+      expect(send(["Mod"], "k", true)).toBeUndefined();
+      expect(send(["Mod"], "k", true)).toBeUndefined();
+
+      expect(executeCommand).toHaveBeenCalledOnce();
+    });
+
+    it("runs a repeatable command again on each repeat", () => {
+      const { addBoundCommand, executeCommand } = loadView(),
+        { check, command } = addBoundCommand("open-terminal.external.root", {
+          key: "t",
+          modifiers: ["Alt", "Ctrl"],
+        });
+      Object.assign(command, { repeatable: true });
+      TerminalView.allowWhileFocused(command);
+
+      expect(hold(["Ctrl", "Alt"], "t")).toStrictEqual(consumed);
+
+      expect(executeCommand).toHaveBeenCalledTimes(REPEATS + 1);
+      expect(check).toHaveBeenCalledTimes(REPEATS + 1);
+    });
+
+    it("does not run a command that failed again on its repeats, nor pass them on", () => {
+      const { executeCommand } = loadView();
+      // Obsidian answers `false` when the command threw.
+      executeCommand.mockReturnValueOnce(false);
+
+      expect(hold(["Mod", "Shift"], "k")).toStrictEqual([
+        undefined,
+        ...consumed.slice(1),
+      ]);
+
+      expect(executeCommand).toHaveBeenCalledOnce();
+    });
+  });
+
   it("forgets the commands of an earlier load", () => {
     const hotkey = { key: "t", modifiers: ["Alt", "Ctrl"] },
       earlier = loadView();
@@ -438,6 +598,229 @@ describe("hotkeys while a terminal has focus", () => {
     expect(executeCommand).not.toHaveBeenCalled();
     expect(check).not.toHaveBeenCalled();
   });
+
+  it("leaves the key of a command taken off the list to the terminal once the hotkey table is stale", () => {
+    const { addBoundCommand, executeCommand, press } = loadView(),
+      { check, command } = addBoundCommand("open-terminal.integrated.root", {
+        key: "r",
+        modifiers: ["Ctrl"],
+      });
+    TerminalView.allowWhileFocused(command);
+    expect(press(["Ctrl"], "r")).toBe(false);
+
+    TerminalView.allowWhileFocused(command, false);
+    // Any change of a hotkey marks the table stale.
+    addBoundCommand("command-palette", { key: "p", modifiers: ["Mod"] });
+
+    expect(press(["Ctrl"], "r")).toBeUndefined();
+    expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+    expect(check).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the key of a command taken off the list to the terminal once the hotkeys reload", () => {
+    const { addBoundCommand, context, executeCommand, press } = loadView(),
+      { command } = addBoundCommand("open-terminal.integrated.root", {
+        key: "r",
+        modifiers: ["Ctrl"],
+      });
+    TerminalView.allowWhileFocused(command);
+    expect(press(["Ctrl"], "r")).toBe(false);
+
+    // The table baked at the first key still holds the command.
+    TerminalView.allowWhileFocused(command, false);
+    expect(press(["Ctrl"], "r")).toBe(false);
+
+    TerminalView.reloadFocusedHotkeys(context);
+    expect(press(["Ctrl"], "r")).toBeUndefined();
+    expect(executeCommand).toHaveBeenCalledTimes(2);
+
+    // Allowed again, the key runs the command again.
+    TerminalView.allowWhileFocused(command);
+    TerminalView.reloadFocusedHotkeys(context);
+    expect(press(["Ctrl"], "r")).toBe(false);
+    expect(executeCommand).toHaveBeenCalledTimes(3);
+    expect(executeCommand).toHaveBeenLastCalledWith(command);
+  });
+
+  it("leaves the repeats of a held key to the terminal once its command left the list", () => {
+    const { addBoundCommand, context, executeCommand, listener, press } =
+        loadView(),
+      { command } = addBoundCommand("open-terminal.integrated.root", {
+        key: "r",
+        modifiers: ["Ctrl"],
+      }),
+      repeat = (): unknown =>
+        listener(new KeyboardEvent("keydown", { key: "r", repeat: true }), {
+          key: "r",
+          modifiers: compile(["Ctrl"]),
+          vkey: "r",
+        });
+    TerminalView.allowWhileFocused(command);
+    press(["Ctrl"], "r");
+
+    TerminalView.allowWhileFocused(command, false);
+    TerminalView.reloadFocusedHotkeys(context);
+
+    expect(press(["Ctrl"], "r")).toBeUndefined();
+    expect(repeat()).toBeUndefined();
+    expect(repeat()).toBeUndefined();
+    expect(executeCommand).toHaveBeenCalledOnce();
+  });
+
+  it("gives the keys back to a terminal hotkey once a command on them left the list", () => {
+    const { addBoundCommand, context, executeCommand, press } = loadView(),
+      { command } = addBoundCommand("open-terminal.integrated.root", {
+        key: "k",
+        modifiers: ["Mod", "Shift"],
+      });
+    TerminalView.allowWhileFocused(command);
+    // The user's key comes before the default key of Clear terminal.
+    expect(press(["Mod", "Shift"], "k")).toBe(false);
+    expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+
+    TerminalView.allowWhileFocused(command, false);
+    TerminalView.reloadFocusedHotkeys(context);
+
+    expect(press(["Mod", "Shift"], "k")).toBe(false);
+    expect(executeCommand).toHaveBeenCalledTimes(2);
+    expect(executeCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "terminal:clear-terminal" }),
+    );
+  });
+
+  it("ignores taking a command off the list that is not on it", () => {
+    const { addBoundCommand, context, executeCommand, press } = loadView(),
+      { command } = addBoundCommand("open-terminal.external.root", {
+        key: "t",
+        modifiers: ["Alt", "Ctrl"],
+      });
+    TerminalView.allowWhileFocused(command);
+
+    TerminalView.allowWhileFocused(
+      { id: "terminal:open-terminal.select.root" },
+      false,
+    );
+    TerminalView.reloadFocusedHotkeys(context);
+
+    expect(press(["Ctrl", "Alt"], "t")).toBe(false);
+    expect(executeCommand).toHaveBeenCalledExactlyOnceWith(command);
+  });
+
+  it("marks Obsidian's hotkey table stale to reload the hotkeys", () => {
+    const { context } = makeTerminalContext(),
+      hotkeyManager = { baked: true };
+    Object.assign(context.app, { hotkeyManager });
+
+    TerminalView.reloadFocusedHotkeys(context);
+
+    expect(hotkeyManager.baked).toBe(false);
+  });
+
+  it("reloads nothing and warns without a hotkey table", () => {
+    const { context } = makeTerminalContext(),
+      warn = vi.spyOn(self.console, "warn").mockImplementation(() => {});
+    vi.spyOn(self.console, "debug").mockImplementation(() => {});
+
+    expect(() => {
+      TerminalView.reloadFocusedHotkeys(context);
+    }).not.toThrow();
+
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "errors.private-API-changed",
+      expect.any(TypeError),
+    );
+  });
+
+  it("warns and changes nothing when the hotkey table refuses the reload", () => {
+    const { context } = makeTerminalContext(),
+      hotkeyManager = Object.freeze({ baked: true }),
+      warn = vi.spyOn(self.console, "warn").mockImplementation(() => {});
+    vi.spyOn(self.console, "debug").mockImplementation(() => {});
+    Object.assign(context.app, { hotkeyManager });
+
+    // A settings change runs the reload; it must not fail that change.
+    expect(() => {
+      TerminalView.reloadFocusedHotkeys(context);
+    }).not.toThrow();
+
+    expect(hotkeyManager.baked).toBe(true);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "errors.private-API-changed",
+      expect.any(TypeError),
+    );
+  });
+
+  it("leaves the default hotkey of a command off the list to the terminal", () => {
+    const { context, executeCommand, press } = loadView(),
+      // Registered with a default key, as the integrated current-directory
+      // command is with Mod+Shift+H.
+      command = library.addCommand(context, () => "open", {
+        checkCallback: vi.fn((_checking: boolean): boolean => true),
+        hotkeys: [{ key: "H", modifiers: ["Mod", "Shift"] }],
+        id: "open-terminal.integrated.root",
+      });
+    TerminalView.allowWhileFocused(command);
+    expect(press(["Mod", "Shift"], "H")).toBe(false);
+
+    TerminalView.allowWhileFocused(command, false);
+    TerminalView.reloadFocusedHotkeys(context);
+    expect(press(["Mod", "Shift"], "H")).toBeUndefined();
+
+    TerminalView.allowWhileFocused(command);
+    TerminalView.reloadFocusedHotkeys(context);
+    expect(press(["Mod", "Shift"], "H")).toBe(false);
+    expect(executeCommand).toHaveBeenCalledTimes(2);
+    expect(executeCommand).toHaveBeenLastCalledWith(command);
+  });
+
+  it("leaves the key to the terminal when the command leaves the list before the first key", () => {
+    const { addBoundCommand, executeCommand, press } = loadView(),
+      { check, command } = addBoundCommand("open-terminal.integrated.root", {
+        key: "r",
+        modifiers: ["Ctrl"],
+      });
+    TerminalView.allowWhileFocused(command);
+    TerminalView.allowWhileFocused(command, false);
+
+    expect(press(["Ctrl"], "r")).toBeUndefined();
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["one that reads every hotkey", undefined],
+    ["one with a list of its own", new Set(["other-plugin:command"])],
+  ])(
+    "applies a change of the list beside another hotkey listener, %s",
+    (_name, ids) => {
+      const { addBoundCommand, context, executeCommand, press } = loadView(),
+        { command } = addBoundCommand("open-terminal.integrated.root", {
+          key: "r",
+          modifiers: ["Ctrl"],
+        }),
+        // Another listener of the library patches the same table later.
+        other = library.newHotkeyListener(context, ids),
+        pressOther = (): unknown =>
+          other(new KeyboardEvent("keydown", { key: "r" }), {
+            key: "r",
+            modifiers: compile(["Ctrl"]),
+            vkey: "r",
+          });
+      TerminalView.allowWhileFocused(command);
+      expect(press(["Ctrl"], "r")).toBe(false);
+
+      TerminalView.allowWhileFocused(command, false);
+      TerminalView.reloadFocusedHotkeys(context);
+      expect(press(["Ctrl"], "r")).toBeUndefined();
+      // The other listener keeps its own table.
+      expect(pressOther()).toBe(ids ? undefined : false);
+
+      TerminalView.allowWhileFocused(command);
+      TerminalView.reloadFocusedHotkeys(context);
+      expect(press(["Ctrl"], "r")).toBe(false);
+      expect(executeCommand).toHaveBeenCalledTimes(ids ? 2 : 3);
+    },
+  );
 
   it("honours a command allowed after a bake only once the hotkey table is stale again", () => {
     const { addBoundCommand, executeCommand, press } = loadView(),
@@ -1635,6 +2018,49 @@ describe("src/terminal/view.ts", () => {
         const fixed = TerminalView.State.fix(input);
         expect(fixed.value.cwd).toBe("/home/user");
         expect(fixed.value.userTitle).toBe("dev server");
+      });
+
+      it("restores a state saved before some of its keys existed without a report", () => {
+        // An older version's tab: no title, no profile source, no scroll
+        // line, and a profile without its Windows backend.
+        const profile: Record<string, unknown> = {
+          ...Settings.Profile.DEFAULTS.integrated,
+        };
+        Reflect.deleteProperty(profile, "win32Backend");
+        const fixed = TerminalView.State.fix({
+          cwd: "/home/user",
+          focus: false,
+          profile,
+          serial: { columns: 80, data: "$ ", rows: 24 },
+        });
+        expect(fixed.valid).toBe(true);
+        expect(fixed.value).toMatchObject({
+          cwd: "/home/user",
+          profileSourceId: null,
+          serial: { columns: 80, data: "$ ", rows: 24 },
+          userTitle: "",
+        });
+      });
+
+      it("still reports a state value it replaces or drops", () => {
+        const state = {
+          cwd: null,
+          focus: false,
+          profile: Settings.Profile.DEFAULTS.integrated,
+          profileSourceId: null,
+          serial: null,
+          userTitle: "",
+        };
+        expect(TerminalView.State.fix(state).valid).toBe(true);
+        for (const change of [
+          { focus: "x" },
+          { serial: { columns: "80", data: "", rows: 1, scrollLine: -1 } },
+          { later: true },
+        ]) {
+          expect(TerminalView.State.fix({ ...state, ...change }).valid).toBe(
+            false,
+          );
+        }
       });
     });
   });
@@ -3686,6 +4112,71 @@ describe("TerminalView pane menu", () => {
       leaf,
       view.getViewType(),
     );
+  });
+});
+
+describe("EditTerminalModal profile dropdown", () => {
+  it("lists the profiles in this device's order, ids such as 2 and 10 too", () => {
+    const profile = Settings.Profile.DEFAULTS.integrated;
+    const profiles = {
+      first: profile,
+      second: profile,
+      third: profile,
+      2: profile,
+      10: profile,
+    };
+    const { context } = makeTerminalContext({ profiles });
+    Object.assign(context, {
+      localSettings: { value: { profileOrder: ["third", "10", "first", "2"] } },
+    });
+    // The mock row ignores its dropdown and keeps its buttons in the array
+    // it was made with; this one hands both out.
+    class DropdownRow extends Setting {
+      public override addButton(
+        configure: (button: ButtonComponent) => unknown,
+      ): this {
+        configure(new ButtonComponent(this.settingEl));
+        return this;
+      }
+
+      public override addDropdown(
+        configure: (dropdown: DropdownComponent) => unknown,
+      ): this {
+        configure(new DropdownComponent(this.settingEl));
+        return this;
+      }
+    }
+    vi.spyOn(library.UpdatableUI.prototype, "newSetting").mockImplementation(
+      function (this: library.UpdatableUI, element, configure) {
+        configure(new DropdownRow(element));
+        return this;
+      },
+    );
+    // Obsidian adds the options of an object in its key order.
+    vi.spyOn(DropdownComponent.prototype, "addOptions").mockImplementation(
+      function (this: DropdownComponent, options) {
+        for (const [id, name] of Object.entries(options)) {
+          this.addOption(id, name);
+        }
+        return this;
+      },
+    );
+    const addOption = vi.spyOn(DropdownComponent.prototype, "addOption");
+
+    const modal = new EditTerminalModal(
+      context,
+      TerminalView.State.DEFAULT,
+      vi.fn(),
+    );
+    // The mock modal has no key scope; the dialog registers Enter there.
+    Object.assign(modal, { scope: { register: vi.fn(), unregister: vi.fn() } });
+    modal.open();
+
+    expect(
+      addOption.mock.calls
+        .map(([id]) => id)
+        .filter((id) => Object.hasOwn(profiles, id)),
+    ).toEqual(["third", "10", "first", "2", "second"]);
   });
 });
 

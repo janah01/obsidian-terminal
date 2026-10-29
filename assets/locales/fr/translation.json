@@ -387,7 +387,7 @@
     "create-instance-near-existing-ones": "Create $t(generic.instance) near $t(generic.exist_gerund) ones",
     "create-instance-near-existing-ones-description": "When $t(generic.enable_past-participle), creates a new $t(generic.instance) near the most recently used $t(generic.terminal) that is still open. Only a $t(generic.terminal) you have opened or $t(generic.focus_past-participle) since starting Obsidian is used; otherwise '$t(settings.new-instance-behavior)' applies.",
     "default-profile": "Default $t(generic.profile)",
-    "default-profile-description": "$t(generic.profile, capitalize) to open when clicking the ribbon icon. Leave empty to show $t(generic.profile) selector.",
+    "default-profile-description": "$t(generic.profile, capitalize) to open when clicking the ribbon icon on this device. Leave empty to show $t(generic.profile) selector. Commands for its $t(generic.terminal) $t(generic.type) open it too. Right-click the ribbon icon to list all profiles.",
     "default-profile-name-": "$t(profile-name-formats.short)",
     "default-profile-name-incompatible": "($t(generic.incompatible, capitalize)) $t(settings.default-profile-name-)",
     "documentation": "$t(generic.documentation, capitalize)",
@@ -448,7 +448,7 @@
     "profile-defaults": "$t(generic.profile, capitalize) defaults",
     "profile-defaults-description": "Default options for $t(generic.profile_other). Acts as a fallback for every $t(generic.profile) unless a $t(generic.profile) explicitly overrides them.",
     "profile-list": {
-      "description": "The first $t(generic.compatible) $t(generic.profile) in the $t(generic.list) is the $t(generic.default) for its $t(generic.terminal) $t(generic.type)."
+      "description": "A $t(generic.command) for one $t(generic.terminal) $t(generic.type) opens the $t(generic.default) $t(generic.profile) when it has that $t(generic.type), otherwise the first $t(generic.compatible) $t(generic.profile) of that $t(generic.type) in the $t(generic.list)."
     },
     "profiles": "$t(generic.profile_other, capitalize)",
     "profiles-description": "$t(generic.list-description, capitalize)",
