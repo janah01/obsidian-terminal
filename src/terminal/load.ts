@@ -459,7 +459,19 @@ export function loadTerminal(context: TerminalPlugin): void {
 
   /* Always register command for interop with other plugins */
 
-  TerminalView.allowWhileFocused(
+  /*
+   * Their hotkeys pass a focused terminal only while Add to command is on.
+   * With it off their checks decline, but Obsidian still reports the key as
+   * handled, so on the list the key would reach neither a command nor the
+   * shell. Off the list it goes to the shell.
+   */
+  // Filled while the commands are registered below, and only read after.
+  const openers: ReturnType<typeof addCommand>[] = [],
+    allowWhileCommand = (opener: ReturnType<typeof addCommand>): void => {
+      openers.push(opener);
+      TerminalView.allowWhileFocused(opener, settings.value.addToCommand);
+    };
+  allowWhileCommand(
     addCommand(context, () => i18n.t("commands.open-developer-console"), {
       checkCallback(checking) {
         if (!settings.value.addToCommand) {
@@ -509,11 +521,23 @@ export function loadTerminal(context: TerminalPlugin): void {
        * lets the focused listener consume its hotkey, the default one or one
        * the user assigned, instead of the shell: ConPTY turns
        * Ctrl+Shift+<letter> into that letter's control character, e.g.
-       * Ctrl+Shift+H into 0x08, which cmd.exe treats as backspace.
+       * Ctrl+Shift+H into 0x08, which cmd.exe treats as backspace. This holds
+       * while Add to command is on; with it off the key goes to the shell.
        */
-      TerminalView.allowWhileFocused(opening);
+      allowWhileCommand(opening);
     }
   }
+  context.register(
+    settings.onMutate(
+      (settings0) => settings0.addToCommand,
+      (addToCommand) => {
+        for (const opener of openers) {
+          TerminalView.allowWhileFocused(opener, addToCommand);
+        }
+        TerminalView.reloadFocusedHotkeys(context);
+      },
+    ),
+  );
 
   /*
    * `onLayoutReady` has no unsubscribe and still fires after the plugin

@@ -110,6 +110,7 @@ This behavior can be turned off via the `Intercept keys when terminal is focused
 - Open root directory or current directory in terminal \(default, external, integrated, select\) and open developer console: \(unbound, except open current directory in terminal \(integrated\) above; a hotkey you assign also works here\)
   - A hotkey of one of these commands, the default above or one you assign, works everywhere in Obsidian. In a focused terminal it wins over a default shortcut of this list on the same keys, so do not ignore a conflict that Obsidian reports for it.
   - The commands that open the current directory use the folder of the active file. Without one, for example in a focused terminal, on an empty tab or in the graph view, they use the folder of the file you looked at last, and the vault root when no file is open or recently opened. Their hotkeys do not reach the shell.
+  - With `Add to command` off, these commands do nothing. In a focused terminal their hotkeys, the default above included, then go to the shell.
 
 ### Theming
 
