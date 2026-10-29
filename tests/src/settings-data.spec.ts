@@ -2,6 +2,7 @@
  * Unit tests for `src/settings-data.ts` — validate defaults and normalization helpers.
  */
 import { cloneAsWritable } from "@polyipseity/obsidian-plugin-library";
+import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
 import { LocalSettings, Settings } from "../../src/settings-data.js";
 import { PROFILE_PRESETS } from "../../src/terminal/profile-presets.js";
@@ -278,6 +279,112 @@ describe("src/settings-data.ts", () => {
     expect(debugCall?.[0]).toHaveProperty(
       "message",
       expect.stringContaining("Invalid Version: undefined"),
+    );
+  });
+
+  // xterm throws on a scroll amount that is not a whole number, at each press
+  // of the key. Only a data.json edited by hand holds one.
+  it.each(["scrollLines", "scrollPages"] as const)(
+    "Keymapping.fix keeps only scroll amounts that %s takes",
+    (action) => {
+      const terminal = new Terminal({ allowProposedApi: true });
+      try {
+        for (const [actionArg, kept] of [
+          [1.5, 1],
+          [-0.5, 1],
+          [1e-7, 1],
+          [-3, -3],
+          [0, 0],
+          [2 ** 60, 2 ** 60],
+        ] as const) {
+          const fixed = Settings.Keymapping.fix({
+            ...Settings.Keymapping.DEFAULT,
+            action,
+            actionArg,
+          });
+          expect(fixed, String(actionArg)).toMatchObject({
+            valid: actionArg === kept,
+            value: { action, actionArg: kept },
+          });
+          expect(() => {
+            terminal[action](kept);
+          }).not.toThrow();
+        }
+      } finally {
+        terminal.dispose();
+      }
+    },
+  );
+
+  it.each(["scrollLines", "scrollPages"] as const)(
+    "Keymapping.fix keeps whole scroll amounts at the edges of JSON that %s takes",
+    (action) => {
+      const terminal = new Terminal({ allowProposedApi: true });
+      try {
+        // As data.json holds them; "1e-400" reads as 0, and "1.0" as 1.
+        for (const text of [
+          "-0",
+          "1.0",
+          "1e-400",
+          "1e21",
+          "9007199254740993",
+          "-1e300",
+          "1.7976931348623157e308",
+        ]) {
+          const actionArg = JSON.parse(text) as number,
+            fixed = Settings.Keymapping.fix({
+              ...Settings.Keymapping.DEFAULT,
+              action,
+              actionArg,
+            });
+          expect(fixed.valid, text).toBe(true);
+          expect(Object.is(fixed.value.actionArg, actionArg), text).toBe(true);
+          expect(() => {
+            terminal[action](actionArg);
+          }, text).not.toThrow();
+        }
+      } finally {
+        terminal.dispose();
+      }
+    },
+  );
+
+  it("Settings.fix reports a data.json whose scroll amount is not whole and loads it as 1", () => {
+    const base = Settings.fix(Settings.DEFAULT).value,
+      kept = {
+        ...Settings.Keymapping.DEFAULT,
+        action: "scrollPages",
+        actionArg: -2,
+        key: "PageUp",
+      },
+      data: unknown = JSON.parse(
+        JSON.stringify({
+          ...base,
+          keymappings: [
+            {
+              ...Settings.Keymapping.DEFAULT,
+              action: "scrollLines",
+              actionArg: 2.5,
+              key: "PageDown",
+            },
+            kept,
+          ],
+        }),
+      ),
+      fixed = Settings.fix(data);
+
+    expect(fixed.valid).toBe(false);
+    expect(fixed.value.keymappings).toEqual([
+      expect.objectContaining({
+        action: "scrollLines",
+        actionArg: 1,
+        key: "PageDown",
+      }),
+      kept,
+    ]);
+    // What the repaired data saves loads again as it is.
+    expect(Settings.fix(JSON.parse(JSON.stringify(fixed.value))).valid).toBe(
+      true,
     );
   });
 
