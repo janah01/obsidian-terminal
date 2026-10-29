@@ -506,6 +506,31 @@ describe("src/settings-data.ts", () => {
     });
 
     it.each([
+      [
+        "an enumerable own __proto__ property",
+        Object.defineProperty(
+          { ...released329(), keymappingDefaultsVersion: undefined },
+          "__proto__",
+          { enumerable: true, value: {} },
+        ),
+      ],
+      [
+        "an array carrying settings properties",
+        Object.assign([], released329(), {
+          keymappingDefaultsVersion: undefined,
+        }),
+      ],
+    ])(
+      "reject %s with an own undefined keymappingDefaultsVersion",
+      (_name, stored) => {
+        const fixed = Settings.fix(stored);
+        expect(Object.hasOwn(fixed.value, "__proto__")).toBe(false);
+        expect(fixed.value).toStrictEqual(released329());
+        expect(fixed.valid).toBe(false);
+      },
+    );
+
+    it.each([
       ["a fresh install", null],
       ["no data", undefined],
       ["data without keymappings", {}],
