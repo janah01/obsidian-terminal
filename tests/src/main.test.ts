@@ -793,34 +793,36 @@ describe("a vault shared with a device still on 3.29.0", () => {
 });
 
 describe("a palette key deleted while a device on 3.29.0 shares the vault", () => {
-  it("comes back once after that device saved data.json, as the release accepts, and stays deleted otherwise", async () => {
+  it("comes back at each start of this version after that device saved data.json, and stays deleted otherwise", async () => {
     const vlt = vault(),
       mine = device(local329),
       other = device(local329);
-    {
-      const { plugin } = await start(vlt, mine);
-      // Settings → Keymappings: the user deletes Ctrl+P → Send to Obsidian.
-      await plugin.settings.mutate((settings) => {
-        settings.keymappings = settings.keymappings.filter(
-          ({ action, platform: os }) =>
-            action !== "sendToObsidian" || os !== "win32",
-        );
-      });
-      await plugin.settings.write();
-      await settle(vlt, mine, plugin);
-    }
-    await start(vlt, mine);
-    expect(keymappings(vlt).filter(({ key }) => key === "p")).toStrictEqual([
-      MACOS_PALETTE,
-    ]);
+    for (let round = 0; round < 2; round++) {
+      {
+        const { plugin } = await start(vlt, mine);
+        // Settings → Keymappings: the user deletes Ctrl+P → Send to Obsidian.
+        await plugin.settings.mutate((settings) => {
+          settings.keymappings = settings.keymappings.filter(
+            ({ action, platform: os }) =>
+              action !== "sendToObsidian" || os !== "win32",
+          );
+        });
+        await plugin.settings.write();
+        await settle(vlt, mine, plugin);
+      }
+      await start(vlt, mine);
+      expect(keymappings(vlt).filter(({ key }) => key === "p")).toStrictEqual([
+        MACOS_PALETTE,
+      ]);
 
-    start3290(vlt, other, "2026-10-25T00:00:00.000Z");
-    await start(vlt, mine);
-    // The deleted key is offered again, after the macOS one.
-    expect(keymappings(vlt).filter(({ key }) => key === "p")).toStrictEqual([
-      MACOS_PALETTE,
-      WINDOWS_PALETTE,
-    ]);
+      start3290(vlt, other, `2026-10-2${String(round)}T00:00:00.000Z`);
+      await start(vlt, mine);
+      // The deleted key is offered again, after the macOS one.
+      expect(keymappings(vlt).filter(({ key }) => key === "p")).toStrictEqual([
+        MACOS_PALETTE,
+        WINDOWS_PALETTE,
+      ]);
+    }
   });
 });
 
