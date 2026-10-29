@@ -493,6 +493,18 @@ describe("src/settings-data.ts", () => {
       expect(fixed.value).toStrictEqual(stored);
     });
 
+    it("leave an own undefined keymappingDefaultsVersion valid and omit it from the fixed value", () => {
+      const stored = {
+          ...released329(),
+          keymappingDefaultsVersion: undefined,
+        },
+        fixed = Settings.fix(stored);
+      expect(Object.hasOwn(stored, "keymappingDefaultsVersion")).toBe(true);
+      expect(fixed.valid).toBe(true);
+      expect(fixed.value).not.toHaveProperty("keymappingDefaultsVersion");
+      expect(fixed.value).toStrictEqual(released329());
+    });
+
     it.each([
       ["a fresh install", null],
       ["no data", undefined],

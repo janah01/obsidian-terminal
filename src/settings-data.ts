@@ -1915,6 +1915,14 @@ export namespace Settings {
         unc["terminalOptions"],
       ).value,
     };
+    // Undo leaves the version unset as an own undefined key.
+    if (
+      Object.hasOwn(unc, "keymappingDefaultsVersion") &&
+      unc.keymappingDefaultsVersion === undefined
+    ) {
+      const { keymappingDefaultsVersion: _version, ...rest } = unc;
+      return markFixed(rest, fixed);
+    }
     return markFixed(self0, fixed);
   }
 }

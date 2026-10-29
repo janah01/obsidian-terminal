@@ -1,4 +1,5 @@
 import {
+  EditDataModal,
   Platform,
   UpdatableUI,
   cloneAsWritable,
@@ -1688,6 +1689,108 @@ describe("Undo under All settings after an import of older settings", () => {
       }
     },
   );
+
+  it("does not call onInvalidData or create a recovery entry when the editor resets settings restored by Undo", async () => {
+    class ObservedSettingsManager extends TerminalSettingsManager {
+      public override readonly onInvalidData = vi
+        .fn(super.onInvalidData.bind(this))
+        .mockName("onInvalidData");
+    }
+
+    const i18n = createInstance();
+    await i18n.init({ lng: "en", resources: { en: { translation: en } } });
+    const rows = captureMainWindowRows(),
+      context = await pythonSettingsContext(),
+      settings = new ObservedSettingsManager(context, Settings.fix),
+      localSettings = {
+        value: LocalSettings.fix({ lastReadChangelogVersion: "0.0.0" }).value,
+        mutate: vi.fn(
+          async (
+            mutate: (
+              value: ReturnType<typeof LocalSettings.fix>["value"],
+            ) => unknown,
+          ): Promise<void> => {
+            await mutate(localSettings.value);
+          },
+        ),
+        write: vi.fn().mockResolvedValue(undefined),
+      };
+    Object.assign(context, {
+      loadData: vi.fn().mockResolvedValue(json(Settings.DEFAULT)),
+      localSettings,
+      settings,
+      version: null,
+    });
+    Object.assign(context.language, {
+      onChangeLanguage: { listen: vi.fn().mockReturnValue(vi.fn()) },
+      value: i18n,
+    });
+    vi.spyOn(settings, "write").mockResolvedValue();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    settings.load();
+    await settings.onLoaded;
+    const buttons: MockButton[] = [];
+    vi.spyOn(MainWindowRow.prototype, "addButton").mockImplementation(function (
+      this: MainWindowRow,
+      configure,
+    ) {
+      const button = new ButtonComponent(this.settingEl);
+      configure(button);
+      buttons.push(button as MockButton);
+      return this;
+    });
+    const button = (tooltip: string): MockButton | undefined =>
+        buttons.findLast((drawn) => drawn.getTooltip?.() === tooltip),
+      open = vi.spyOn(EditDataModal.prototype, "open");
+    await settings.read(() => saved329);
+    const before = settings.value,
+      tab = new LoadedSettingTab(context, loadDocumentations(context));
+    expect(before).not.toHaveProperty("keymappingDefaultsVersion");
+    expect(settings.onInvalidData).not.toHaveBeenCalled();
+    expect(Object.keys(localSettings.value.recovery)).toHaveLength(0);
+    document.body.append(tab.containerEl);
+    try {
+      tab.load();
+      tab.display();
+      button(i18n.t("settings.all-settings-actions.reset"))?.click?.();
+      await vi.waitFor(() => {
+        expect(settings.value.keymappingDefaultsVersion).toBe(
+          Settings.KEYMAPPING_DEFAULTS_VERSION,
+        );
+        expect(
+          button(i18n.t("settings.all-settings-actions.undo"))?.getCta?.(),
+        ).toBe(true);
+      });
+      button(i18n.t("settings.all-settings-actions.undo"))?.click?.();
+      await vi.waitFor(() => {
+        expect(settings.value.keymappings).toStrictEqual(before.keymappings);
+      });
+      expect(settings.value.keymappingDefaultsVersion).toBeUndefined();
+      button(i18n.t("settings.all-settings-actions.edit"))?.click?.();
+      expect(open).toHaveBeenCalledOnce();
+      const reset = rows.get(i18n.t("components.edit-data.data"))?.reset;
+      expect(reset).not.toBeNull();
+      expect(reset).toBeDefined();
+      const mutate = vi.spyOn(settings, "mutate");
+      reset?.extraSettingsEl.click();
+      await vi.waitFor(() => {
+        expect(mutate).toHaveBeenCalledOnce();
+      });
+      await mutate.mock.results[0]?.value;
+      // The text-area mock is inert, and the library's Reset only copies data.
+      // Exercise the supplied fixer and the manager's invalid-data path directly,
+      // preserving the own undefined property that a JSON round trip would drop.
+      expect(Settings.fix(settings.value).value).toStrictEqual(before);
+      await settings.read(() => settings.value);
+      expect.soft(settings.onInvalidData).toHaveBeenCalledTimes(0);
+      expect.soft(Object.keys(localSettings.value.recovery)).toHaveLength(0);
+    } finally {
+      const modal = open.mock.contexts[0];
+      if (modal instanceof EditDataModal) modal.close();
+      tab.dispose();
+      settings.unload();
+    }
+  });
 });
 
 describe("settings tab descriptions", () => {
