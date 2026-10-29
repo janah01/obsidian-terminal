@@ -1170,6 +1170,106 @@ def test_window_class_reads_the_desktop_window_s_class() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session end: the tracking jobs let go, through stand-in Win32 libraries
+# ---------------------------------------------------------------------------
+
+
+"""Stand-in handles of the root tracking job and the job below it."""
+_TRACKING_JOB, _BREAKAWAY_JOB = 11, 12
+
+
+def test_sweep_lets_what_the_session_kept_break_away_before_release(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished sweep restores breakaway without waiting for handle release."""
+    module = windows_module.module
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(module, "_sweep_descendants", Mock())
+    monkeypatch.setattr(
+        module, "_permit_breakaway", lambda jobs: events.append(("permit", tuple(jobs)))
+    )
+    monkeypatch.setattr(
+        module, "_close", lambda handle: events.append(("close", handle))
+    )
+    monkeypatch.setattr(module, "diagnose", Mock())
+    host = module._ConPtyHost(module.HostArguments(80, 24, "pipe", ("cmd",)), "token")
+    host._tracking_job, host._breakaway_job = _TRACKING_JOB, _BREAKAWAY_JOB
+    drained = threading.Event()
+    drained.set()
+
+    host._sweep_after_drain(drained, time.monotonic())
+
+    assert events == [("permit", (_TRACKING_JOB, _BREAKAWAY_JOB))]
+
+
+@pytest.mark.parametrize(
+    "end", ("sweep-finished", "start-failed", "sweep-outlived-join")
+)
+def test_every_session_end_lets_what_the_session_kept_break_away(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch, end: str
+) -> None:
+    """The tracking jobs permit a breakaway again before the host lets go of them.
+
+    The root tracking job refuses a breakaway while the session runs, and the
+    jobs outlive their handles for as long as a program in them runs. So the
+    refusal is lifted before the jobs are closed or left to the host's
+    exit, however the session ends: after a sweep that finished, after a
+    start that failed once the shell ran (no sweep runs then), and after a
+    sweep that outlived ``_finish``'s join, which the host's exit abandons.
+    Otherwise what the session kept could never break away again, where
+    3.29.0 put it in no job.
+    """
+    module = windows_module.module
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        module, "_permit_breakaway", lambda jobs: events.append(("permit", tuple(jobs)))
+    )
+    monkeypatch.setattr(
+        module, "_close", lambda handle: events.append(("close", handle))
+    )
+    monkeypatch.setattr(module, "diagnose", lambda _message: None)
+    stuck = threading.Event()
+
+    def sweep_descendants(*_args: object, **_kwargs: object) -> None:
+        """End nothing; hang past the join when the sweep is to outlive it."""
+        if end == "sweep-outlived-join":
+            stuck.wait(5.0)
+
+    monkeypatch.setattr(module, "_sweep_descendants", sweep_descendants)
+    if end == "sweep-outlived-join":
+        monkeypatch.setattr(module, "_SWEEP_DEADLINE", 0.05)
+        monkeypatch.setattr(module, "_SWEEP_JOIN_MARGIN", 0.05)
+    host = module._ConPtyHost(module.HostArguments(80, 24, "pipe", ("cmd",)), "token")
+    host._tracking_job, host._breakaway_job = _TRACKING_JOB, _BREAKAWAY_JOB
+    try:
+        if end == "start-failed":
+
+            def start() -> None:
+                """Fail as the ``ready`` write does once Obsidian's window has gone."""
+                raise OSError("the control channel is unavailable")
+
+            monkeypatch.setattr(host, "_start", start)
+            assert host._run_session() == module._EXIT_HOST_ERROR
+        else:
+            host._finish()
+        sweep = host._sweep_thread
+        abandoned = sweep is not None and sweep.is_alive()
+        assert abandoned == (end == "sweep-outlived-join"), events
+        jobs = (_TRACKING_JOB, _BREAKAWAY_JOB)
+        # An abandoned sweep may still use the jobs: they close with the host.
+        closed = [] if abandoned else [("close", job) for job in jobs]
+        permit = ("permit", jobs)
+        assert permit in events, events
+        assert [event for event in events if event[1] in jobs] == closed, events
+        for event in closed:
+            assert events.index(permit) < events.index(event), events
+    finally:
+        stuck.set()
+        if host._sweep_thread is not None:
+            host._sweep_thread.join(5.0)
+
+
+# ---------------------------------------------------------------------------
 # Command-line quoting
 # ---------------------------------------------------------------------------
 
@@ -6303,6 +6403,69 @@ def test_what_the_session_kept_may_break_away_once_it_has_ended(
         result.stderr,
     )
     assert records[1].get("refused") is None and isinstance(away, int), records
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_ONLY)
+def test_what_a_session_kept_may_break_away_after_its_start_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session that fails once its shell ran lets what it kept break away too.
+
+    When Obsidian's window goes just as the host reports ``ready``, the write
+    fails after the shell has run, and the host releases the session without
+    a sweep. A program the shell had started with
+    ``CREATE_BREAKAWAY_FROM_JOB`` is then in the root tracking job alone,
+    which refuses its breakaway while the session runs and outlives its
+    handles for as long as the program runs. The release must lift that
+    refusal as a finished sweep does, or the program could never break away
+    again, where 3.29.0 put it in no job.
+    """
+    script = tmp_path / "probe.py"
+    script.write_text(_KEPT_PROBE, encoding="utf-8")
+    gate, before, after = (tmp_path / name for name in ("gate", "before", "after"))
+    host = _MODULE._ConPtyHost(_MODULE.HostArguments(80, 24, "pipe", ("cmd",)), "token")
+    with closing(_ProcessWatch()) as watch:
+        probe = subprocess.Popen(
+            [
+                getattr(sys, "_base_executable", sys.executable),
+                *(str(path) for path in (script, gate, before, after)),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        watch.pin(probe.pid)
+
+        def start() -> None:
+            """Hold the probe as the session's jobs do; fail as a lost ``ready`` does."""
+            tracking, breakaway = _MODULE._create_tracking_jobs()
+            host._tracking_job, host._breakaway_job = tracking, breakaway
+            handle = _MODULE._as_handle(
+                _MODULE._OpenProcess(_ASSIGN_ACCESS, False, probe.pid)
+            )
+            assert handle, _MODULE._last_error()
+            try:
+                assigned = _MODULE._AssignProcessToJobObject(tracking, handle)
+                assert assigned, _MODULE._last_error()
+            finally:
+                _MODULE._close(handle)
+            raise OSError("the control channel is unavailable")
+
+        monkeypatch.setattr(host, "_start", start)
+        assert host._run_session() == _MODULE._EXIT_HOST_ERROR
+        gate.touch()
+        answer: object = json.loads(_read_when_published(after, 30.0))
+        assert isinstance(answer, dict), answer
+        away = answer.get("away")
+        if isinstance(away, int):
+            watch.pin(away)
+    # The probe's job, the root, lets it and its children go ...
+    flags = answer.get("jobFlags")
+    assert isinstance(flags, int), answer
+    assert flags & _BREAKAWAY_LIMITS == _BREAKAWAY_LIMITS, answer
+    # ... so its own breakaway is not refused.
+    assert answer.get("refused") is None and isinstance(away, int), answer
 
 
 def _spawn_closing_grandchild(
