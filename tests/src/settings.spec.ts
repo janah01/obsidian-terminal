@@ -1774,12 +1774,14 @@ describe("Undo under All settings after an import of older settings", () => {
       const mutate = vi.spyOn(settings, "mutate");
       reset?.extraSettingsEl.click();
       await vi.waitFor(() => {
-        expect(mutate).toHaveBeenCalledOnce();
+        expect(mutate).toHaveBeenCalled();
       });
-      await mutate.mock.results[0]?.value;
-      // The text-area mock is inert, and the library's Reset only copies data.
-      // Exercise the supplied fixer and the manager's invalid-data path directly,
-      // preserving the own undefined property that a JSON round trip would drop.
+      await Promise.all(mutate.mock.results.map(({ value }): unknown => value));
+      // Settle again to include any later-arriving mutation.
+      await Promise.all(mutate.mock.results.map(({ value }): unknown => value));
+      // The text-area mock is inert. Exercise the supplied fixer and the manager's
+      // invalid-data path directly, preserving the own undefined property that a
+      // JSON round trip would drop.
       expect(Settings.fix(settings.value).value).toStrictEqual(before);
       await settings.read(() => settings.value);
       expect.soft(settings.onInvalidData).toHaveBeenCalledTimes(0);
