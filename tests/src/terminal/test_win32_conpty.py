@@ -1178,6 +1178,30 @@ def test_window_class_reads_the_desktop_window_s_class() -> None:
 _TRACKING_JOB, _BREAKAWAY_JOB = 11, 12
 
 
+def test_sweep_lets_what_the_session_kept_break_away_before_release(
+    windows_module: _WindowsModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished sweep restores breakaway without waiting for handle release."""
+    module = windows_module.module
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(module, "_sweep_descendants", Mock())
+    monkeypatch.setattr(
+        module, "_permit_breakaway", lambda jobs: events.append(("permit", tuple(jobs)))
+    )
+    monkeypatch.setattr(
+        module, "_close", lambda handle: events.append(("close", handle))
+    )
+    monkeypatch.setattr(module, "diagnose", Mock())
+    host = module._ConPtyHost(module.HostArguments(80, 24, "pipe", ("cmd",)), "token")
+    host._tracking_job, host._breakaway_job = _TRACKING_JOB, _BREAKAWAY_JOB
+    drained = threading.Event()
+    drained.set()
+
+    host._sweep_after_drain(drained, time.monotonic())
+
+    assert events == [("permit", (_TRACKING_JOB, _BREAKAWAY_JOB))]
+
+
 @pytest.mark.parametrize(
     "end", ("sweep-finished", "start-failed", "sweep-outlived-join")
 )
@@ -1188,7 +1212,7 @@ def test_every_session_end_lets_what_the_session_kept_break_away(
 
     The root tracking job refuses a breakaway while the session runs, and the
     jobs outlive their handles for as long as a program in them runs. So the
-    refusal is lifted once, before the jobs are closed or left to the host's
+    refusal is lifted before the jobs are closed or left to the host's
     exit, however the session ends: after a sweep that finished, after a
     start that failed once the shell ran (no sweep runs then), and after a
     sweep that outlived ``_finish``'s join, which the host's exit abandons.
@@ -1234,10 +1258,11 @@ def test_every_session_end_lets_what_the_session_kept_break_away(
         jobs = (_TRACKING_JOB, _BREAKAWAY_JOB)
         # An abandoned sweep may still use the jobs: they close with the host.
         closed = [] if abandoned else [("close", job) for job in jobs]
-        assert [event for event in events if event[1] in (jobs, *jobs)] == [
-            ("permit", jobs),
-            *closed,
-        ], events
+        permit = ("permit", jobs)
+        assert permit in events, events
+        assert [event for event in events if event[1] in jobs] == closed, events
+        for event in closed:
+            assert events.index(permit) < events.index(event), events
     finally:
         stuck.set()
         if host._sweep_thread is not None:
