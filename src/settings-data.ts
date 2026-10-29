@@ -2003,6 +2003,20 @@ export namespace Settings {
         unc["terminalOptions"],
       ).value,
     };
+    // Undo leaves the version unset as an own undefined key.
+    if (
+      typeof self0 === "object" &&
+      self0 !== null &&
+      !Array.isArray(self0) &&
+      (Object.getPrototypeOf(self0) === Object.prototype ||
+        Object.getPrototypeOf(self0) === null) &&
+      Object.hasOwn(self0, "keymappingDefaultsVersion") &&
+      "keymappingDefaultsVersion" in self0 &&
+      self0.keymappingDefaultsVersion === undefined
+    ) {
+      const { keymappingDefaultsVersion: _version, ...rest } = self0;
+      return markFixed(rest, fixed);
+    }
     return markFixed(self0, fixed);
   }
 }
