@@ -23,8 +23,11 @@ import * as library from "@polyipseity/obsidian-plugin-library";
 import { readStateCollaboratively } from "@polyipseity/obsidian-plugin-library";
 import {
   App,
+  ButtonComponent,
+  DropdownComponent,
   type Menu,
   type MenuItem,
+  Setting,
   View,
   WorkspaceLeaf,
   setIcon,
@@ -3544,6 +3547,71 @@ describe("TerminalView pane menu", () => {
       leaf,
       view.getViewType(),
     );
+  });
+});
+
+describe("EditTerminalModal profile dropdown", () => {
+  it("lists the profiles in this device's order, ids such as 2 and 10 too", () => {
+    const profile = Settings.Profile.DEFAULTS.integrated;
+    const profiles = {
+      first: profile,
+      second: profile,
+      third: profile,
+      2: profile,
+      10: profile,
+    };
+    const { context } = makeTerminalContext({ profiles });
+    Object.assign(context, {
+      localSettings: { value: { profileOrder: ["third", "10", "first", "2"] } },
+    });
+    // The mock row ignores its dropdown and keeps its buttons in the array
+    // it was made with; this one hands both out.
+    class DropdownRow extends Setting {
+      public override addButton(
+        configure: (button: ButtonComponent) => unknown,
+      ): this {
+        configure(new ButtonComponent(this.settingEl));
+        return this;
+      }
+
+      public override addDropdown(
+        configure: (dropdown: DropdownComponent) => unknown,
+      ): this {
+        configure(new DropdownComponent(this.settingEl));
+        return this;
+      }
+    }
+    vi.spyOn(library.UpdatableUI.prototype, "newSetting").mockImplementation(
+      function (this: library.UpdatableUI, element, configure) {
+        configure(new DropdownRow(element));
+        return this;
+      },
+    );
+    // Obsidian adds the options of an object in its key order.
+    vi.spyOn(DropdownComponent.prototype, "addOptions").mockImplementation(
+      function (this: DropdownComponent, options) {
+        for (const [id, name] of Object.entries(options)) {
+          this.addOption(id, name);
+        }
+        return this;
+      },
+    );
+    const addOption = vi.spyOn(DropdownComponent.prototype, "addOption");
+
+    const modal = new EditTerminalModal(
+      context,
+      TerminalView.State.DEFAULT,
+      vi.fn(),
+    );
+    // The mock modal has no key scope; the dialog registers Enter there.
+    Object.assign(modal, { scope: { register: vi.fn(), unregister: vi.fn() } });
+    modal.open();
+
+    expect(
+      addOption.mock.calls
+        .map(([id]) => id)
+        .filter((id) => Object.hasOwn(profiles, id)),
+    ).toEqual(["third", "10", "first", "2", "second"]);
   });
 });
 

@@ -1347,6 +1347,211 @@ describe("src/settings-data.ts", () => {
     });
   });
 
+  describe("a device's default profile and profile order", () => {
+    const integrated = Settings.Profile.DEFAULTS.integrated,
+      external = Settings.Profile.DEFAULTS.external,
+      profiles: Settings.Profiles = {
+        a: integrated,
+        b: integrated,
+        c: integrated,
+        d: integrated,
+      },
+      ids = (entries: readonly Settings.Profile.Entry[]): string[] =>
+        entries.map(([id]) => id),
+      // Local settings as 3.29.0 writes them.
+      released3290 = {
+        recovery: {},
+        hasUsedIntegratedTerminal: true,
+        lastReadChangelogVersion: "3.29.0",
+      };
+
+    it("lists the profiles in a device's order, then the others in stored order", () => {
+      expect(
+        ids(Settings.Profile.orderedEntries(profiles, ["c", "a"])),
+      ).toEqual(["c", "a", "b", "d"]);
+      expect(ids(Settings.Profile.orderedEntries(profiles, []))).toEqual([
+        "a",
+        "b",
+        "c",
+        "d",
+      ]);
+    });
+
+    it("skips ids of missing profiles and repeated ids", () => {
+      expect(
+        ids(Settings.Profile.orderedEntries(profiles, ["x", "b", "b", "a"])),
+      ).toEqual(["b", "a", "c", "d"]);
+    });
+
+    it("keeps a device's order of ids such as 2 and 10", () => {
+      const numbered = JSON.parse(
+        JSON.stringify({ a: integrated, 10: integrated, 2: integrated }),
+      ) as Settings.Profiles;
+      // An object puts such ids first, in numeric order.
+      expect(Object.keys(numbered)).toEqual(["2", "10", "a"]);
+      expect(
+        ids(Settings.Profile.orderedEntries(numbered, ["a", "10", "2"])),
+      ).toEqual(["a", "10", "2"]);
+    });
+
+    it("never lists a property that every object inherits", () => {
+      expect(
+        ids(
+          Settings.Profile.orderedEntries(profiles, [
+            "constructor",
+            "__proto__",
+            "toString",
+            "d",
+          ]),
+        ),
+      ).toEqual(["d", "a", "b", "c"]);
+      expect(Settings.Profile.byId(profiles, "constructor")).toBeNull();
+      expect(Settings.Profile.byId(profiles, "__proto__")).toBeNull();
+      expect(Settings.Profile.byId(profiles, "b")).toBe(integrated);
+    });
+
+    it("lists a profile stored under the id __proto__ like any other", () => {
+      const stored = JSON.parse(
+        `{"a":${JSON.stringify(integrated)},"__proto__":${JSON.stringify(external)}}`,
+      ) as Settings.Profiles;
+      expect(
+        ids(Settings.Profile.orderedEntries(stored, ["__proto__"])),
+      ).toEqual(["__proto__", "a"]);
+      expect(Settings.Profile.byId(stored, "__proto__")?.type).toBe("external");
+    });
+
+    it("lists every stored profile once, whatever a device's order holds", () => {
+      // Ids such as 2 and 10, and one stored under __proto__, as JSON gives.
+      const stored = JSON.parse(
+          `{"b":${JSON.stringify(integrated)},"10":${JSON.stringify(integrated)},"a":${JSON.stringify(external)},"2":${JSON.stringify(integrated)},"__proto__":${JSON.stringify(external)}}`,
+        ) as Settings.Profiles,
+        storedIds = Object.keys(stored),
+        pool = [...storedIds, "gone", "constructor", "toString", "", "02"];
+      let seed = 233;
+      const next = (bound: number): number => {
+        seed = (seed * 48_271) % 2_147_483_647;
+        return seed % bound;
+      };
+      for (let round = 0; round < 500; round += 1) {
+        const order = Array.from(
+            { length: next(12) },
+            () => pool[next(pool.length)] ?? "",
+          ),
+          entries = Settings.Profile.orderedEntries(stored, order),
+          named = [...new Set(order.filter((id) => Object.hasOwn(stored, id)))];
+        expect([...ids(entries)].sort()).toEqual([...storedIds].sort());
+        // The stored ids the order names, in its order, then the others.
+        expect(ids(entries)).toEqual([
+          ...named,
+          ...storedIds.filter((id) => !named.includes(id)),
+        ]);
+        for (const [id, profile] of entries) {
+          expect(profile).toBe(Settings.Profile.byId(stored, id));
+          expect(profile).not.toBeNull();
+        }
+      }
+    });
+
+    it("takes the first compatible profile of a type in a device's order", () => {
+      const mixed: Settings.Profiles = {
+        outside: external,
+        first: { ...integrated, platforms: { darwin: true } },
+        windows: { ...integrated, platforms: { win32: true } },
+        last: { ...integrated, platforms: { darwin: true } },
+      };
+      expect(
+        Settings.Profile.defaultEntryOfType("integrated", mixed, "darwin", [
+          "windows",
+          "last",
+        ])?.[0],
+      ).toBe("last");
+      expect(
+        Settings.Profile.defaultEntryOfType("integrated", mixed, "darwin")?.[0],
+      ).toBe("first");
+      expect(
+        Settings.Profile.defaultOfType("integrated", mixed, void 0, [
+          "windows",
+        ]),
+      ).toBe(mixed["windows"]);
+    });
+
+    it("keeps local settings that 3.29.0 wrote as they are", () => {
+      const fixed = LocalSettings.fix(released3290);
+      expect(fixed.valid).toBe(true);
+      // Exactly the keys it read: no key added, none set to undefined.
+      expect(Object.keys(fixed.value).sort()).toEqual(
+        Object.keys(released3290).sort(),
+      );
+      expect("defaultProfile" in fixed.value).toBe(false);
+      expect("profileOrder" in fixed.value).toBe(false);
+    });
+
+    it("gives a new store no default profile and no order", () => {
+      vi.spyOn(console, "debug").mockImplementation(() => {});
+      expect(LocalSettings.fix(null).value).toMatchObject({
+        defaultProfile: null,
+        profileOrder: [],
+      });
+      expect(LocalSettings.fix(void 0).value).toMatchObject({
+        defaultProfile: null,
+        profileOrder: [],
+      });
+    });
+
+    it("keeps a valid default profile and order", () => {
+      const stored = {
+          ...released3290,
+          defaultProfile: "b",
+          profileOrder: ["c", "a"],
+        },
+        fixed = LocalSettings.fix(stored);
+      expect(fixed.valid).toBe(true);
+      expect(fixed.value).toEqual(stored);
+      expect(LocalSettings.fix({ ...stored, defaultProfile: null }).valid).toBe(
+        true,
+      );
+    });
+
+    it.each([
+      [{ defaultProfile: 5, profileOrder: "c" }, null, []],
+      [{ defaultProfile: "", profileOrder: null }, null, []],
+      [
+        { defaultProfile: {}, profileOrder: [1, "c", "c", null, "a"] },
+        null,
+        ["c", "a"],
+      ],
+    ])(
+      "fixes a bad default profile or order (%j)",
+      (bad, defaultProfile, profileOrder) => {
+        const fixed = LocalSettings.fix({ ...released3290, ...bad });
+        expect(fixed.valid).toBe(false);
+        expect(fixed.value).toMatchObject({ defaultProfile, profileOrder });
+        const stored: unknown = JSON.parse(JSON.stringify(fixed.value));
+        expect(LocalSettings.fix(stored).valid).toBe(true);
+      },
+    );
+
+    it("keeps a long order", () => {
+      const order = Array.from(
+          { length: 10_000 },
+          (_, index) => `p${String(index)}`,
+        ),
+        fixed = LocalSettings.fix({ ...released3290, profileOrder: order });
+      expect(fixed.valid).toBe(true);
+      expect(fixed.value.profileOrder).toEqual(order);
+    });
+
+    it("converges through JSON from any start", () => {
+      vi.spyOn(console, "debug").mockImplementation(() => {});
+      for (const start of [null, released3290, { profileOrder: [3, "x"] }]) {
+        const first = LocalSettings.fix(start).value,
+          second = LocalSettings.fix(JSON.parse(JSON.stringify(first)));
+        expect(second.valid).toBe(true);
+        expect(second.value).toEqual(first);
+      }
+    });
+  });
+
   describe("Settings.Profile.defaultEntryOfType", () => {
     it("returns [key, profile] tuple for matching profile", () => {
       const profiles: Settings.Profiles = {

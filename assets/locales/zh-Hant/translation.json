@@ -369,7 +369,7 @@
     "create-instance-near-existing-ones": "在$t(generic.exist)$t(generic.instance)附近創建$t(generic.instance)",
     "create-instance-near-existing-ones-description": "如果為$t(generic.true)，則在$t(generic.instance)$t(generic.exist)時覆蓋「$t(settings.new-instance-behavior)」。",
     "default-profile": "預設$t(generic.profile)",
-    "default-profile-description": "點擊側邊欄圖示時要打開的$t(generic.profile)。留空以顯示$t(generic.profile)選擇器。",
+    "default-profile-description": "在此裝置上點擊側邊欄圖示時要打開的$t(generic.profile)。留空以顯示$t(generic.profile)選擇器。其$t(generic.terminal)$t(generic.type)的命令也會打開它。右鍵點擊側邊欄圖示可列出所有$t(generic.profile)。",
     "default-profile-name-": "$t(profile-name-formats.short)",
     "default-profile-name-incompatible": "（$t(generic.incompatible)）$t(settings.default-profile-name-)",
     "documentation": "$t(generic.documentation)",

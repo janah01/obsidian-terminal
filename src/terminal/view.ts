@@ -69,6 +69,7 @@ import {
 } from "../magic.js";
 import type { TerminalPlugin } from "../main.js";
 import { ProfileModal } from "../modals.js";
+import { deviceProfileEntries } from "../profile-choice.js";
 import { Settings } from "../settings-data.js";
 import {
   AltScreenExitAddon,
@@ -339,35 +340,32 @@ export class EditTerminalModal extends DialogModal {
               },
               {
                 pre: (component) => {
-                  component
-                    .addOption(
-                      unselected,
+                  component.addOption(
+                    unselected,
+                    i18n.t(
+                      "components.terminal.edit-modal.profile-placeholder",
+                    ),
+                  );
+                  // One by one: an object would put ids such as "2" first.
+                  for (const entry of deviceProfileEntries(context)) {
+                    component.addOption(
+                      entry[0],
                       i18n.t(
-                        "components.terminal.edit-modal.profile-placeholder",
-                      ),
-                    )
-                    .addOptions(
-                      Object.fromEntries(
-                        Object.entries(profiles).map((entry) => [
-                          entry[0],
-
-                          i18n.t(
-                            `components.terminal.edit-modal.profile-name-${
-                              Settings.Profile.isCompatible(
-                                entry[1],
-                                Platform.CURRENT,
-                              )
-                                ? ""
-                                : "incompatible"
-                            }`,
-                            {
-                              info: Settings.Profile.info(entry),
-                              interpolation: { escapeValue: false },
-                            },
-                          ),
-                        ]),
+                        `components.terminal.edit-modal.profile-name-${
+                          Settings.Profile.isCompatible(
+                            entry[1],
+                            Platform.CURRENT,
+                          )
+                            ? ""
+                            : "incompatible"
+                        }`,
+                        {
+                          info: Settings.Profile.info(entry),
+                          interpolation: { escapeValue: false },
+                        },
                       ),
                     );
+                  }
                 },
               },
             ),
