@@ -444,7 +444,7 @@
     "profile-defaults": "Стандартні налаштування профілю",
     "profile-defaults-description": "Налаштування за замовчуванням для всіх профілів, якщо вони не перевизначені явно.",
     "profile-list": {
-      "description": "Перший сумісний профіль у списку є стандартним для свого типу термінала."
+      "description": "Команда для одного типу термінала відкриває стандартний профіль, якщо він має цей тип, інакше перший сумісний профіль цього типу у списку."
     },
     "profiles": "$t(generic.profile_other, capitalize)",
     "profiles-description": "$t(generic.list-description, capitalize)",

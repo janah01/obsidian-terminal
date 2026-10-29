@@ -93,6 +93,7 @@ The keyboard shortcuts can be customized in hotkeys settings.
 - Toggle focus on last terminal: `Ctrl`+`Shift`+`` ` ``
   - Focus on last terminal: \(unbound; useful if you want separate keys for focus and unfocus\)
 - Open current directory in terminal \(integrated\): `Ctrl`+`Shift`+`H`, `Command`+`Shift`+`H` \(Apple\)
+  - It opens the default profile when that profile is integrated and runs on this platform, and otherwise the first integrated profile in the profile list that does. The other commands and menu items for one profile type work the same way.
   - Another plugin may use the same keys. Obsidian then shows a conflict, which you can resolve under Settings → Hotkeys.
 
 #### Terminal is focused
