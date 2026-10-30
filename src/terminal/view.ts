@@ -274,6 +274,7 @@ export class EditTerminalModal extends DialogModal {
   protected readonly state;
   #profile: string | null = null;
   readonly #confirm;
+  #confirming = false;
 
   public constructor(
     protected override readonly context: TerminalPlugin,
@@ -452,8 +453,18 @@ export class EditTerminalModal extends DialogModal {
   }
 
   protected override async confirm(close: () => void): Promise<void> {
-    await this.#confirm(cloneAsWritable(this.state));
-    await super.confirm(close);
+    // A second click or Enter while the first one is still at work, as while
+    // an external program starts, confirms nothing more.
+    if (this.#confirming) {
+      return;
+    }
+    this.#confirming = true;
+    try {
+      await this.#confirm(cloneAsWritable(this.state));
+      await super.confirm(close);
+    } finally {
+      this.#confirming = false;
+    }
   }
 
   protected postMutate(): void {
@@ -538,26 +549,7 @@ export class TerminalView extends ItemView {
   }
 
   protected get titleGenerated(): string {
-    const { context: plugin, state } = this,
-      { value: i18n } = plugin.language,
-      { profile } = state,
-      { name, type } = profile;
-    if (this.rawTitle) {
-      return this.rawTitle;
-    }
-    if (typeof name === "string" && name) {
-      return name;
-    }
-    if ("executable" in profile) {
-      const { executable } = profile;
-      if (typeof executable === "string") {
-        return basename(executable, extname(executable));
-      }
-    }
-    return i18n.t("components.terminal.name.profile-type", {
-      interpolation: { escapeValue: false },
-      type,
-    });
+    return this.rawTitle || profileTitle(this.context, this.state.profile);
   }
 
   protected get hidesStatusBar(): boolean {
@@ -1065,9 +1057,22 @@ export class TerminalView extends ItemView {
           .setTitle(i18n.t("components.terminal.menus.edit"))
           .setIcon(i18n.t("asset:components.terminal.menus.edit-icon"))
           .onClick(() => {
-            new EditTerminalModal(context, this.state, async (state) =>
-              TerminalView.spawn(context, state, leaf, this.getViewType()),
-            ).open();
+            new EditTerminalModal(context, this.state, async (state) => {
+              // A program that opens in its own window replaces this terminal.
+              // The tab closes with this terminal's state, so Undo close tab
+              // brings the terminal back and does not start the program again.
+              if (opensOutside(state.profile)) {
+                await TerminalView.spawn(context, state);
+                leaf.detach();
+                return;
+              }
+              await TerminalView.spawn(
+                context,
+                state,
+                leaf,
+                this.getViewType(),
+              );
+            }).open();
           }),
       )
       .addItem((item) =>
@@ -1542,16 +1547,7 @@ export class TerminalView extends ItemView {
         );
       };
     if (!PROFILE_PROPERTIES[profile.type].integratable) {
-      (async (): Promise<void> => {
-        noticeSpawn();
-        await openProfile(context, profile, { cwd: cwd ?? void 0 });
-      })().catch((error: unknown) => {
-        printError(
-          anyToError(error),
-          () => i18n.t("errors.error-spawning-terminal"),
-          context,
-        );
-      });
+      void openOutside(context, profile, cwd, this.title);
       leaf.detach();
       return;
     }
@@ -2037,6 +2033,79 @@ export class TerminalView extends ItemView {
     });
   }
 }
+
+/**
+ * What a terminal of the profile is called before the program names it or the
+ * user renames it: the profile's name, else the base name of its program when
+ * it has a program setting, even an empty one, else its type.
+ */
+function profileTitle(
+  context: TerminalPlugin,
+  profile: Settings.Profile,
+): string {
+  const { name, type } = profile;
+  if (typeof name === "string" && name) {
+    return name;
+  }
+  if ("executable" in profile) {
+    const { executable } = profile;
+    if (typeof executable === "string") {
+      return basename(executable, extname(executable));
+    }
+  }
+  return context.language.value.t("components.terminal.name.profile-type", {
+    interpolation: { escapeValue: false },
+    type,
+  });
+}
+
+/**
+ * Whether the profile's program opens in its own window, outside Obsidian. A
+ * type that the plugin does not know does not: it reaches the tab, whose fix
+ * turns it into an invalid profile, as before.
+ */
+function opensOutside(profile: Settings.Profile): boolean {
+  return (
+    Object.hasOwn(PROFILE_PROPERTIES, profile.type) &&
+    !PROFILE_PROPERTIES[profile.type].integratable
+  );
+}
+
+/**
+ * Starts the program of a profile that opens in its own window, after a
+ * notice that names it. A failed start is reported; the promise never
+ * rejects, and it settles once the program has started.
+ */
+async function openOutside(
+  context: TerminalPlugin,
+  profile: Settings.Profile,
+  cwd: string | null,
+  title: string,
+): Promise<void> {
+  const {
+    language: { value: i18n },
+    settings,
+  } = context;
+  notice2(
+    () =>
+      i18n.t("notices.spawning-terminal", {
+        interpolation: { escapeValue: false },
+        title,
+      }),
+    settings.value.noticeTimeout,
+    context,
+  );
+  try {
+    await openProfile(context, profile, { cwd: cwd ?? void 0 });
+  } catch (error) {
+    printError(
+      anyToError(error),
+      () => i18n.t("errors.error-spawning-terminal"),
+      context,
+    );
+  }
+}
+
 export namespace TerminalView {
   export const EMULATOR = XtermTerminalEmulator<Addons>;
   export type EMULATOR = XtermTerminalEmulator<Addons>;
@@ -2166,6 +2235,18 @@ export namespace TerminalView {
     leaf?: WorkspaceLeaf,
     type: string = TerminalView.type.namespaced(context),
   ): Promise<void> {
+    const { profile } = state;
+    if (!leaf && opensOutside(profile)) {
+      // A program that opens in its own window needs no tab. Making one and
+      // closing it again would change the shown tab and the active leaf.
+      await openOutside(
+        context,
+        profile,
+        state.cwd,
+        state.userTitle || profileTitle(context, profile),
+      );
+      return;
+    }
     const { focus } = state,
       {
         app: { workspace },
