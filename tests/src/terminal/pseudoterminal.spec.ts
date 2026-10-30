@@ -622,6 +622,17 @@ describe("ConHost command line", () => {
     },
   );
 
+  it("names the batch file with a space, so conhost quotes its path", async () => {
+    const fixture = conhostLaunchFixture({ executable: "cmd.exe" });
+    try {
+      const { batch } = await onlyConHostLaunch(fixture);
+      expect(basename(batch)).toMatch(/^obsidian-terminal conhost-.+\.bat$/u);
+    } finally {
+      fixture.cleanup();
+      await fixture.pty.onExit;
+    }
+  });
+
   it("reads the exit code the batch file writes", async () => {
     const fixture = conhostLaunchFixture(
       { executable: "cmd.exe" },
