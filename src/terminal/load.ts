@@ -40,8 +40,34 @@ import {
   runPluginPythonCheck,
 } from "./win32-doctor.js";
 
+/**
+ * Adds the built-in keymappings that a list from an earlier version lacks,
+ * once, and saves. It runs outside the fixer, so that loading such a list
+ * does not count as a change.
+ *
+ * @param context the plugin
+ */
+function offerKeymappingDefaults(context: TerminalPlugin): void {
+  const { settings } = context;
+  if (
+    (settings.value.keymappingDefaultsVersion ?? 0) >=
+    Settings.KEYMAPPING_DEFAULTS_VERSION
+  ) {
+    return;
+  }
+  settings
+    .mutate((settingsM) => {
+      Settings.addKeymappingDefaults(settingsM);
+    })
+    .then(async () => settings.write())
+    .catch((error: unknown) => {
+      self.console.error(error);
+    });
+}
+
 export function loadTerminal(context: TerminalPlugin): void {
   TerminalView.load(context);
+  offerKeymappingDefaults(context);
   // Files that were active, newest first; a few spare ones skip deleted files.
   const recentFiles: TFile[] = [];
   const PROFILE_TYPES = deepFreeze(

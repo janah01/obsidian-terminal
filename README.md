@@ -107,6 +107,10 @@ This behavior can be turned off via the `Intercept keys when terminal is focused
 - Find in terminal: `Ctrl`+`Shift`+`F`, `Command`+`Shift`+`F` \(Apple\)
 - Toggle focus on last terminal: `Ctrl`+`Shift`+`` ` `` \(same as above\)
   - Unfocus terminal: \(unbound; useful if you want separate keys for focus and unfocus\)
+- Command palette: `Ctrl`+`P` \(Windows\), `Command`+`P` \(Apple\)
+  - These keys are keymappings with the action `Send to Obsidian` \(Settings → Keymappings\). Obsidian runs its hotkey for a key with that action, and the shell does not get the key. Map more keys to it, or delete an entry to give its key back to the shell. On Windows, the entry keeps `Ctrl`+`P` from all programs in the terminal, such as bash in WSL, Git Bash and SSH sessions, and vim and nano. Linux has no such entry, because bash and zsh use `Ctrl`+`P`.
+  - If another device that syncs this vault still runs 3.29.0 or older, a deleted entry comes back each time this device starts after that one saved its settings, which it does at each start. To keep the key in the shell, set the entry's action to `Passthrough` instead of deleting it.
+  - A keymapping matches the character a key types. With Caps Lock on, or on a layout where the key types another letter, `Ctrl`+`P` goes to the shell.
 - Open root directory or current directory in terminal \(default, external, integrated, select\) and open developer console: \(unbound, except open current directory in terminal \(integrated\) above; a hotkey you assign also works here\)
   - A hotkey of one of these commands, the default above or one you assign, works everywhere in Obsidian. In a focused terminal it wins over a default shortcut of this list on the same keys, so do not ignore a conflict that Obsidian reports for it.
   - The commands that open the current directory use the folder of the active file. Without one, for example in a focused terminal, on an empty tab or in the graph view, they use the folder of the file you looked at last, and the vault root when no file is open or recently opened. Their hotkeys do not reach the shell.
@@ -191,7 +195,7 @@ The full API is available from [`src/@types/obsidian-terminal.ts`](src/%40types/
 - Is the plugin useful on mobile?
   - Compared to on desktop, it is much less useful. The only use for it for now is opening a developer console on mobile.
 - Why do hotkeys not work?
-  - If the terminal is in focus, all Obsidian hotkeys are disabled so that you can type special characters into the terminal. You can unfocus the terminal by pressing `Ctrl`+`Shift`+`` ` ``, then you can use Obsidian hotkeys again. Alternatively, disable the `Intercept keys when terminal is focused` setting to keep Obsidian hotkeys working while the terminal has focus.
+  - If the terminal is in focus, all Obsidian hotkeys are disabled so that you can type special characters into the terminal. You can unfocus the terminal by pressing `Ctrl`+`Shift`+`` ` ``, then you can use Obsidian hotkeys again. Alternatively, disable the `Intercept keys when terminal is focused` setting to keep Obsidian hotkeys working while the terminal has focus. To let one key through, map it to the keymapping action `Send to Obsidian`, as the built-in `Ctrl`+`P` on Windows and `Command`+`P` on macOS are.
 
 ## Contributing
 

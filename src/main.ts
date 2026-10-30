@@ -18,6 +18,7 @@ import { MAX_HISTORY, PLUGIN_UNLOAD_DELAY } from "./magic.js";
 import { EarlyPatchManager, loadPatch } from "./patch.js";
 import { migrateProfileChoice } from "./profile-choice.js";
 import { LocalSettings, Settings } from "./settings-data.js";
+import { TerminalSettingsManager } from "./settings-manager.js";
 import { loadSettings } from "./settings.js";
 import { loadTerminal } from "./terminal/load.js";
 import { DeveloperConsolePseudoterminal } from "./terminal/pseudoterminal.js";
@@ -55,7 +56,7 @@ export class TerminalPlugin
       }),
     );
     this.localSettings = new StorageSettingsManager(this, LocalSettings.fix);
-    this.settings = new SettingsManager(this, Settings.fix);
+    this.settings = new TerminalSettingsManager(this, Settings.fix);
   }
 
   public displayName(unlocalized = false): string {

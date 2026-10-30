@@ -114,7 +114,8 @@
         "scrollToTop": "Scroll to top",
         "sendEscapeSequence": "Send escape sequence",
         "sendHexCode": "Send hex code",
-        "sendText": "Send text"
+        "sendText": "Send text",
+        "sendToObsidian": "Send to Obsidian"
       },
       "action": "Action",
       "edit": "$t(generic.edit, capitalize)",
@@ -127,7 +128,8 @@
         "scrollToTop": "",
         "sendEscapeSequence": "e.g. b",
         "sendHexCode": "e.g. 01 0d",
-        "sendText": "e.g. hello"
+        "sendText": "e.g. hello",
+        "sendToObsidian": ""
       },
       "platform": "$t(generic.platform, capitalize)",
       "platform-options-": "All $t(generic.platform_other)",
@@ -421,11 +423,13 @@
     "instancing": "$t(generic.instance_gerund, capitalize)",
     "intercept-keys-when-focused": "$t(generic.intercept, capitalize) keys when $t(generic.terminal) is $t(generic.focus_past-participle)",
     "intercept-keys-when-focused-description": "When enabled, keyboard shortcuts are routed to $t(generic.terminal)-specific commands while the $t(generic.terminal) is $t(generic.focus_past-participle), and most Obsidian hotkeys are suppressed. Disable to let Obsidian hotkeys continue to work while typing in the $t(generic.terminal).",
+    "intercept-keys-when-focused-description-send-to-obsidian": "Keys whose $t(generic.keymapping) is '$t(components.keymappings.actions.sendToObsidian)' are the exception: Obsidian runs their hotkeys.",
     "intercept-logging": "Intercept logging",
     "inputs": "Inputs",
     "interface": "Interface",
     "keymappings": "$t(generic.keymapping_other, capitalize)",
     "keymappings-description": "Custom key bindings intercepted before the $t(generic.terminal). Each entry maps a key combo (with optional platform filter) to an action: escape sequence, raw text, or hex code. First matching entry wins. Example: the built-in Shift+Enter → ESC+CR lets TUI programs distinguish Enter (submit) from Shift+Enter (newline).",
+    "keymappings-description-send-to-obsidian": "The action '$t(components.keymappings.actions.sendToObsidian)' leaves the key to Obsidian, which runs its hotkey for it. The built-in Ctrl+P on Windows and Command+P on macOS use it to open the command palette.",
     "keymappings-edit": "$t(generic.edit, capitalize)",
     "macOS-option-key-passthrough": "macOS: Option key passthrough",
     "macOS-option-key-passthrough-description": "Sends Option+key as the composed character (e.g., Option+2 → @ on Scandinavian/German keyboards) instead of an ESC sequence, working around xterm.js bug #2831. Only active on macOS; visible on all platforms for pre-configuration.",

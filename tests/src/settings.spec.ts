@@ -1,4 +1,5 @@
 import {
+  EditDataModal,
   Platform,
   UpdatableUI,
   cloneAsWritable,
@@ -15,6 +16,7 @@ import {
 } from "obsidian";
 import * as doctor from "../../src/terminal/win32-doctor.js";
 import { SettingTab } from "../../src/settings.js";
+import { TerminalSettingsManager } from "../../src/settings-manager.js";
 import { loadDocumentations } from "../../src/documentations.js";
 import {
   EXPERIMENTS,
@@ -1612,10 +1614,248 @@ class LoadedSettingTab extends SettingTab {
   }
 }
 
+describe("Undo under All settings after an import of older settings", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  // The mock's button, which Obsidian's typings do not describe.
+  interface MockButton {
+    readonly click?: () => void;
+    readonly getCta?: () => boolean;
+    readonly getTooltip?: () => string;
+  }
+
+  const { keymappingDefaultsVersion: _version, ...unversioned } =
+      Settings.DEFAULT,
+    // Settings as a device on 3.29.0 saves them: no version of the built-in
+    // keymappings, and Send to Obsidian turned to Ignore.
+    saved329: unknown = JSON.parse(
+      JSON.stringify({
+        ...unversioned,
+        keymappings: unversioned.keymappings.map((mapping) =>
+          mapping.action === "sendToObsidian"
+            ? { ...mapping, action: "ignore" }
+            : mapping,
+        ),
+      }),
+    ),
+    json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+  it.each(["Reset", "an import of settings with a version"] as const)(
+    "gives back settings without a version after %s, so the next start offers the built-in keymappings",
+    async (change) => {
+      const i18n = createInstance();
+      await i18n.init({ lng: "en", resources: { en: { translation: en } } });
+      captureMainWindowRows();
+      const context = await pythonSettingsContext(),
+        // The plugin's own manager, over data.json as this version saves it.
+        settings = new TerminalSettingsManager(context, Settings.fix);
+      Object.assign(context, {
+        loadData: vi.fn().mockResolvedValue(json(Settings.DEFAULT)),
+        localSettings: {
+          value: LocalSettings.fix({ lastReadChangelogVersion: "0.0.0" }).value,
+        },
+        settings,
+        version: null,
+      });
+      Object.assign(context.language, {
+        onChangeLanguage: { listen: vi.fn().mockReturnValue(vi.fn()) },
+        value: i18n,
+      });
+      vi.spyOn(settings, "write").mockResolvedValue();
+      settings.load();
+      await vi.waitFor(() => settings.value);
+      // The buttons the tab draws, newest last; each redraw draws new ones.
+      const buttons: MockButton[] = [];
+      vi.spyOn(MainWindowRow.prototype, "addButton").mockImplementation(
+        function (this: MainWindowRow, configure) {
+          const button = new ButtonComponent(this.settingEl);
+          configure(button);
+          buttons.push(button as MockButton);
+          return this;
+        },
+      );
+      const button = (tooltip: string): MockButton | undefined =>
+        buttons.findLast((drawn) => drawn.getTooltip?.() === tooltip);
+      // Import settings from clipboard, as the command reads them.
+      await settings.read(() => saved329);
+      const before = settings.value;
+      expect(before.keymappingDefaultsVersion).toBeUndefined();
+      const tab = new LoadedSettingTab(context, loadDocumentations(context));
+      document.body.append(tab.containerEl);
+      try {
+        tab.load();
+        tab.display();
+        if (change === "Reset") {
+          button(i18n.t("settings.all-settings-actions.reset"))?.click?.();
+        } else {
+          // Settings that this version exported.
+          await settings.read(() => json(Settings.DEFAULT));
+        }
+        await vi.waitFor(() => {
+          expect(settings.value.keymappingDefaultsVersion).toBe(
+            Settings.KEYMAPPING_DEFAULTS_VERSION,
+          );
+          expect(
+            button(i18n.t("settings.all-settings-actions.undo"))?.getCta?.(),
+          ).toBe(true);
+        });
+        button(i18n.t("settings.all-settings-actions.undo"))?.click?.();
+        await vi.waitFor(() => {
+          expect(settings.value.keymappings).toStrictEqual(before.keymappings);
+        });
+        // data.json as Undo leaves it. Without a version, the next start
+        // offers the built-in keymappings again.
+        expect(json(settings.value)).toStrictEqual(json(before));
+      } finally {
+        tab.dispose();
+      }
+    },
+  );
+
+  it("does not call onInvalidData or create a recovery entry when the editor resets settings restored by Undo", async () => {
+    class ObservedSettingsManager extends TerminalSettingsManager {
+      public override readonly onInvalidData = vi
+        .fn(super.onInvalidData.bind(this))
+        .mockName("onInvalidData");
+    }
+
+    const i18n = createInstance();
+    await i18n.init({ lng: "en", resources: { en: { translation: en } } });
+    const rows = captureMainWindowRows(),
+      context = await pythonSettingsContext(),
+      settings = new ObservedSettingsManager(context, Settings.fix),
+      localSettings = {
+        value: LocalSettings.fix({ lastReadChangelogVersion: "0.0.0" }).value,
+        mutate: vi.fn(
+          async (
+            mutate: (
+              value: ReturnType<typeof LocalSettings.fix>["value"],
+            ) => unknown,
+          ): Promise<void> => {
+            await mutate(localSettings.value);
+          },
+        ),
+        write: vi.fn().mockResolvedValue(undefined),
+      };
+    Object.assign(context, {
+      loadData: vi.fn().mockResolvedValue(json(Settings.DEFAULT)),
+      localSettings,
+      settings,
+      version: null,
+    });
+    Object.assign(context.language, {
+      onChangeLanguage: { listen: vi.fn().mockReturnValue(vi.fn()) },
+      value: i18n,
+    });
+    vi.spyOn(settings, "write").mockResolvedValue();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    settings.load();
+    await settings.onLoaded;
+    const buttons: MockButton[] = [];
+    vi.spyOn(MainWindowRow.prototype, "addButton").mockImplementation(function (
+      this: MainWindowRow,
+      configure,
+    ) {
+      const button = new ButtonComponent(this.settingEl);
+      configure(button);
+      buttons.push(button as MockButton);
+      return this;
+    });
+    const button = (tooltip: string): MockButton | undefined =>
+        buttons.findLast((drawn) => drawn.getTooltip?.() === tooltip),
+      open = vi.spyOn(EditDataModal.prototype, "open");
+    await settings.read(() => saved329);
+    const before = settings.value,
+      tab = new LoadedSettingTab(context, loadDocumentations(context));
+    expect(before).not.toHaveProperty("keymappingDefaultsVersion");
+    expect(settings.onInvalidData).not.toHaveBeenCalled();
+    expect(Object.keys(localSettings.value.recovery)).toHaveLength(0);
+    document.body.append(tab.containerEl);
+    try {
+      tab.load();
+      tab.display();
+      button(i18n.t("settings.all-settings-actions.reset"))?.click?.();
+      await vi.waitFor(() => {
+        expect(settings.value.keymappingDefaultsVersion).toBe(
+          Settings.KEYMAPPING_DEFAULTS_VERSION,
+        );
+        expect(
+          button(i18n.t("settings.all-settings-actions.undo"))?.getCta?.(),
+        ).toBe(true);
+      });
+      button(i18n.t("settings.all-settings-actions.undo"))?.click?.();
+      await vi.waitFor(() => {
+        expect(settings.value.keymappings).toStrictEqual(before.keymappings);
+      });
+      expect(settings.value.keymappingDefaultsVersion).toBeUndefined();
+      button(i18n.t("settings.all-settings-actions.edit"))?.click?.();
+      expect(open).toHaveBeenCalledOnce();
+      const reset = rows.get(i18n.t("components.edit-data.data"))?.reset;
+      expect(reset).not.toBeNull();
+      expect(reset).toBeDefined();
+      const mutate = vi.spyOn(settings, "mutate");
+      reset?.extraSettingsEl.click();
+      await vi.waitFor(() => {
+        expect(mutate).toHaveBeenCalled();
+      });
+      await Promise.all(mutate.mock.results.map(({ value }): unknown => value));
+      // Settle again to include any later-arriving mutation.
+      await Promise.all(mutate.mock.results.map(({ value }): unknown => value));
+      // The text-area mock is inert. Exercise the supplied fixer and the manager's
+      // invalid-data path directly, preserving the own undefined property that a
+      // JSON round trip would drop.
+      expect(Settings.fix(settings.value).value).toStrictEqual(before);
+      await settings.read(() => settings.value);
+      expect.soft(settings.onInvalidData).toHaveBeenCalledTimes(0);
+      expect.soft(Object.keys(localSettings.value.recovery)).toHaveLength(0);
+    } finally {
+      const modal = open.mock.contexts[0];
+      if (modal instanceof EditDataModal) modal.close();
+      tab.dispose();
+      settings.unload();
+    }
+  });
+});
+
 describe("settings tab descriptions", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     document.body.replaceChildren();
+  });
+
+  it("says which keys reach Obsidian while a terminal is focused", async () => {
+    const i18n = createInstance();
+    await i18n.init({ lng: "en", resources: { en: { translation: en } } });
+    const rows = captureMainWindowRows(),
+      context = await pythonSettingsContext();
+    Object.assign(context, {
+      localSettings: {
+        value: LocalSettings.fix({ lastReadChangelogVersion: "0.0.0" }).value,
+      },
+      version: null,
+    });
+    Object.assign(context.language, {
+      onChangeLanguage: { listen: vi.fn().mockReturnValue(vi.fn()) },
+      value: i18n,
+    });
+    const tab = new LoadedSettingTab(context, loadDocumentations(context)),
+      description = (name: string): string | undefined =>
+        rows.get(name)?.descEl.textContent;
+    document.body.append(tab.containerEl);
+    try {
+      tab.load();
+      expect(description(i18n.t("settings.intercept-keys-when-focused"))).toBe(
+        `${i18n.t("settings.intercept-keys-when-focused-description")} Keys whose keymapping is 'Send to Obsidian' are the exception: Obsidian runs their hotkeys.`,
+      );
+      expect(description(i18n.t("settings.keymappings"))).toMatch(
+        / The action 'Send to Obsidian' leaves the key to Obsidian, which runs its hotkey for it\. The built-in Ctrl\+P on Windows and Command\+P on macOS use it to open the command palette\.$/u,
+      );
+    } finally {
+      tab.dispose();
+    }
   });
 
   it.each(["main", "Settings"])(
