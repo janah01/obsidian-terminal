@@ -4,8 +4,16 @@ import childProcess, {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import {
+  access,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify, stripVTControlCharacters } from "node:util";
@@ -14,6 +22,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { TerminalPlugin } from "../../../src/main.js";
 import { Settings } from "../../../src/settings-data.js";
 import {
+  CONHOST_LINE_LIMIT,
   CONPTY_CONSOLE_HOST_FALLBACKS,
   CONPTY_DEPENDENCIES,
   ConPtyHostPool,
@@ -22,6 +31,7 @@ import {
   type ConPtyResizedEvent,
   type ConPtySpareHost,
   WindowsNamedPipeControlChannel,
+  WindowsPseudoterminal,
   conPtyConsoleHostSpec,
 } from "../../../src/terminal/pseudoterminal.js";
 import { writePromise } from "../../../src/utils.js";
@@ -461,6 +471,791 @@ it("runs the contract on the shipped default and with the console host off", () 
   expect(conPtyConsoleHostSpec(contractSettings("default"))).toBe("auto");
   expect(conPtyConsoleHostSpec(contractSettings("off"))).toBeNull();
 });
+
+const CONHOST_TIMEOUT_MS = 20_000,
+  CONHOST_CMD = "C:\\Windows\\System32\\cmd.exe",
+  CONHOST_HOSTNAME = "C:\\Windows\\System32\\HOSTNAME.EXE",
+  CONHOST_POWERSHELL =
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  CONHOST_PWSH = "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  CONHOST_HOST_SOURCE = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../src/terminal/win32_conpty.py",
+  ),
+  /*
+   * Records what the program received, the command line Windows gave it and
+   * the command line the ConPTY host builds for the same arguments. The last
+   * comes from `build_command_line` in the shipped `win32_conpty.py`, so the
+   * expected text never comes from the TypeScript under test.
+   */
+  CONHOST_PROBE_PY = [
+    "import ctypes, json, os, sys",
+    "from importlib.util import module_from_spec, spec_from_file_location",
+    "kernel32 = ctypes.windll.kernel32",
+    "kernel32.GetCommandLineW.restype = ctypes.c_wchar_p",
+    "spec = spec_from_file_location('conpty_host', os.environ['PROBE_HOST'])",
+    "host = module_from_spec(spec)",
+    "spec.loader.exec_module(host)",
+    "with open(os.environ['PROBE_EXPECT'], encoding='utf-8') as source:",
+    "    expected = host.build_command_line(json.load(source))",
+    "with open(os.environ['PROBE_OUT'], 'w', encoding='utf-8') as out:",
+    "    json.dump({",
+    "        'argv': sys.argv[1:],",
+    "        'expected': expected,",
+    "        'leaked': sorted(",
+    "            name for name in os.environ",
+    "            if name.upper() == 'Q'",
+    "            or name.upper().startswith('OBSIDIAN_TERMINAL_CONHOST')",
+    "        ),",
+    "        'line': kernel32.GetCommandLineW(),",
+    "    }, out)",
+    "sys.exit(int(os.environ.get('PROBE_CODE', '0')))",
+    "",
+  ].join("\r\n"),
+  // Raises Ctrl+C inside conhost's own console, survives it and exits 7.
+  CONHOST_CTRL_C_PY = [
+    "import ctypes, signal, sys, time",
+    "signal.signal(signal.SIGINT, lambda *_: None)",
+    "for _ in range(int(sys.argv[1])):",
+    "    ctypes.windll.kernel32.GenerateConsoleCtrlEvent(0, 0)",
+    "    time.sleep(1)",
+    "sys.exit(7)",
+    "",
+  ].join("\r\n"),
+  CONHOST_PYTHON_CASES: readonly (readonly [string, readonly string[]])[] = [
+    ["plain", ["plain"]],
+    ["space", ["two words"]],
+    ["switches", ["/d", "/k", "-c"]],
+    ["caret", ["a^b"]],
+    ["caret and bang", ["a^b!"]],
+    ["percent", ["100%", "%PATH%", "%%", "%~dp0"]],
+    ["cmd specials", ["a&b|c<d>e(f)g"]],
+    ["specials with spaces", ["a & b | c > d"]],
+    ["quotes", ['say "hi"']],
+    ["trailing backslash", ["C:\\dir\\", "next"]],
+    ["trailing backslash with space", ["C:\\Program Files\\", "next"]],
+    ["backslash before quote", ['a\\"b', 'c\\\\"d']],
+    ["empty", ["", "x"]],
+    ["bang", ["wow!", "!PATH!"]],
+    ["expansion lookalikes", ["!q!", "!ERRORLEVEL!", "%q%"]],
+    [
+      "the launch variable names",
+      [
+        "%OBSIDIAN_TERMINAL_CONHOST_ARGUMENTS%",
+        "!OBSIDIAN_TERMINAL_CONHOST_PROGRAM!",
+      ],
+    ],
+    ["unbalanced quote", ['"', "x"]],
+    ["quotes around specials", ['a"&"b', "c^d"]],
+    ["caret at end", ["end^"]],
+    ["double space", ["a  b"]],
+    ["tab", ["a\tb"]],
+    ["delimiters", ["a=b,c;d"]],
+    ["apostrophe and backquote", ["it's `x`"]],
+    ["non-ASCII", ["J\u00fcrgen", "\u65e5\u672c\u8a9e", "\u{1f600}"]],
+    ["Ctrl+Z", ["a\u001ab"]],
+    ["mixed", ["C:\\Program Files\\x y\\", "-c", 'print("a & b")', "100% ^!"]],
+  ];
+
+interface ConHostRun {
+  readonly code: Awaited<WindowsPseudoterminal["onExit"]> | "timeout";
+  readonly output: string;
+}
+
+interface ConHostProbe {
+  readonly argv: readonly string[];
+  readonly expected: string;
+  readonly leaked: readonly string[];
+  readonly line: string;
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item: unknown) => typeof item === "string")
+  );
+}
+
+/** What the probe program wrote, or `false` for any other JSON. */
+function isConHostProbe(value: unknown): value is ConHostProbe {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "argv" in value &&
+    isStringArray(value.argv) &&
+    "expected" in value &&
+    typeof value.expected === "string" &&
+    "leaked" in value &&
+    isStringArray(value.leaked) &&
+    "line" in value &&
+    typeof value.line === "string"
+  );
+}
+
+/** Sets `TEMP` and `TMP` for `body`, then puts them back as they were. */
+async function withTemporaryFolder<T>(
+  folder: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  const { TEMP, TMP } = process.env;
+  process.env.TEMP = folder;
+  process.env.TMP = folder;
+  try {
+    return await body();
+  } finally {
+    if (TEMP === undefined) delete process.env.TEMP;
+    else process.env.TEMP = TEMP;
+    if (TMP === undefined) delete process.env.TMP;
+    else process.env.TMP = TMP;
+  }
+}
+
+function conhostContext(): TerminalPlugin {
+  return new TerminalPlugin(new App(), {
+    id: "conhost-command-line",
+    name: "ConHost command line",
+    author: "test",
+    description: "Native ConHost test",
+    version: "0.0.0",
+    minAppVersion: "1.4.11",
+  });
+}
+
+/**
+ * Opens a resizer-less ConHost terminal through the shipped
+ * `WindowsPseudoterminal` and real `conhost.exe`. `input` is written to the
+ * console once the shell shows a prompt, as typed keys are.
+ */
+async function runConHost(
+  executable: string,
+  args: readonly string[],
+  {
+    cwd,
+    environment = [],
+    input,
+  }: {
+    readonly cwd?: string;
+    readonly environment?: readonly (readonly [string, string])[];
+    readonly input?: string;
+  } = {},
+): Promise<ConHostRun> {
+  const pty = new WindowsPseudoterminal(conhostContext(), {
+      args,
+      cwd,
+      environment,
+      executable,
+    }),
+    shell = await bounded(pty.shell, "ConHost spawn"),
+    chunks: Buffer[] = [],
+    output = (): string =>
+      stripVTControlCharacters(Buffer.concat(chunks).toString("utf8"));
+  shell.stdout.on("data", (chunk: Buffer) => {
+    chunks.push(chunk);
+  });
+  shell.stderr.resume();
+  if (input !== undefined) {
+    await vi
+      .waitFor(
+        () => {
+          expect(output()).toContain(">");
+        },
+        { timeout: CONHOST_TIMEOUT_MS / 2 },
+      )
+      .catch(() => {
+        // Type anyway: the exit code then shows what the shell did.
+      });
+    await writePromise(shell.stdin, input);
+  }
+  let timer: number | undefined;
+  try {
+    const code = await Promise.race([
+      pty.onExit,
+      new Promise<"timeout">((resolve) => {
+        timer = window.setTimeout(() => {
+          shell.kill();
+          resolve("timeout");
+        }, CONHOST_TIMEOUT_MS);
+      }),
+    ]);
+    return { code, output: output() };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/** The error a ConHost open fails with, or `"spawned"` after killing it. */
+async function conhostRefusal(
+  executable: string,
+  args: readonly string[],
+): Promise<string> {
+  const pty = new WindowsPseudoterminal(conhostContext(), {
+    args,
+    executable,
+  });
+  pty.onExit.catch(() => {
+    // Asserted through `shell`.
+  });
+  return pty.shell.then(
+    (shell) => {
+      shell.kill();
+      return "spawned";
+    },
+    (error: unknown) => String(error),
+  );
+}
+
+// Explicit off-Windows skips are intentional: only real cmd.exe and
+// conhost.exe show how the batch line is parsed.
+describe.skipIf(process.platform !== "win32")(
+  "real ConHost command line",
+  () => {
+    let python = "",
+      probePy = "",
+      work = "";
+
+    beforeAll(async () => {
+      const result = await promisify(execFile)(
+        "python",
+        [
+          "-I",
+          "-c",
+          "import sys; print(getattr(sys, '_base_executable', sys.executable))",
+        ],
+        { timeout: TIMEOUT_MS },
+      );
+      python = result.stdout.trim();
+      expect(win32.isAbsolute(python)).toBe(true);
+      work = await mkdtemp(win32.join(tmpdir(), "conhost-command-line-"));
+      probePy = win32.join(work, "probe.py");
+      await writeFile(probePy, CONHOST_PROBE_PY, "utf8");
+      await writeFile(win32.join(work, "ctrl_c.py"), CONHOST_CTRL_C_PY, "utf8");
+      await writeFile(win32.join(work, "nine.cmd"), "@exit /b 9\r\n", "utf8");
+    }, TIMEOUT_MS + 1000);
+
+    /** Runs the probe with `args` and reads what it recorded. */
+    async function probe(
+      args: readonly string[],
+      {
+        code = 0,
+        cwd,
+        environment = [],
+      }: {
+        readonly code?: number;
+        readonly cwd?: string;
+        readonly environment?: readonly (readonly [string, string])[];
+      } = {},
+    ): Promise<ConHostRun & { readonly probe: ConHostProbe | null }> {
+      const dir = await mkdtemp(win32.join(work, "p-")),
+        out = win32.join(dir, "probe.json"),
+        expected = win32.join(dir, "expected.json");
+      await writeFile(expected, JSON.stringify([probePy, ...args]), "utf8");
+      const run = await runConHost(python, [probePy, ...args], {
+        cwd,
+        environment: [
+          ["PROBE_CODE", String(code)],
+          ["PROBE_EXPECT", expected],
+          ["PROBE_HOST", CONHOST_HOST_SOURCE],
+          ["PROBE_OUT", out],
+          ...environment,
+        ],
+      });
+      let recorded: unknown = null;
+      try {
+        recorded = JSON.parse(await readFile(out, "utf8"));
+      } catch {
+        // The program did not start or did not finish.
+      }
+      return { ...run, probe: isConHostProbe(recorded) ? recorded : null };
+    }
+
+    it.each<readonly [string, readonly string[], number]>([
+      ["a quoted command", ["/d", "/c", "prompt CMD$G$S"], 0],
+      ["exit in quotes", ["/d", "/c", "exit 3"], 3],
+      ["a chained command", ["/d", "/c", "echo a & exit 4"], 4],
+      ["split arguments", ["/d", "/c", "exit", "5"], 5],
+      ["a percent variable", ["/d", "/c", "if %OS%==Windows_NT exit 6"], 6],
+    ])(
+      "lets cmd run %s after /c",
+      async (_label, args, expected) => {
+        await expect(runConHost(CONHOST_CMD, args)).resolves.toMatchObject({
+          code: expected,
+        });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts cmd with the quoted /k prompt of the profile",
+      async () => {
+        const run = await runConHost(
+          CONHOST_CMD,
+          ["/d", "/k", "prompt CMD$G$S"],
+          { input: 'if "%PROMPT%"=="CMD$G$S" (exit 11) else exit 12\r' },
+        );
+        expect(run.output).not.toContain("is not recognized");
+        expect(run.code).toBe(11);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts cmd without arguments",
+      async () => {
+        await expect(
+          runConHost(CONHOST_CMD, [], { input: "exit 13\r" }),
+        ).resolves.toMatchObject({ code: 13 });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each(CONHOST_PYTHON_CASES)(
+      "passes %s to a program as ConPTY does",
+      async (_label, args) => {
+        const run = await probe(args),
+          program = `"${python}"`;
+        expect(run.code).toBe(0);
+        expect(run.probe?.argv).toEqual(args);
+        expect(run.probe?.line.startsWith(program)).toBe(true);
+        // cmd puts its own spaces after the quoted program name.
+        expect(run.probe?.line.slice(program.length).trimStart()).toBe(
+          run.probe?.expected,
+        );
+        expect(run.probe?.leaked).toEqual([]);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "keeps its own launch variables when the profile sets them in lower case",
+      async () => {
+        const args = ["a b", "c^d"],
+          run = await probe(args, {
+            environment: [
+              ["obsidian_terminal_conhost_arguments", "--version"],
+              ["obsidian_terminal_conhost_program", CONHOST_HOSTNAME],
+            ],
+          });
+        expect(run.code).toBe(0);
+        expect(run.probe?.argv).toEqual(args);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "refuses a line break before conhost starts",
+      async () => {
+        await expect(
+          conhostRefusal(CONHOST_CMD, ["/d", "/c", "echo line1\nexit 9"]),
+        ).resolves.toContain("errors.conhost-cannot-pass");
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each<readonly [string, string, readonly string[], number]>([
+      ["a caret", CONHOST_POWERSHELL, ["-Command", "exit ('a^b'.Length)"], 3],
+      [
+        "an ampersand",
+        CONHOST_POWERSHELL,
+        ["-Command", "exit ('a & b'.Length)"],
+        5,
+      ],
+      [
+        "double quotes",
+        CONHOST_POWERSHELL,
+        ["-Command", 'exit ("abc".Length + 6)'],
+        9,
+      ],
+      ["a Program Files path", CONHOST_PWSH, ["-Command", "exit 10"], 10],
+    ])(
+      "lets PowerShell run %s",
+      async (_label, executable, args, expected) => {
+        try {
+          await access(executable);
+        } catch {
+          // pwsh is optional on the runner image.
+          return;
+        }
+        await expect(
+          runConHost(executable, [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            ...args,
+          ]),
+        ).resolves.toMatchObject({ code: expected });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each(["a^b", "a b & c", "100% x", "wow!", "J\u00fcrgen", "(x) y"])(
+      "starts a program in folder %s",
+      async (folder) => {
+        const dir = win32.join(work, "exe", folder),
+          executable = win32.join(dir, "HOSTNAME.EXE");
+        await mkdir(dir, { recursive: true });
+        await copyFile(CONHOST_HOSTNAME, executable);
+        await expect(runConHost(executable, [])).resolves.toMatchObject({
+          code: 0,
+        });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each(["e^x y", "e!x", "e&x y", "e%x", "J\u00fcrgen"])(
+      "reports the exit code from a temporary folder %s",
+      async (folder) => {
+        const temp = win32.join(work, "temp", folder);
+        await mkdir(temp, { recursive: true });
+        // The batch file, which also holds the exit code, goes to TEMP.
+        const run = await withTemporaryFolder(temp, async () =>
+          probe([], { code: 12 }),
+        );
+        expect(run.probe?.argv).toEqual([]);
+        expect(run.code).toBe(12);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    // conhost quotes the batch file's path only when it holds a space, and
+    // cmd then takes a caret in the unquoted path as an escape: the program
+    // never starts and the terminal reports exit code 0. That start step is
+    // older than the argument passing and outside it; this case shows the
+    // defect until the start step is fixed.
+    it.fails(
+      "starts the program from a temporary folder e^x",
+      async () => {
+        const temp = win32.join(work, "temp", "e^x");
+        await mkdir(temp, { recursive: true });
+        const run = await withTemporaryFolder(temp, async () => probe(["x"]));
+        expect({ argv: run.probe?.argv, code: run.code }).toEqual({
+          argv: ["x"],
+          code: 0,
+        });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each([1, 2])(
+      "reports the exit code without a batch prompt after %i Ctrl+C",
+      async (events) => {
+        const run = await runConHost(python, [
+          win32.join(work, "ctrl_c.py"),
+          String(events),
+        ]);
+        expect(run.output).not.toMatch(/Terminate batch job/iu);
+        expect(run.code).toBe(7);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "reports the exit code of a .cmd program",
+      async () => {
+        await expect(
+          runConHost(win32.join(work, "nine.cmd"), []),
+        ).resolves.toMatchObject({ code: 9 });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "records the exit code without running an echo.cmd",
+      async () => {
+        const trap = await mkdtemp(win32.join(work, "echo-")),
+          marker = win32.join(trap, "marker.txt");
+        await writeFile(
+          win32.join(trap, "echo.cmd"),
+          `@type nul > "${marker}"\r\n@exit /b 0\r\n`,
+          "utf8",
+        );
+        const run = await probe([], {
+          code: 12,
+          cwd: trap,
+          environment: [["PATH", `${trap};${process.env.PATH ?? ""}`]],
+        });
+        expect(run.code).toBe(12);
+        await expect(access(marker)).rejects.toThrow();
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts the longest command it accepts intact and refuses one more character",
+      async () => {
+        // A refusal depends only on lengths, and every temporary file of
+        // this process has a path of the same length, so the largest
+        // accepted length is found by search. The surrogate pair counts two.
+        const argument = (length: number): string =>
+            `\u{1f600}${"x".repeat(length)}`,
+          accepted = async (length: number): Promise<boolean> => {
+            const outcome = await conhostRefusal(python, [
+              probePy,
+              argument(length),
+            ]);
+            if (outcome === "spawned") return true;
+            expect(outcome).toContain("errors.conhost-cannot-pass");
+            return false;
+          };
+        let low = 0,
+          high = CONHOST_LINE_LIMIT;
+        expect(await accepted(low)).toBe(true);
+        expect(await accepted(high)).toBe(false);
+        while (high - low > 1) {
+          const middle = Math.floor((low + high) / 2);
+          if (await accepted(middle)) low = middle;
+          else high = middle;
+        }
+        const args = [argument(low)],
+          run = await probe(args),
+          program = `"${python}"`;
+        expect(run.code).toBe(0);
+        expect(run.probe?.argv).toEqual(args);
+        expect(run.probe?.line.slice(program.length).trimStart()).toBe(
+          run.probe?.expected,
+        );
+      },
+      CONHOST_TIMEOUT_MS * 6,
+    );
+
+    /** Asserts that the probe got `args` as the ConPTY host passes them. */
+    function expectConPtyParity(
+      run: ConHostRun & { readonly probe: ConHostProbe | null },
+      args: readonly string[],
+    ): void {
+      const program = `"${python}"`;
+      expect(run.code).toBe(0);
+      expect(run.probe?.argv).toEqual(args);
+      expect(run.probe?.line.startsWith(program)).toBe(true);
+      expect(run.probe?.line.slice(program.length).trimStart()).toBe(
+        run.probe?.expected,
+      );
+      expect(run.probe?.leaked).toEqual([]);
+    }
+
+    /**
+     * Runs `body` with a value of cmd's own registry key set for the user,
+     * then puts the key back as it was.
+     */
+    async function withCommandProcessorValue(
+      name: string,
+      type: string,
+      data: string,
+      body: () => Promise<void>,
+    ): Promise<void> {
+      const key = "HKCU\\Software\\Microsoft\\Command Processor",
+        reg = async (args: readonly string[]): Promise<string> =>
+          (await promisify(execFile)("reg", args, { timeout: TIMEOUT_MS }))
+            .stdout,
+        before = await reg(["query", key, "/v", name]).then(
+          (stdout) =>
+            new RegExp(`^\\s*${name}\\s+(REG_\\w+)\\s+(.*?)\\s*$`, "imu").exec(
+              stdout,
+            ),
+          () => null,
+        );
+      await reg(["add", key, "/v", name, "/t", type, "/d", data, "/f"]);
+      try {
+        await body();
+      } finally {
+        await (before === null
+          ? reg(["delete", key, "/v", name, "/f"])
+          : reg([
+              "add",
+              key,
+              "/v",
+              name,
+              "/t",
+              before[1] ?? type,
+              "/d",
+              before[2] ?? "",
+              "/f",
+            ]));
+      }
+    }
+
+    it.each<readonly [string, readonly string[]]>([
+      ["a leading comma", [",x"]],
+      ["a leading semicolon", [";x"]],
+      ["a leading equals sign", ["=x", "="]],
+      ["a form feed", ["\f", "a\fb"]],
+      ["a y with diaeresis", ["\u00ffx"]],
+      ["a no-break space", ["\u00a0x"]],
+      ["an at sign", ["@x"]],
+      ["label lookalikes", ["::x", ":x"]],
+      ["a help switch", ["/?"]],
+      ["redirection lookalikes", ["2>nul", ">x", "<y", "1>&2", "|"]],
+      ["single specials", ["^", "%", "!", "(", ")", "&"]],
+    ])(
+      "passes %s at the start of the arguments as ConPTY does",
+      async (_label, args) => {
+        expectConPtyParity(await probe(args), args);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "passes carets and bangs when the registry turns delayed expansion on",
+      async () => {
+        await withCommandProcessorValue(
+          "DelayedExpansion",
+          "REG_DWORD",
+          "1",
+          async () => {
+            const args = ["a^b!", "!PATH!", "wow!", "%PATH%"];
+            expectConPtyParity(await probe(args), args);
+          },
+        );
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each<readonly [string, string, readonly string[], number]>([
+      ["cmd.exe", "cmd.exe", ["/d", "/c", "exit 3"], 3],
+      [
+        "powershell",
+        "powershell",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 4"],
+        4,
+      ],
+      [
+        "PowerShell with a dollar sign and a backtick",
+        CONHOST_POWERSHELL,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "exit ('a$b`c'.Length)",
+        ],
+        5,
+      ],
+    ])(
+      "starts %s by the name a preset uses",
+      async (_label, executable, args, expected) => {
+        await expect(runConHost(executable, args)).resolves.toMatchObject({
+          code: expected,
+        });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts the PowerShell preset without arguments",
+      async () => {
+        await expect(
+          runConHost("powershell", [], { input: "exit 22\r" }),
+        ).resolves.toMatchObject({ code: 22 });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it.each<readonly [string, readonly string[], number]>([
+      ["the Git Bash preset", ["--login", "-c", "exit 14"], 14],
+      [
+        "arguments through Git Bash",
+        ["-c", "exit $(( $# * 10 + ${#1} ))", "_", "a b^c"],
+        15,
+      ],
+    ])(
+      "starts %s",
+      async (_label, args, expected) => {
+        const bash = "C:\\Program Files\\Git\\bin\\bash.exe";
+        try {
+          await access(bash);
+        } catch {
+          // Git for Windows is optional on the runner image.
+          return;
+        }
+        await expect(runConHost(bash, args)).resolves.toMatchObject({
+          code: expected,
+        });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    it(
+      "starts in a working folder with cmd specials",
+      async () => {
+        const cwd = win32.join(work, "c&d^e%f!g (h) J\u00fcrgen");
+        await mkdir(cwd, { recursive: true });
+        await expect(
+          runConHost(
+            python,
+            [
+              "-c",
+              "import os, sys; sys.exit(15 if os.getcwd() == sys.argv[1] else 16)",
+              cwd,
+            ],
+            { cwd },
+          ),
+        ).resolves.toMatchObject({ code: 15 });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    // A file named echo.cmd or echo.bat in the terminal's working folder, such
+    // as a vault root, or on PATH must not run when the program exits.
+    it.each([
+      ["echo.cmd", "the working folder"],
+      ["echo.bat", "the working folder"],
+      ["echo.cmd", "PATH"],
+    ])(
+      "records the exit code without running a file named %s in %s",
+      async (name, where) => {
+        const trap = await mkdtemp(win32.join(work, "echo-")),
+          marker = win32.join(trap, "marker.txt");
+        await writeFile(
+          win32.join(trap, name),
+          `@type nul > "${marker}"\r\n@exit /b 0\r\n`,
+          "utf8",
+        );
+        const run = await probe(
+            [],
+            where === "PATH"
+              ? {
+                  code: 12,
+                  environment: [["PATH", `${trap};${process.env.PATH ?? ""}`]],
+                }
+              : { code: 12, cwd: trap },
+          ),
+          ran = await access(marker).then(
+            () => true,
+            () => false,
+          );
+        expect({ code: run.code, ran }).toEqual({ code: 12, ran: false });
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    // cmd expands a variable named ERRORLEVEL instead of the exit code.
+    it(
+      "reports the program's exit code when the profile sets ERRORLEVEL",
+      async () => {
+        const run = await probe([], {
+          code: 3,
+          environment: [["ERRORLEVEL", "42"]],
+        });
+        expect(run.probe?.argv).toEqual([]);
+        expect(run.code).toBe(3);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+
+    // Node hands the environment to Windows as UTF-8, so a lone surrogate,
+    // which only a hand-edited profile can hold, arrives as U+FFFD. ConPTY,
+    // which sends the command as JSON, keeps it.
+    it(
+      "passes a lone surrogate as U+FFFD",
+      async () => {
+        const run = await probe(["a\ud800b"]);
+        expect(run.code).toBe(0);
+        expect(run.probe?.argv).toEqual(["a\ufffdb"]);
+        expect(run.probe?.leaked).toEqual([]);
+      },
+      CONHOST_TIMEOUT_MS * 2,
+    );
+  },
+);
 
 // Explicit off-Windows skips are intentional: mocks cannot establish this contract.
 /** A shell that leaves a ping in a hidden console, prints its PID and waits. */

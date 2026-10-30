@@ -194,6 +194,7 @@
     }
   },
   "errors": {
+    "conhost-cannot-pass": "ConHost cannot start this command: it contains a line break, its $t(generic.executable) path contains a quote, or it is too long for cmd, which runs lines of at most {{limit}} characters, including the text that starts the command. Change the $t(generic.profile).",
     "conpty-control-unauthenticated": "The ConPTY host disconnected before completing its authenticated startup handshake. The host was stopped.",
     "conpty-host-exited-before-ready": "The ConPTY host exited before it became ready.",
     "conpty-readiness-timeout": "The ConPTY host did not become ready in time.",
