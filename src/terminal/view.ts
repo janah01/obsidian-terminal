@@ -216,6 +216,15 @@ const win32BuildNumber = once(async (): Promise<number | undefined> => {
 const terminalUses = new WeakMap<TerminalView, number>();
 // Intentionally mutable so session uses have a strict order even within one tick.
 let terminalUseSequence = 0;
+// When each terminal last had the keyboard, on the same sequence: a clock that
+// is set back would reorder times, but not these marks.
+const terminalFocuses = new WeakMap<TerminalView, number>();
+
+function recordTerminalFocus(view: TerminalView): number {
+  const mark = ++terminalUseSequence;
+  terminalFocuses.set(view, mark);
+  return mark;
+}
 
 function recordTerminalUse(view: TerminalView): void {
   terminalUses.set(view, ++terminalUseSequence);
@@ -750,10 +759,41 @@ export class TerminalView extends ItemView {
           lastFocusTime = time;
           lastFocus = view;
         }
-        if (!lastFocus || !focused.includes(lastFocus.isFocused)) {
+        if (!lastFocus || !focused.includes(lastFocus.isLookedAt)) {
           return false;
         }
         return callback(checking, lastFocus);
+      };
+    /*
+     * The terminal the user works in: the one that has the keyboard in the
+     * window in front, else the one of the active tab, as long as no other
+     * terminal had the keyboard since it opened or last had it. A ribbon
+     * click or the command palette takes the keyboard but leaves the active
+     * tab as it was. A note, also one in another window, is neither. A
+     * terminal that only opened takes nothing from the one in use.
+     */
+    const terminalInUse = (): TerminalView | null => {
+      const open = [...this.lastFocusTimes.keys()],
+        lookedAt = open.find((view) => view.isLookedAt);
+      if (lookedAt) {
+        return lookedAt;
+      }
+      const active = workspace.getActiveViewOfType(TerminalView),
+        since = active ? this.lastFocusTimes.get(active) : void 0;
+      return since !== void 0 &&
+        open.every(
+          (view) => view === active || (terminalFocuses.get(view) ?? 0) < since,
+        )
+        ? active
+        : null;
+    };
+    const withTerminalInUse =
+      (
+        callback: (checking: boolean, view: TerminalView) => boolean,
+      ): ((checking: boolean) => boolean) =>
+      (checking) => {
+        const view = terminalInUse();
+        return view !== null && callback(checking, view);
       };
     addCommand(context, () => i18n.t("commands.focus-on-last-terminal"), {
       checkCallback: withLastFocusedView(
@@ -777,7 +817,7 @@ export class TerminalView extends ItemView {
             checkCallback: withLastFocusedView(
               (checking, view) => {
                 if (!checking) {
-                  if (view.isFocused) {
+                  if (view.isLookedAt) {
                     view.unfocus();
                   } else {
                     view.focus();
@@ -810,7 +850,7 @@ export class TerminalView extends ItemView {
           id: "unfocus-terminal",
         }).id,
         addCommand(context, () => i18n.t("commands.clear-terminal"), {
-          checkCallback: withLastFocusedView((checking, view) => {
+          checkCallback: withTerminalInUse((checking, view) => {
             if (!checking) {
               view.emulator?.terminal.clear();
             }
@@ -826,7 +866,7 @@ export class TerminalView extends ItemView {
           id: "clear-terminal",
         }).id,
         addCommand(context, () => i18n.t("commands.close-terminal"), {
-          checkCallback: withLastFocusedView((checking, view) => {
+          checkCallback: withTerminalInUse((checking, view) => {
             if (!checking) {
               view.leaf.detach();
             }
@@ -842,7 +882,7 @@ export class TerminalView extends ItemView {
           id: "close-terminal",
         }).id,
         addCommand(context, () => i18n.t("commands.find-in-terminal"), {
-          checkCallback: withLastFocusedView((checking, view) => {
+          checkCallback: withTerminalInUse((checking, view) => {
             if (!checking) {
               view.startFind();
             }
@@ -1244,7 +1284,7 @@ export class TerminalView extends ItemView {
       contentEl,
       "focusin",
       () => {
-        TerminalView.lastFocusTimes.set(this, Date.now());
+        TerminalView.lastFocusTimes.set(this, recordTerminalFocus(this));
         recordTerminalUse(this);
         if (settings.value.interceptKeysWhenFocused) {
           keymap.pushScope(focusedScope);
@@ -1269,7 +1309,7 @@ export class TerminalView extends ItemView {
         },
       ),
     );
-    TerminalView.lastFocusTimes.set(this, Date.now());
+    TerminalView.lastFocusTimes.set(this, ++terminalUseSequence);
     if (this.isFocused && settings.value.interceptKeysWhenFocused) {
       keymap.pushScope(focusedScope);
     }

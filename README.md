@@ -70,11 +70,12 @@ This file is automatically opened on first install. You can reopen it in setting
   2. The path is escaped or quoted for the shell of the terminal's profile, and a notice says so when something could not be inserted.
 - Additional actions
   - Includes
-    - Clear terminal: \(1\), \(4\)
+    - Clear terminal: \(1\), \(3\), \(4\)
+    - Close terminal: \(3\), \(4\)
     - Copy terminal: \(1\)
     - Edit terminal: \(1\)
     - Export, import, or edit settings: \(2\), \(3\)
-    - Find in terminal: \(1\), \(4\)
+    - Find in terminal: \(1\), \(3\), \(4\)
     - Open documentation: \(2\), \(3\)
     - Restart terminal: \(1\)
     - Save terminal history: \(1\)

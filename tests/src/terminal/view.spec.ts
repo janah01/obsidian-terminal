@@ -2256,6 +2256,658 @@ describe("TerminalView focus", () => {
       },
     );
   });
+
+  /*
+   * A ribbon click or the command palette takes the keyboard away from the
+   * terminal but leaves its tab the active one. The terminal used last is
+   * still the one the user works in: Clear, Close and Find are offered for
+   * it and act on it. From a note, or for a terminal other than the one used
+   * last, they are not.
+   */
+  describe("from a palette opened away from the terminal", () => {
+    // The leaf Obsidian made active last, which `getActiveViewOfType` reads.
+    let active: WorkspaceLeaf | null = null;
+    afterEach(() => {
+      document.body.replaceChildren();
+      platform.windows = false;
+      active = null;
+    });
+
+    function activate(context: TerminalPlugin, leaf: WorkspaceLeaf): void {
+      active = leaf;
+      context.app.workspace.setActiveLeaf(leaf);
+    }
+
+    const ACTING = [
+      "clear-terminal",
+      "close-terminal",
+      "find-in-terminal",
+    ] as const;
+
+    function loadCommands(overrides: Partial<Settings> = {}) {
+      listenForFocus();
+      const { context, workspace } = makeTerminalContext(overrides);
+      const addCommand = vi.fn<TerminalPlugin["addCommand"]>(
+        (command) => command,
+      );
+      Object.assign(context, {
+        addCommand,
+        register: vi.fn(),
+        registerEvent: vi.fn(),
+        registerView: vi.fn(),
+      });
+      vi.spyOn(library, "newHotkeyListener").mockReturnValue(vi.fn());
+      vi.spyOn(TerminalView["focusedScope"], "register").mockImplementation(
+        vi.fn(),
+      );
+      // Obsidian answers from the active leaf; the mock answers null always.
+      vi.spyOn(workspace, "getActiveViewOfType").mockImplementation((type) => {
+        const view: unknown = active?.view;
+        return view instanceof type ? view : null;
+      });
+      TerminalView.load(context);
+      const command = (id: string) => {
+        const found = addCommand.mock.calls
+          .map(([registered]) => registered)
+          .find((registered) => registered.id === id);
+        if (!found?.checkCallback) throw new Error(`No command ${id}`);
+        return found.checkCallback;
+      };
+      return { command, context, workspace };
+    }
+
+    async function openTerminal(
+      context: TerminalPlugin,
+      into: Document = document,
+    ) {
+      const { leaf, view } = makeTerminalLeaf(context);
+      // `onOpen` makes the view the last focused terminal.
+      await view["onOpen"]();
+      const clear = vi.fn(),
+        detach = vi.fn(),
+        startFind = vi.fn(),
+        textarea = into.createElement("textarea");
+      Object.assign(leaf, { detach });
+      // `startFind` is protected, so `vi.spyOn` cannot name it.
+      view["startFind"] = startFind;
+      const { emulator } = makeEmulator();
+      Object.assign(emulator.terminal, { clear });
+      view["emulator"] = emulator;
+      view.contentEl.append(textarea);
+      into.body.append(view.contentEl);
+      return {
+        clear,
+        detach,
+        leaf,
+        startFind,
+        view,
+        // How many times Clear, Close or Find reached this terminal.
+        acted(): number {
+          return (
+            clear.mock.calls.length +
+            detach.mock.calls.length +
+            startFind.mock.calls.length
+          );
+        },
+        // Typing in a terminal focuses it and makes its leaf the active one.
+        use(): void {
+          textarea.focus();
+          activate(context, leaf);
+        },
+      };
+    }
+
+    function openPalette(): HTMLInputElement {
+      const palette = document.createElement("div");
+      palette.className = "modal-container";
+      const input = document.createElement("input");
+      palette.append(input);
+      document.body.append(palette);
+      input.focus();
+      return input;
+    }
+
+    function clickIntoNote(context: TerminalPlugin): void {
+      const note = new WorkspaceLeaf(),
+        editor = document.createElement("textarea");
+      document.body.append(editor);
+      editor.focus();
+      activate(context, note);
+    }
+
+    /*
+     * The mock's `registerDomEvent` drops the listener. Obsidian keeps it, and
+     * the view's `focusin` listener is what records a use of the terminal, so
+     * `loadCommands` calls this before any terminal opens.
+     */
+    function listenForFocus(): void {
+      vi.spyOn(TerminalView.prototype, "registerDomEvent").mockImplementation(
+        (
+          el: Document | HTMLElement | Window,
+          type: string,
+          callback: (this: HTMLElement, event: Event) => unknown,
+          options?: AddEventListenerOptions | boolean,
+        ) => {
+          el.addEventListener(type, callback, options);
+        },
+      );
+    }
+
+    it.each(ACTING)(
+      "offers %s for the terminal used last while its tab is active",
+      async (id) => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context);
+        terminal.use();
+        openPalette();
+        expect(terminal.view["isFocused"]).toBe(false);
+
+        expect(command(id)(true)).toBe(true);
+      },
+    );
+
+    it("clears, closes and finds in the terminal used last when chosen", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      openPalette();
+
+      command("clear-terminal")(false);
+      command("find-in-terminal")(false);
+      command("close-terminal")(false);
+
+      expect(terminal.clear).toHaveBeenCalledOnce();
+      expect(terminal.startFind).toHaveBeenCalledOnce();
+      expect(terminal.detach).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      { windows: false, interceptKeysWhenFocused: true },
+      { windows: false, interceptKeysWhenFocused: false },
+      { windows: true, interceptKeysWhenFocused: true },
+      { windows: true, interceptKeysWhenFocused: false },
+    ])(
+      "clears from the palette on Windows: $windows, intercepting keys: $interceptKeysWhenFocused",
+      async ({ windows, interceptKeysWhenFocused }) => {
+        platform.windows = windows;
+        const { command, context } = loadCommands({ interceptKeysWhenFocused });
+        const terminal = await openTerminal(context);
+        terminal.use();
+        openPalette();
+
+        expect(command("clear-terminal")(true)).toBe(true);
+        command("clear-terminal")(false);
+        expect(terminal.clear).toHaveBeenCalledOnce();
+      },
+    );
+
+    it("offers them in a palette opened by a key from the focused terminal", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      // The palette takes the keyboard while it lists the commands...
+      const input = openPalette();
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      // ...and gives it back to the terminal when it closes.
+      input.blur();
+      terminal.use();
+      command("clear-terminal")(false);
+
+      expect(terminal.clear).toHaveBeenCalledOnce();
+    });
+
+    it("runs the Clear hotkey while the terminal's tab is active and nothing has the keyboard", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      // A ribbon click and Escape leave the keyboard on the page itself.
+      openPalette().blur();
+      expect(document.activeElement).toBe(document.body);
+
+      command("clear-terminal")(false);
+
+      expect(terminal.clear).toHaveBeenCalledOnce();
+    });
+
+    it("offers them for a terminal restored as the active tab before anyone typed in it", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      // The layout comes back with this tab active and nothing focused.
+      activate(context, terminal.leaf);
+      openPalette();
+
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      command("clear-terminal")(false);
+      expect(terminal.clear).toHaveBeenCalledOnce();
+    });
+
+    it("clears the terminal that Toggle focus left as the active tab with no other tab to go back to", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      TerminalView["lastActiveOtherLeaf"] = null;
+
+      command("toggle-focus-on-last-terminal")(false);
+      expect(terminal.view["isFocused"]).toBe(false);
+      expect(command("unfocus-terminal")(true)).toBe(false);
+
+      command("clear-terminal")(false);
+      expect(terminal.clear).toHaveBeenCalledOnce();
+    });
+
+    it.each(ACTING)("neither offers nor runs %s from a note", async (id) => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      clickIntoNote(context);
+
+      expect(command(id)(true)).toBe(false);
+      command(id)(false);
+      expect(terminal.acted()).toBe(0);
+    });
+
+    it.each(ACTING)(
+      "neither offers nor runs %s from a palette opened over a note",
+      async (id) => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context);
+        terminal.use();
+        clickIntoNote(context);
+        openPalette();
+
+        expect(command(id)(true)).toBe(false);
+        command(id)(false);
+        expect(terminal.acted()).toBe(0);
+      },
+    );
+
+    it("keeps Unfocus terminal to a terminal that has the keyboard", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      expect(command("unfocus-terminal")(true)).toBe(true);
+      openPalette();
+      expect(command("unfocus-terminal")(true)).toBe(false);
+      openPalette().blur();
+      expect(command("unfocus-terminal")(true)).toBe(false);
+    });
+
+    it.each([
+      "focus-on-last-terminal",
+      "toggle-focus-on-last-terminal",
+      "rename-terminal",
+    ])("still offers %s from the palette", async (id) => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      openPalette();
+
+      expect(command(id)(true)).toBe(true);
+    });
+
+    it("offers nothing while no terminal was opened in this session", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      TerminalView["lastFocusTimes"].clear();
+      openPalette();
+
+      for (const id of ACTING) {
+        expect(command(id)(true)).toBe(false);
+        command(id)(false);
+      }
+      expect(terminal.acted()).toBe(0);
+    });
+
+    it("does not act on another terminal than the one used last", async () => {
+      const { command, context } = loadCommands();
+      const shown = await openTerminal(context),
+        used = await openTerminal(context);
+      used.use();
+      // A click on a tab header makes a leaf active without focusing it.
+      activate(context, shown.leaf);
+      openPalette();
+
+      for (const id of ACTING) {
+        expect(command(id)(true)).toBe(false);
+        command(id)(false);
+      }
+      expect(shown.acted() + used.acted()).toBe(0);
+    });
+
+    it("offers them for the terminal in use after another one opened behind it", async () => {
+      const { command, context } = loadCommands();
+      const inUse = await openTerminal(context);
+      inUse.use();
+      // Opened in another split with neither the keyboard nor the active tab,
+      // as with Focus on new instance off.
+      const behind = await openTerminal(context);
+      openPalette();
+
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      command("clear-terminal")(false);
+      expect(inUse.clear).toHaveBeenCalledOnce();
+      expect(behind.acted()).toBe(0);
+    });
+
+    it("clears the terminal that has the keyboard after another one opened behind it", async () => {
+      const { command, context } = loadCommands();
+      const inUse = await openTerminal(context);
+      inUse.use();
+      const behind = await openTerminal(context);
+      expect(inUse.view["isLookedAt"]).toBe(true);
+
+      // Its hotkey, as the focused terminal's scope runs it.
+      command("clear-terminal")(false);
+      expect(inUse.clear).toHaveBeenCalledOnce();
+      expect(behind.acted()).toBe(0);
+    });
+
+    it("follows the terminal used last when the clock went back between two uses", async () => {
+      const { command, context } = loadCommands();
+      const earlier = await openTerminal(context),
+        later = await openTerminal(context);
+      earlier.use();
+      // The system clock is set back, by hand or by a time sync.
+      let now = Date.now() - 60_000;
+      vi.spyOn(Date, "now").mockImplementation(() => ++now);
+      later.use();
+      openPalette();
+
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      command("clear-terminal")(false);
+      expect(later.clear).toHaveBeenCalledOnce();
+      expect(earlier.acted()).toBe(0);
+    });
+
+    it("does not act on a closed terminal whose leaf is still the active one", async () => {
+      const { command, context } = loadCommands();
+      const older = await openTerminal(context),
+        closed = await openTerminal(context);
+      older.use();
+      closed.use();
+      openPalette();
+      closed.view.unload();
+      expect(TerminalView["lastFocusTimes"].has(closed.view)).toBe(false);
+
+      for (const id of ACTING) {
+        expect(command(id)(true)).toBe(false);
+        command(id)(false);
+      }
+      expect(older.acted() + closed.acted()).toBe(0);
+    });
+
+    it("moves on to the terminal used before once the one used last closes and its tab takes over", async () => {
+      const { command, context } = loadCommands();
+      const older = await openTerminal(context),
+        closed = await openTerminal(context);
+      older.use();
+      closed.use();
+      openPalette();
+      closed.view.unload();
+      // Obsidian shows the neighbour tab; the keyboard stays outside every leaf.
+      activate(context, older.leaf);
+
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      command("clear-terminal")(false);
+      expect(older.clear).toHaveBeenCalledOnce();
+      expect(closed.acted()).toBe(0);
+    });
+
+    it("acts on the terminal typed in last, not on the one opened last", async () => {
+      const { command, context } = loadCommands();
+      const typedIn = await openTerminal(context),
+        openedLast = await openTerminal(context);
+      openedLast.use();
+      typedIn.use();
+      openPalette();
+
+      for (const id of ACTING) expect(command(id)(true)).toBe(true);
+      command("clear-terminal")(false);
+      expect(typedIn.clear).toHaveBeenCalledOnce();
+      expect(openedLast.acted()).toBe(0);
+    });
+
+    it("needs the keyboard in the terminal when another kind of view is active", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      // A sidebar view, such as the file explorer, became the active leaf.
+      activate(context, new WorkspaceLeaf());
+      expect(command("clear-terminal")(true)).toBe(true);
+      openPalette();
+      expect(command("clear-terminal")(true)).toBe(false);
+    });
+
+    it("acts on the terminal that has the keyboard when another kind of view is active", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      activate(context, new WorkspaceLeaf());
+
+      command("clear-terminal")(false);
+      command("find-in-terminal")(false);
+      command("close-terminal")(false);
+      expect(terminal.acted()).toBe(3);
+    });
+
+    it("does not throw when the terminal used last has no emulator", async () => {
+      const { command, context } = loadCommands();
+      const terminal = await openTerminal(context);
+      terminal.use();
+      terminal.view["emulator"] = null;
+      openPalette();
+
+      expect(() => command("clear-terminal")(false)).not.toThrow();
+    });
+
+    describe("in a pop-out window", () => {
+      function popOut(): Document {
+        const popout = document.implementation.createHTMLDocument("pop-out");
+        // The window in front is the main one.
+        vi.spyOn(popout, "hasFocus").mockReturnValue(false);
+        return popout;
+      }
+
+      // Obsidian moves the active leaf into a window when it gets the focus, so
+      // a click on the main window's ribbon does not reach this state.
+      it("follows the active tab across windows", async () => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context, popOut());
+        terminal.use();
+        openPalette();
+
+        for (const id of ACTING) expect(command(id)(true)).toBe(true);
+        command("clear-terminal")(false);
+        expect(terminal.clear).toHaveBeenCalledOnce();
+      });
+
+      it.each(ACTING)(
+        "neither offers nor runs %s from a note in the main window",
+        async (id) => {
+          const { command, context } = loadCommands();
+          const terminal = await openTerminal(context, popOut());
+          terminal.use();
+          clickIntoNote(context);
+          // The pop-out still remembers its focused element.
+          expect(terminal.view["isFocused"]).toBe(true);
+
+          expect(command(id)(true)).toBe(false);
+          command(id)(false);
+          expect(terminal.acted()).toBe(0);
+        },
+      );
+
+      it("toggles the focus to it from a note in the main window", async () => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context, popOut());
+        terminal.use();
+        clickIntoNote(context);
+        // `focus` and `unfocus` are protected, so `vi.spyOn` cannot name them.
+        const focus = vi.fn(),
+          unfocus = vi.fn();
+        terminal.view["focus"] = focus;
+        terminal.view["unfocus"] = unfocus;
+
+        command("toggle-focus-on-last-terminal")(false);
+        expect({
+          focus: focus.mock.calls.length,
+          unfocus: unfocus.mock.calls.length,
+        }).toEqual({ focus: 1, unfocus: 0 });
+      });
+
+      it("offers Focus on last terminal, not Unfocus terminal, from a note in the main window", async () => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context, popOut());
+        terminal.use();
+        clickIntoNote(context);
+        // The pop-out still remembers its focused element.
+        expect(terminal.view["isFocused"]).toBe(true);
+
+        expect(command("focus-on-last-terminal")(true)).toBe(true);
+        expect(command("unfocus-terminal")(true)).toBe(false);
+      });
+
+      // `focus` and `unfocus` are protected, so `vi.spyOn` cannot name them.
+      function watchFocus(view: TerminalView) {
+        const focus = vi.fn(),
+          unfocus = vi.fn();
+        view["focus"] = focus;
+        view["unfocus"] = unfocus;
+        return () => ({
+          focus: focus.mock.calls.length,
+          unfocus: unfocus.mock.calls.length,
+        });
+      }
+
+      it("unfocuses a pop-out terminal that has the keyboard in the window in front", async () => {
+        const { command, context } = loadCommands();
+        const popout = document.implementation.createHTMLDocument("pop-out"),
+          terminal = await openTerminal(context, popout);
+        terminal.use();
+        // The pop-out is the window in front; the main one is behind it.
+        vi.spyOn(document, "hasFocus").mockReturnValue(false);
+        const calls = watchFocus(terminal.view);
+
+        expect(command("unfocus-terminal")(true)).toBe(true);
+        expect(command("focus-on-last-terminal")(true)).toBe(false);
+        expect(command("rename-terminal")(true)).toBe(true);
+        command("toggle-focus-on-last-terminal")(false);
+        expect(calls()).toEqual({ focus: 0, unfocus: 1 });
+      });
+
+      it("toggles the focus to a main-window terminal from a note in a pop-out window", async () => {
+        const { command, context } = loadCommands();
+        const terminal = await openTerminal(context);
+        terminal.use();
+        // The pop-out comes to the front, and a note in it takes the keyboard.
+        const popout = document.implementation.createHTMLDocument("pop-out"),
+          editor = popout.createElement("textarea");
+        popout.body.append(editor);
+        editor.focus();
+        vi.spyOn(document, "hasFocus").mockReturnValue(false);
+        activate(context, new WorkspaceLeaf());
+        // The main window still remembers its focused element.
+        expect(terminal.view["isFocused"]).toBe(true);
+        const calls = watchFocus(terminal.view);
+
+        expect(command("focus-on-last-terminal")(true)).toBe(true);
+        expect(command("unfocus-terminal")(true)).toBe(false);
+        expect(command("rename-terminal")(true)).toBe(true);
+        command("toggle-focus-on-last-terminal")(false);
+        expect(calls()).toEqual({ focus: 1, unfocus: 0 });
+      });
+
+      it("toggles the focus to the pop-out terminal used last, not to a main-window one used before", async () => {
+        const { command, context } = loadCommands();
+        const before = await openTerminal(context),
+          last = await openTerminal(context, popOut());
+        before.use();
+        last.use();
+        clickIntoNote(context);
+        const beforeCalls = watchFocus(before.view),
+          lastCalls = watchFocus(last.view);
+
+        command("toggle-focus-on-last-terminal")(false);
+        command("focus-on-last-terminal")(false);
+
+        expect({ before: beforeCalls(), last: lastCalls() }).toEqual({
+          before: { focus: 0, unfocus: 0 },
+          last: { focus: 2, unfocus: 0 },
+        });
+      });
+
+      it.each(ACTING)(
+        "neither offers nor runs %s for a main-window terminal from a note in a pop-out window",
+        async (id) => {
+          const { command, context } = loadCommands();
+          const terminal = await openTerminal(context);
+          terminal.use();
+          // The pop-out comes to the front, and a note in it takes the keyboard.
+          const popout = document.implementation.createHTMLDocument("pop-out"),
+            editor = popout.createElement("textarea");
+          popout.body.append(editor);
+          editor.focus();
+          vi.spyOn(document, "hasFocus").mockReturnValue(false);
+          activate(context, new WorkspaceLeaf());
+          // The main window still remembers its focused element.
+          expect(terminal.view["isFocused"]).toBe(true);
+
+          expect(command(id)(true)).toBe(false);
+          command(id)(false);
+          expect(terminal.acted()).toBe(0);
+        },
+      );
+
+      it("offers and runs them from a palette in the pop-out window over its terminal", async () => {
+        const { command, context } = loadCommands();
+        const popout = document.implementation.createHTMLDocument("pop-out"),
+          terminal = await openTerminal(context, popout);
+        terminal.use();
+        // The pop-out is the window in front, and its palette has the keyboard.
+        vi.spyOn(document, "hasFocus").mockReturnValue(false);
+        const input = popout.createElement("input");
+        popout.body.append(input);
+        input.focus();
+        expect(terminal.view["isFocused"]).toBe(false);
+
+        for (const id of ACTING) expect(command(id)(true)).toBe(true);
+        command("clear-terminal")(false);
+        command("find-in-terminal")(false);
+        command("close-terminal")(false);
+        expect(terminal.acted()).toBe(3);
+      });
+
+      it("reaches neither terminal from the tab of a main-window terminal while a pop-out terminal was used last", async () => {
+        const { command, context } = loadCommands();
+        const shown = await openTerminal(context),
+          used = await openTerminal(context, popOut());
+        used.use();
+        // A click on a tab header in the main window makes its leaf active.
+        activate(context, shown.leaf);
+        expect(used.view["isFocused"]).toBe(true);
+
+        for (const id of ACTING) {
+          expect(command(id)(true)).toBe(false);
+          command(id)(false);
+        }
+        expect(shown.acted() + used.acted()).toBe(0);
+      });
+
+      it("follows the keyboard in the pop-out window in front when another kind of view is active", async () => {
+        const { command, context } = loadCommands();
+        const popout = document.implementation.createHTMLDocument("pop-out"),
+          terminal = await openTerminal(context, popout);
+        terminal.use();
+        // The main window is behind it, and a sidebar view is the active leaf.
+        vi.spyOn(document, "hasFocus").mockReturnValue(false);
+        activate(context, new WorkspaceLeaf());
+
+        command("clear-terminal")(false);
+        expect(terminal.clear).toHaveBeenCalledOnce();
+      });
+    });
+  });
 });
 
 describe("TerminalView.spawn", () => {
